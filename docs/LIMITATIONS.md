@@ -56,6 +56,23 @@ escape hatch is pinning `pandas>=2.2,<3` — one line. See ADR-005.
 write and verified. Recorded because the same text feeds LLM prompts and UI copy later,
 where corrupted characters propagate silently.
 
+### Phase 1b — generator
+
+**The generator models a correct Razorpay using the engine's own fee code** (ADR-013).
+This is deliberate and argued, but it has one real consequence: a bug inside
+`expected_fee()` would make generator and classifier agree *wrongly*. Mitigated by testing
+`expected_fee()` against the brief's worked example — external truth, not our own output —
+rather than against generated data.
+
+**The generator emits one fee convention per batch.** Real Razorpay data is assumed
+internally consistent; a genuinely mixed batch is treated as an error (ADR-007). If
+Razorpay ever mixes conventions within one recon report, our engine raises rather than
+handling it. That is the intended behaviour, but it is an assumption, not a verified fact.
+
+**Refunds are modelled as one-sided by omission.** The one-sided-refund defect is a refund
+the merchant recorded that never reaches settlement. The reverse case — a settlement refund
+the merchant never recorded — is not yet generated. Both should exist; only one does.
+
 ### Phase 1 — engine
 
 **The fee/tax convention is unresolved, and it is the number everything depends on.**

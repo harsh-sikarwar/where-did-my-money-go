@@ -1,0 +1,64 @@
+{
+  "counts": {
+    "bank": 26,
+    "ledger": 50,
+    "payments": 50,
+    "recon": 50,
+    "subscriptions": 0
+  },
+  "defects": {
+    "by_type": {},
+    "count": 0,
+    "impact_by_type": {}
+  },
+  "first_ledger_row": {
+    "amount": 825200,
+    "customer_id": "cust_FLKibRCzyE",
+    "order_id": "order_mBf8Hh9hqaLM36",
+    "payment_method": "upi",
+    "timestamp": 1785848400
+  },
+  "first_recon_row": {
+    "amount": 825200,
+    "card_issuer": null,
+    "card_network": null,
+    "card_type": null,
+    "created_at": 1785837600,
+    "credit": 825200,
+    "credit_type": "default",
+    "currency": "INR",
+    "debit": 0,
+    "description": "Recurring Payment via Subscription",
+    "dispute_id": null,
+    "entity_id": "pay_XGv0Tm6uHbPKzC",
+    "fee": 0,
+    "method": "upi",
+    "notes": null,
+    "on_hold": false,
+    "order_id": "order_mBf8Hh9hqaLM36",
+    "order_receipt": null,
+    "payment_id": null,
+    "posted_at": null,
+    "settled": true,
+    "settled_at": 1786039200,
+    "settlement_id": "setl_DwD9jSQT8EPaNT",
+    "settlement_utr": "1786010400kvsqax",
+    "tax": 0,
+    "type": "payment"
+  },
+  "method_mix": {
+    "card_credit": 23,
+    "card_debit": 9,
+    "netbanking": 3,
+    "upi": 15
+  },
+  "totals": {
+    "bank_credit_paise": 26592462,
+    "expected_fee_paise": 370038,
+    "expected_net_paise": 26592462,
+    "gross_paise": 26962500,
+    "recon_credit_paise": 26592462,
+    "recon_fee_paise": 370038,
+    "recon_tax_paise": 56445
+  }
+}

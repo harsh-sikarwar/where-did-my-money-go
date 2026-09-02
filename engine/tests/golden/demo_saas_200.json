@@ -1,0 +1,76 @@
+{
+  "counts": {
+    "bank": 32,
+    "ledger": 200,
+    "payments": 200,
+    "recon": 191,
+    "subscriptions": 6
+  },
+  "defects": {
+    "by_type": {
+      "halted_subscription": 6,
+      "missing_order": 3,
+      "one_sided_refund": 8,
+      "timing_lag": 20,
+      "wrong_fee_rate": 30
+    },
+    "count": 67,
+    "impact_by_type": {
+      "halted_subscription": 2720800,
+      "missing_order": 1748100,
+      "one_sided_refund": 2362800,
+      "timing_lag": 8791210,
+      "wrong_fee_rate": 60350
+    }
+  },
+  "first_ledger_row": {
+    "amount": 143700,
+    "customer_id": "cust_3zmGzViaQH",
+    "order_id": "order_c1QfhnryJPioYs",
+    "payment_method": "card_credit",
+    "timestamp": 1785769200
+  },
+  "first_recon_row": {
+    "amount": 143700,
+    "card_issuer": "HDFC",
+    "card_network": "Visa",
+    "card_type": "credit",
+    "created_at": 1785751200,
+    "credit": 140309,
+    "credit_type": "default",
+    "currency": "INR",
+    "debit": 0,
+    "description": "Recurring Payment via Subscription",
+    "dispute_id": null,
+    "entity_id": "pay_8dknRXgglXrNXB",
+    "fee": 3391,
+    "method": "card_credit",
+    "notes": null,
+    "on_hold": false,
+    "order_id": "order_c1QfhnryJPioYs",
+    "order_receipt": null,
+    "payment_id": null,
+    "posted_at": null,
+    "settled": true,
+    "settled_at": 1785952800,
+    "settlement_id": "setl_rXxBL760NMJCnQ",
+    "settlement_utr": "1785924000xqpqdv",
+    "tax": 517,
+    "type": "payment"
+  },
+  "method_mix": {
+    "card_credit": 112,
+    "card_debit": 32,
+    "netbanking": 5,
+    "upi": 42
+  },
+  "totals": {
+    "bank_credit_paise": 101270870,
+    "expected_fee_paise": 1670780,
+    "expected_net_paise": 101331220,
+    "gross_paise": 107470900,
+    "recon_credit_paise": 101270870,
+    "recon_fee_paise": 1731130,
+    "recon_tax_paise": 254865
+  }
+}

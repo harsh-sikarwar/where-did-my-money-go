@@ -394,3 +394,144 @@ suite and repo-wide lint re-run. **104 tests green, ruff clean.**
 One reported issue was a phantom: the agent flagged an `RUF043` in `test_config.py` as
 pre-existing and out of its scope. It was mine, from concurrent work, and I had already
 fixed it. Timing overlap, not a disagreement.
+
+---
+
+## 2026-09-02 — Phase 1b: the seeded generator
+
+**Goal.** Razorpay-shaped synthetic data, configurable on every test-day axis, with a
+machine-readable ground truth so "defects caught / missed" is an assertion rather than a
+claim someone remembers to check.
+
+### Built
+
+`finctl/calendar.py` · `finctl/generate/ground_truth.py` · `finctl/generate/generator.py` ·
+`finctl/generate/writer.py` · `finctl/config/defaults/defects.yaml` · `finctl generate` ·
+`finctl golden`
+
+### The calendar deserved its own module
+
+T+2 means two *working* days. Model it as calendar days and a Friday capture "settles" on
+Sunday, and the engine reports a third of a normal batch as missing money — manufacturing
+the exact problem it exists to detect.
+
+It is deliberately shared between generation and judgement. Using different logic in each
+would let a generator bug hide behind a matching classifier bug, which is the same class of
+error ADR-013 addresses for fees.
+
+The canonical case now emerges rather than being special-cased:
+
+```
+2026-09-04 Fri  +T2 -> 2026-09-08 Tue   (4 calendar days)
+```
+
+*"47 Friday orders land Tuesday"* is arithmetic, not a story we tell.
+
+### The circularity question, faced directly (ADR-013)
+
+The generator calls `expected_fee()` — the same function the classifier will use. That
+looks circular, and choosing it over an independent implementation was the main design
+decision of this phase.
+
+Two independent fee implementations written by the same person on the same day share the
+same misunderstanding. The batch reconciles perfectly, both are wrong, and the green suite
+proves nothing. Worse, any *innocent* difference between them (a rounding tie-break)
+surfaces as a phantom defect the classifier must be taught to ignore — training the engine
+to tolerate real errors.
+
+So the generator models a **correct** Razorpay, and a defect is an explicit, recorded
+perturbation of that baseline. The classifier is not tested on "can you recompute a fee"
+but on "can you detect a known deviation" — which is the actual job. Fee correctness is
+proven separately in `test_fees.py` against the brief's worked example, which is external
+truth rather than our own output.
+
+The `clean` profile is the self-check: with nothing planted, every generated fee must equal
+the contracted fee exactly. Asserted.
+
+### The best decision of this phase (ADR-014)
+
+ADR-007 says we do not know whether Razorpay's `fee` is GST-inclusive or MDR-only. The
+generator still has to write *something* into `fee` and `credit`.
+
+The trap was writing one convention silently. The detector would then only ever see the
+convention we picked, pass forever, and prove nothing — detector and generator agreeing
+because the same person wrote both on the same assumption.
+
+Instead `fee_convention` is an explicit parameter, and **both are tested**:
+
+```
+gst_inclusive  -> fee is GST-INCLUSIVE (credit = amount - fee)      broken=0
+mdr_only       -> fee is MDR-ONLY (credit = amount - fee - tax)     broken=0
+```
+
+Neither test can pass by accident — they demand opposite verdicts from the same detector.
+
+This converts an unresolved *external* question into a tested *internal* capability. We
+still do not know what Razorpay does. We can now say, with tests, that the engine handles
+either answer and detects which one it is looking at. The open question stopped being a
+risk to correctness and became a fact awaiting discovery.
+
+### Tuning the demo, and why the shape matters
+
+The first run had timing lag at ₹1.69L against a fee defect of ₹69 — timing swamping
+everything and the fee line invisible. Retuned to 30 fee defects at 40bps and timing down
+to 10%:
+
+```
+₹87,912.10  timing_lag             (20 rows)   <- biggest, and needs NO action
+₹27,208.00  halted_subscription     (6 rows)   <- smallest but the only actionable one
+₹23,628.00  one_sided_refund        (8 rows)
+₹17,481.00  missing_order           (3 rows)
+   ₹603.50  wrong_fee_rate         (30 rows)   <- invisible per row, real in aggregate
+```
+
+That ordering *is* the product argument: the largest number is benign, the actionable one
+is small. And the fee defect is deliberately too small to notice on any single row — which
+is precisely why a merchant needs a tool to see it at all.
+
+Exactly 6 halted subscriptions. Six customers, not "about six."
+
+### Golden files — and proving they can fail
+
+Set up per the Day-1 working practice. A golden test that cannot fail is worse than none,
+so rather than trust it, I injected a regression: changed `card_credit` from 200 to 210
+basis points. It caught it and named the moved totals:
+
+```
+card_heavy_t1_100: totals changed
+  expected: recon_fee_paise 934656, recon_tax_paise 133901
+  actual:   recon_fee_paise 974555, recon_tax_paise 139988
+```
+
+Reverted; green again. The safety net demonstrably works.
+
+`finctl golden --update` regenerates, with a docstring saying not to run it to turn a red
+test green without reading the diff first — the diff *is* the finding.
+
+### Throughput, measured now rather than assumed on test day
+
+```
+    50 orders   0.005s    9,809/sec
+   500 orders   0.021s   24,046/sec
+ 5,000 orders   0.189s   26,496/sec
+50,000 orders   1.730s   28,897/sec
+```
+
+Linear to 50k. The generator is not the bottleneck; whatever we find on test day will be in
+matching, which is where an O(n²) join would live. Worth having this baseline before the
+matcher exists, so the comparison is honest.
+
+### Obstacles
+
+Minor. Ruff caught `datetime.timezone.utc` where `datetime.UTC` is the modern alias, and an
+unused variable in the CLI. Both auto-fixed. Nothing structural — the design work was done
+in the ADRs before the code, which is why.
+
+### State
+
+167 tests green, ruff clean. Generator produces Razorpay-shaped data across every test-day
+axis (volume × archetype × payment mix × settlement cycle × defect profile × fee
+convention), with ground truth that makes scoring automatic.
+
+Next: Phase 1c — normalize, stage, match, classify, correlate, ending at the Day-1
+checkpoint: unexplained-before ≠ unexplained-after in a console.

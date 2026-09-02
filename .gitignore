@@ -27,8 +27,12 @@ out/
 
 # --- Generated data & runtime output ---
 # Batches are regenerated from a seed; the seed is the source of truth, not the CSVs.
-data/*
-!data/.gitkeep
+# Generated batches, anywhere in the tree — `data/*` alone only matches the root.
+# Batches are reproducible from a seed, so the seed is the artefact worth keeping,
+# not several megabytes of CSV.
+/data/*
+!/data/.gitkeep
+engine/data/
 *.sqlite
 *.sqlite3
 *.db

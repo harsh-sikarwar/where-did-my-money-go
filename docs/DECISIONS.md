@@ -475,3 +475,80 @@ information.
   settlements, and we say so rather than implying we checked.**
 - This is a genuinely good failure-recovery artefact for criterion 4: a real limitation,
   found by real investigation, with a mechanism that closes it automatically.
+
+---
+
+## ADR-013 — The generator computes fees with the engine's own fee code
+
+**Date:** 2026-09-02 · **Phase:** 1b
+
+**Context.** The generator must produce settlement rows whose fees the classifier will
+later check. There are two ways to arrange that.
+
+**Options considered.**
+1. Give the generator its own independent fee implementation, so generator and engine are
+   genuinely separate and agreement means something.
+2. Have the generator call `expected_fee()` — the same function the classifier uses — to
+   model a *correct* Razorpay, and introduce defects by explicitly perturbing that
+   correct baseline.
+
+**Choice.** Option 2.
+
+**Why, despite it looking circular.** Option 1 sounds more rigorous and is worse. Two
+independent implementations of GST-on-MDR written by the same author on the same day will
+share the same misunderstanding, and the batch will reconcile perfectly while both are
+wrong — a green suite proving nothing. Worse, any *innocent* difference between the two
+implementations (a rounding mode, a tie-break) shows up as a phantom defect the classifier
+must then be taught to ignore, which trains the engine to tolerate real errors.
+
+Under option 2, the generator's baseline is correct *by construction*, and a defect is the
+deliberate, recorded difference from it. What the classifier is tested on is not "can it
+recompute a fee" but "can it detect a known perturbation" — which is the actual job.
+
+The correctness of `expected_fee()` itself is established separately, by
+`tests/test_fees.py`, against the worked example from the brief and against arithmetic
+identities. That is where fee correctness is proven; the generator is not the place.
+
+**Consequences.**
+- The `clean` defect profile is a self-check: with nothing planted, every generated fee
+  must equal the contracted fee exactly. Asserted by test.
+- A bug in `expected_fee()` would make generator and classifier agree wrongly. Mitigated
+  by `test_fees.py` testing it against external truth (the brief's worked example), not
+  against the generator.
+
+---
+
+## ADR-014 — The generator can emit either fee convention, and both are tested
+
+**Date:** 2026-09-02 · **Phase:** 1b
+
+**Context.** ADR-007 established that we do not know whether Razorpay's `fee` field is
+GST-inclusive or MDR-only, and ADR-012 established we may not find out in test mode. The
+generator nevertheless has to write *some* value into `fee` and `credit`.
+
+**The trap.** Picking one convention silently would mean the engine's detector only ever
+sees the convention we chose. It would pass, always, while proving nothing — the detector
+and the generator agreeing because they were written by the same person on the same
+assumption.
+
+**Choice.** `fee_convention` is an explicit generator parameter (`gst_inclusive` |
+`mdr_only`), defaulting to `gst_inclusive`, and **both are tested**:
+
+```
+gst_inclusive -> fee already contains GST, credit = amount - fee
+mdr_only      -> fee is MDR alone,        credit = amount - fee - tax
+```
+
+**Why.** This converts an unresolved external question into a tested internal capability.
+We still do not know what Razorpay does — but we can now say, with tests, that **the engine
+handles either answer and detects which one it is looking at**. The open question stops
+being a risk to correctness and becomes a fact to be discovered.
+
+**Consequences.**
+- Two tests assert the detector correctly identifies each convention with zero
+  inconsistent rows. Neither can pass by accident, since they demand opposite verdicts.
+- When ADR-007 is finally answered by live data, the change is a default value, not a
+  redesign.
+- Honest framing for a judge: *"we found an ambiguity in Razorpay's own documentation,
+  built the engine to detect which convention a batch uses rather than assume, and tested
+  it against both."*

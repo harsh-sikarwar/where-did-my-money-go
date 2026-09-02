@@ -227,3 +227,98 @@ def rates(
         )
     console.print(table)
     console.print("\n[dim]UPI is zero-MDR by mandate — that is a rate-card row, not a special case.[/dim]")
+
+
+@app.command()
+def generate(
+    volume: int = typer.Option(200, "--volume", "-n", help="Number of orders."),
+    archetype: str = typer.Option("saas_subscription", "--archetype", "-a"),
+    mix: str = typer.Option(None, "--mix", "-m", help="Override the archetype's payment mix."),
+    cycle: int = typer.Option(None, "--cycle", "-c", help="Settlement cycle, the N in T+N."),
+    defects: str = typer.Option("demo", "--defects", "-d", help="Defect profile."),
+    seed: int = typer.Option(20260902, "--seed", "-s"),
+    out: str = typer.Option("data/batch", "--out", "-o", help="Output directory."),
+) -> None:
+    """Generate a seeded batch of Razorpay-shaped data plus its ground truth."""
+    import time as _time
+    from pathlib import Path
+
+    from finctl.config.loader import load_config
+    from finctl.generate.generator import Generator
+    from finctl.generate.writer import write_batch
+    from finctl.money import format_rupees
+
+    cfg = load_config()
+    started = _time.perf_counter()
+    batch = Generator(
+        cfg,
+        seed=seed,
+        archetype=archetype,
+        payment_mix=mix,
+        volume=volume,
+        settlement_cycle_days=cycle,
+        defect_profile=defects,
+    ).generate()
+    elapsed = _time.perf_counter() - started
+
+    write_batch(batch, Path(out))
+    gt = batch.ground_truth
+    assert gt is not None
+
+    console.print(
+        f"[bold]{volume}[/bold] orders · {archetype} · mix {gt.payment_mix} · "
+        f"T+{gt.settlement_cycle_days} · defects [bold]{defects}[/bold] · seed {seed}"
+    )
+    console.print(
+        f"[dim]{elapsed:.3f}s · {volume / elapsed:,.0f} orders/sec[/dim]\n"
+    )
+
+    counts = Table(show_header=True, header_style="bold", box=None)
+    counts.add_column("file")
+    counts.add_column("rows", justify="right")
+    for name, key in (
+        ("ledger.csv", "ledger"), ("bank.csv", "bank"), ("settlement_recon.json", "recon"),
+        ("payments.json", "payments"), ("subscriptions.json", "subscriptions"),
+    ):
+        counts.add_row(name, f"{len(getattr(batch, key)):,}")
+    console.print(counts)
+
+    console.print(f"\n[bold]Planted defects[/bold] — {len(gt.real_defects)} total")
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("defect")
+    table.add_column("rows", justify="right")
+    table.add_column("impact", justify="right")
+    for defect_type, impact in sorted(gt.impact_by_type().items(), key=lambda kv: -kv[1]):
+        table.add_row(defect_type, str(len(gt.by_type(defect_type))), format_rupees(impact))
+    console.print(table)
+
+    console.print(f"\n[dim]written to {out}/[/dim]")
+    console.print(f"[dim]gross {format_rupees(gt.total_gross_paise)} · "
+                  f"expected fees {format_rupees(gt.total_expected_fee_paise)}[/dim]")
+
+
+@app.command()
+def golden(
+    update: bool = typer.Option(False, "--update", help="Rewrite the golden files."),
+) -> None:
+    """Check or regenerate the golden files.
+
+    Only pass --update after reading the diff and confirming every changed line moved
+    for a reason you can name. Regenerating to turn a test green discards the finding.
+    """
+    import json
+
+    from tests.test_golden import CASES, GOLDEN_DIR, generate_case
+
+    if not update:
+        console.print("[dim]Run `uv run pytest tests/test_golden.py` to check.[/dim]")
+        console.print("[dim]Pass --update to rewrite — after reading the diff.[/dim]")
+        return
+
+    GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+    for name in sorted(CASES):
+        path = GOLDEN_DIR / f"{name}.json"
+        existed = path.exists()
+        path.write_text(json.dumps(generate_case(name), indent=2, sort_keys=True))
+        console.print(f"  {'updated' if existed else 'created'} {path.name}")
+    console.print(f"\n[bold]{len(CASES)}[/bold] golden files written.")

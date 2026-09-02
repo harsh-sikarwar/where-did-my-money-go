@@ -1,0 +1,73 @@
+# Defect profiles — what gets deliberately broken, and how much.
+#
+# ADR-004: the generator may not plant a defect it cannot describe in ground truth.
+# If it cannot be scored, it does not get planted. Every entry here has a
+# corresponding ground-truth record with an exact paise impact.
+#
+# `count` is an absolute number of defects; `rate` is a fraction of the batch.
+# Use `count` for defects whose absolute size is the story (the halted cluster is
+# "6 customers", not "1.2% of customers"), and `rate` for defects that should scale
+# with volume so a 50k-row batch is not dominated by five hardcoded anomalies.
+
+# The demo profile. Numbers chosen so a ~200-order batch produces a verdict screen
+# close to the one in the brief.
+demo:
+  description: "The story from the brief: mostly benign, one thing that needs a human."
+  missing_order:
+    count: 3
+    note: "Order in the ledger, absent from settlement. Correlation should find these
+           in the payments feed as status=failed with an error_reason."
+  wrong_fee_rate:
+    count: 30
+    overcharge_bps: 40
+    note: "Razorpay charged 0.40% more than the contracted rate, on 30 orders.
+           Deliberately small per row and material only in aggregate — that IS the
+           case for checking fees: no single row looks wrong enough to notice."
+  one_sided_refund:
+    count: 8
+    note: "Refund recorded in the merchant ledger but not present in settlement,
+           or the reverse. Classic Side A / Side B divergence."
+  timing_lag:
+    rate: 0.10
+    note: "Friday orders landing Tuesday. Benign — it resolves itself — but it is
+           usually the single largest line in the gap, which is the point:
+           the biggest number is the one that needs no action."
+  halted_subscription:
+    count: 6
+    note: "THE DEMO CENTREPIECE. Invoices generated, charges never attempted.
+           See ADR-011: modelled from documented Razorpay behaviour."
+
+# No defects at all. Adversarial case: does the engine correctly say 'nothing to do'?
+clean:
+  description: "Everything reconciles. The engine should report a short, empty list."
+
+# Everything broken. Adversarial case: does it fail loudly rather than produce
+# plausible-looking nonsense?
+chaos:
+  description: "Nothing reconciles. Tests that the engine does not invent explanations."
+  missing_order:
+    rate: 0.40
+  wrong_fee_rate:
+    rate: 0.30
+    overcharge_bps: 100
+  one_sided_refund:
+    rate: 0.20
+  timing_lag:
+    rate: 0.50
+  halted_subscription:
+    rate: 0.15
+
+# Scale profile: rates rather than counts, so proportions hold at any volume.
+scale:
+  description: "Proportional defects for volume testing (500 / 5k / 50k)."
+  missing_order:
+    rate: 0.02
+  wrong_fee_rate:
+    rate: 0.03
+    overcharge_bps: 25
+  one_sided_refund:
+    rate: 0.025
+  timing_lag:
+    rate: 0.18
+  halted_subscription:
+    rate: 0.03

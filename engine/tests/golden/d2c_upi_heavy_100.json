@@ -1,0 +1,75 @@
+{
+  "counts": {
+    "bank": 29,
+    "ledger": 100,
+    "payments": 100,
+    "recon": 91,
+    "subscriptions": 6
+  },
+  "defects": {
+    "by_type": {
+      "halted_subscription": 6,
+      "missing_order": 3,
+      "one_sided_refund": 8,
+      "timing_lag": 10,
+      "wrong_fee_rate": 30
+    },
+    "count": 57,
+    "impact_by_type": {
+      "halted_subscription": 1864100,
+      "missing_order": 1003800,
+      "one_sided_refund": 1103200,
+      "timing_lag": 2765842,
+      "wrong_fee_rate": 38803
+    }
+  },
+  "first_ledger_row": {
+    "amount": 229500,
+    "customer_id": "cust_QX5BFEeocl",
+    "order_id": "order_49Ncro3jGVu9Ax",
+    "payment_method": "upi",
+    "timestamp": 1785751200
+  },
+  "first_recon_row": {
+    "amount": 58800,
+    "card_issuer": null,
+    "card_network": null,
+    "card_type": null,
+    "created_at": 1785751200,
+    "credit": 58800,
+    "credit_type": "default",
+    "currency": "INR",
+    "debit": 0,
+    "description": "Order payment",
+    "dispute_id": null,
+    "entity_id": "pay_mLrgerQ0gSbusC",
+    "fee": 0,
+    "method": "upi",
+    "notes": null,
+    "on_hold": false,
+    "order_id": "order_LLhkXsoZcxxxO7",
+    "order_receipt": null,
+    "payment_id": null,
+    "posted_at": null,
+    "settled": true,
+    "settled_at": 1785952800,
+    "settlement_id": "setl_thL49vf1VDqXBI",
+    "settlement_utr": "1785924000ndminc",
+    "tax": 0,
+    "type": "payment"
+  },
+  "method_mix": {
+    "card_credit": 7,
+    "card_debit": 7,
+    "upi": 77
+  },
+  "totals": {
+    "bank_credit_paise": 27419392,
+    "expected_fee_paise": 72305,
+    "expected_net_paise": 27458195,
+    "gross_paise": 30398400,
+    "recon_credit_paise": 27419392,
+    "recon_fee_paise": 111108,
+    "recon_tax_paise": 11030
+  }
+}
