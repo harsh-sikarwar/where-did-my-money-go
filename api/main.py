@@ -236,13 +236,72 @@ def score_endpoint(batch: str) -> dict[str, Any]:
 
 
 @app.get("/api/audit/{batch}")
-def audit(batch: str) -> dict[str, Any]:
-    """What was ingested, and what the engine did with it."""
+def audit(batch: str, stage: str | None = None, order_id: str | None = None,
+          limit: int = 500) -> dict[str, Any]:
+    """Every decision the engine made, in order.
+
+    This is what makes "every number traces back to a Razorpay record" checkable rather
+    than merely asserted. Filterable by stage or by order so a single disputed figure
+    can be followed from ingest to verdict.
+    """
     result = _load(batch)
+    events = result.audit.events
+
+    if order_id:
+        events = [e for e in events if e.get("order_id") == order_id]
+    if stage:
+        events = [e for e in events if e["stage"] == stage]
+
     return {
         "batch": batch,
         "manifest": result.batch.manifest(),
-        "match": result.matches.summary(),
-        "classification": result.classified.summary(),
-        "correlation": result.correlated.summary(),
+        "total_events": len(result.audit),
+        "by_stage": result.audit.by_stage(),
+        "filtered_count": len(events),
+        "truncated": len(events) > limit,
+        "events": events[:limit],
+        "summary": {
+            "match": result.matches.summary(),
+            "classification": result.classified.summary(),
+            "correlation": result.correlated.summary(),
+        },
+    }
+
+
+@app.get("/api/trace/{batch}/{order_id}")
+def trace(batch: str, order_id: str) -> dict[str, Any]:
+    """Follow one order from ingest to verdict.
+
+    The answer to "why does this row say what it says?" — which is the question an
+    audit trail exists to answer.
+    """
+    result = _load(batch)
+    events = result.audit.for_order(order_id)
+    if not events:
+        raise HTTPException(404, f"no audit events for order {order_id!r} in batch {batch!r}")
+
+    finding = next((f for f in result.correlated.findings if f.order_id == order_id), None)
+    order = next((m for m in result.matches.order_matches if m.order_id == order_id), None)
+
+    return {
+        "batch": batch,
+        "order_id": order_id,
+        "ledger": {
+            "amount": _money(order.ledger_amount_paise),
+            "method": order.ledger_row.get("payment_method"),
+        } if order else None,
+        "settlement": {
+            "matched": order.matched,
+            "gross": _money(order.settled_gross_paise),
+            "net": _money(order.settled_net_paise),
+            "fee": _money(order.fee_paise),
+            "settlement_ids": sorted({r["settlement_id"] for r in order.recon_rows}),
+            "utrs": sorted({r["settlement_utr"] for r in order.recon_rows if r.get("settlement_utr")}),
+        } if order else None,
+        "outcome": {
+            "classification": str(finding.classification),
+            "amount": _money(finding.amount_paise),
+            "proof": finding.proof,
+        } if finding else None,
+        "events": events,
     }

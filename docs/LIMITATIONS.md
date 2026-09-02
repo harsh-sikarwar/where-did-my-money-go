@@ -107,6 +107,21 @@ the problem does not have.
 works, but there is no picker. The demo-data button and CSV upload path are Phase 2
 items not yet built.
 
+### Phase 2b — audit trail
+
+**The audit log is held in memory during a run and written once at the end.** A crash
+mid-run leaves no log. This is a deliberate trade — per-event fsync would make the audit
+trail the throughput bottleneck rather than the matcher — but it means the log documents
+completed runs only.
+
+**`RECONCILED` rows are summarised, not enumerated** (ADR-022). Justified, tested against
+reconstructibility, and stated here so the reading of "refuses to summarise" is visible
+rather than assumed.
+
+**The audit view reads at most 500 events.** The full log is on disk; the screen is a
+reader, not the record. A 50,000-row batch would need pagination in the UI to be fully
+browsable there.
+
 ### Phase 1c-ii — classify / correlate
 
 **100% correlation gain is a property of our test data, not a general claim.** Every gap

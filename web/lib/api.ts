@@ -92,6 +92,35 @@ export interface Correlation {
   }[];
 }
 
+export interface AuditEvent {
+  seq: number;
+  at: string;
+  batch: string;
+  stage: string;
+  event: string;
+  order_id?: string;
+  settlement_id?: string;
+  detail: Record<string, unknown>;
+}
+
+export interface Audit {
+  batch: string;
+  manifest: {
+    batch_id: string;
+    created_at: string;
+    sealed: boolean;
+    sources: Record<
+      string,
+      { origin: string; rows: number; sha256: string; column_mapping: string }
+    >;
+  };
+  total_events: number;
+  by_stage: Record<string, number>;
+  filtered_count: number;
+  truncated: boolean;
+  events: AuditEvent[];
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -139,4 +168,6 @@ export const api = {
     get<{ batches: { name: string; has_ground_truth: boolean }[] }>(
       "/api/batches",
     ),
+  audit: (batch: string, stage?: string) =>
+    get<Audit>(`/api/audit/${batch}${stage ? `?stage=${stage}` : ""}`),
 };

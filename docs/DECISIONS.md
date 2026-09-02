@@ -763,3 +763,65 @@ most viewers never open.
   since the batch changes when data is regenerated.
 - The API being down now renders a server-side error message naming the fix
   (`npm run api`) rather than an empty page with a console error.
+
+---
+
+## ADR-022 — The audit log summarises reconciled rows, and only those
+
+**Date:** 2026-09-02 · **Phase:** 2b
+
+**Context.** `BEHAVIOR.md` says the audit stage *"refuses to summarise"* — the log is raw
+and complete. But a 5,000-row batch is ~95% `RECONCILED`, and emitting one event per
+correctly-settled order produces a log that is almost entirely noise, in which the ~250
+interesting events are unfindable.
+
+**Choice.** Every non-`RECONCILED` finding gets its own event with full proof.
+`RECONCILED` rows are collapsed into a single `reconciled_summary` event carrying the
+count.
+
+**Why this does not violate the contract.** The refusal to summarise protects
+*decisions* — which rule fired, on which row, with which numbers. A `RECONCILED` row is
+the absence of a decision: no rule fired, nothing was judged, the money simply arrived as
+expected. Its per-row detail adds nothing that the count does not.
+
+The test that keeps this honest is `test_verdict_totals_are_reconstructible_from_the_log`:
+every figure on the verdict screen must be recomputable from the log alone. The count
+preserves that property; enumerating the rows would not improve it.
+
+**Consequences.**
+- A 5,000-row batch produces well under 5,000 events, asserted by test.
+- If a `RECONCILED` row is ever disputed, the source data is still on disk and the
+  matcher is deterministic — re-running reproduces it exactly.
+- If the engine ever makes a *decision* about a reconciled row, that decision must be
+  logged individually. The exemption is for the absence of a decision, not for a class
+  of row.
+
+---
+
+## ADR-023 — Verdict, correlation and audit are one page, not three routes
+
+**Date:** 2026-09-02 · **Phase:** 2b
+
+**Context.** The brief describes four screens: verdict, detail, correlation, audit. The
+obvious implementation is four routes with navigation between them.
+
+**Choice.** One page with three progressively deeper sections; detail expands inline.
+
+**Why.** The demo is a two-minute story told by scrolling, not a feature tour navigated
+by clicking. Every navigation is a moment where the presenter has to explain where they
+are going and the audience has to reorient — and in a 2-minute slot, three of those is a
+meaningful fraction of the time.
+
+The layering is also the argument. Verdict is what a merchant reads on Monday;
+correlation is the measured claim; audit is how anyone checks it. Stacked, that ordering
+is visible in a single scroll. Split across routes, the relationship has to be asserted
+verbally.
+
+**Consequences.**
+- The audit section is collapsed by default and fetches on demand — it is the one view
+  nobody opens on a normal Monday, so paying for it on every page load would be
+  backwards.
+- Verdict and correlation are fetched together server-side, so the initial HTML carries
+  both. Two sequential round trips would have been visible.
+- If the audit view grows enough to need its own filtering and pagination UI, it earns a
+  route. It has not yet.

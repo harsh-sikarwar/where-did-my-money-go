@@ -20,7 +20,7 @@ export function Verdict({ data }: { data: VerdictData }) {
   const actionable = data.lines.filter((l) => l.actionable);
 
   return (
-    <main className="mx-auto max-w-2xl px-6 py-16 sm:py-24">
+    <>
       <header className="mb-12">
         <h1 className="text-sm font-medium tracking-tight text-[var(--color-ink-faint)]">
           Where did my money go?
@@ -70,7 +70,7 @@ export function Verdict({ data }: { data: VerdictData }) {
       </section>
 
       <Provenance data={data} />
-    </main>
+    </>
   );
 }
 

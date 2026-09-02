@@ -465,11 +465,18 @@ def reconcile(
             f"those {len(customers - {None}) or len(actionable_rows)} customers."
         )
 
+    # Write the audit log beside the batch. From the working practices: "you'll debug
+    # with it at 11pm" — which means it must land on disk without being asked for.
+    from finctl.pipeline import run as run_pipeline
+
+    audit_path = run_pipeline(Path(data), cfg).audit.write(Path(data) / "audit.jsonl")
+
     total_rows = sum(i["rows"] for i in manifest["sources"].values())
     console.print(
         f"\n[dim]{elapsed:.3f}s · {total_rows / elapsed:,.0f} rows/sec"
         f" · matching is identifier-based only, never fuzzy[/dim]"
     )
+    console.print(f"[dim]audit trail → {audit_path}[/dim]")
 
 
 @app.command()

@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from finctl.classify.classifier import ClassificationResult, Classifier
+from finctl.audit.log import AuditLog
+from finctl.classify.classifier import Classification, ClassificationResult, Classifier
 from finctl.config.loader import Config, load_config
 from finctl.correlate.correlator import CorrelationResult, Correlator
 from finctl.generate.ground_truth import GroundTruth
@@ -37,6 +38,7 @@ class PipelineResult:
     correlated: CorrelationResult
     verdict: Verdict
     scored: ScoreReport | None
+    audit: AuditLog
     elapsed_seconds: float
     rows_processed: int
 
@@ -56,6 +58,7 @@ class PipelineResult:
                 "rows_processed": self.rows_processed,
                 "rows_per_second": round(self.throughput),
             },
+            "audit": {"events": len(self.audit), "by_stage": self.audit.by_stage()},
         }
         if self.scored is not None:
             out["score"] = self.scored.as_dict()
@@ -72,14 +75,72 @@ def run(data_dir: Path, config: Config | None = None) -> PipelineResult:
     started = time.perf_counter()
 
     batch = stage_from_dir(data_dir)
+    log = AuditLog(batch.batch_id)
+
+    # INGEST: what was read, from where, with which columns mapped to what. The answer
+    # to "which column did you read as the amount?" when a number is disputed.
+    for source, staged in sorted(batch.sources.items()):
+        log.record("ingest", "source_staged", {
+            "source": str(source),
+            "origin": staged.origin,
+            "rows": staged.row_count,
+            "sha256": staged.content_sha256,
+            "column_mapping": staged.column_mapping,
+        })
+
     matches = match(batch)
+    log.record("match", "pass_1_order_to_psp", matches.summary()["pass1"])
+    log.record("match", "pass_2_psp_to_bank", matches.summary()["pass2"])
+    for order_id, count in matches.duplicate_order_ids.items():
+        log.record("match", "duplicate_order_id", {"occurrences": count},
+                   order_id=order_id)
+
     classified = Classifier(cfg).classify(matches)
+    # One event per non-reconciled finding, carrying the arithmetic that produced it.
+    # RECONCILED rows are summarised rather than enumerated: at 50k rows they would be
+    # 95% of the log and none of the interest, and the count is what makes the totals
+    # reconstructible anyway.
+    reconciled = 0
+    for f in classified.findings:
+        if f.classification is Classification.RECONCILED:
+            reconciled += 1
+            continue
+        log.record("classify", str(f.classification), {
+            "amount_paise": f.amount_paise,
+            "proof": f.proof,
+            "candidates": [str(c) for c in f.candidates],
+        }, order_id=f.order_id, settlement_id=f.settlement_id)
+    log.record("classify", "reconciled_summary", {"count": reconciled})
+
     correlated = Correlator(batch).correlate(classified)
+    for f in correlated.resolved:
+        log.record("correlate", f"resolved_as_{f.classification}", {
+            "amount_paise": f.amount_paise,
+            "correlation": f.proof.get("correlation", {}),
+        }, order_id=f.order_id)
+    for f in correlated.still_unexplained:
+        # Logged as prominently as the resolutions. The residual is the honesty metric,
+        # so burying it would defeat the point of having one.
+        log.record("correlate", "still_unexplained", {
+            "amount_paise": f.amount_paise,
+            "outcome": f.proof.get("correlation", {}).get("outcome", "not attempted"),
+        }, order_id=f.order_id)
+    log.record("correlate", "before_after", correlated.summary())
+
     verdict = Ranker(cfg.tolerances).rank(
         correlated.findings,
         expected_paise=matches.expected_paise,
         received_paise=matches.received_paise,
     )
+    for line in verdict.lines:
+        log.record("rank", "verdict_line", {
+            "classification": str(line.classification),
+            "count": line.count,
+            "amount_paise": line.amount_paise,
+            "actionable": line.actionable,
+            "policy": "always_actionable/always_benign from tolerances.yaml",
+        })
+    log.record("rank", "headline", {"text": verdict.headline()})
 
     elapsed = time.perf_counter() - started
 
@@ -95,6 +156,7 @@ def run(data_dir: Path, config: Config | None = None) -> PipelineResult:
         correlated=correlated,
         verdict=verdict,
         scored=scored,
+        audit=log,
         elapsed_seconds=elapsed,
         rows_processed=sum(s.row_count for s in batch.sources.values()),
     )

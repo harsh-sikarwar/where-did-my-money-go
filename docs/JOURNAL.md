@@ -886,3 +886,116 @@ difference.
 The verdict screen renders the demo story.
 
 Next: 2b — correlation screen (before/after, visual) and the audit view.
+
+---
+
+## 2026-09-02 — Phase 2b: correlation screen + audit trail
+
+**Goal.** The two things on the never-cut list that existed only in the CLI: the
+before/after correlation number, and the audit trail.
+
+### Built
+
+`finctl/audit/log.py` · pipeline instrumentation · `/api/audit` + `/api/trace` ·
+`web/components/Correlation.tsx` · `web/components/Audit.tsx`
+
+### The audit log had to exist before the audit screen could
+
+`BEHAVIOR.md` promised a JSONL decision log since Phase 0 and nothing had written one.
+The screen forced it, which is a reasonable order: building the reader first would have
+meant guessing at what the record should contain.
+
+78 events on a 200-row batch: ingest (5), match (2), classify (55), correlate (10),
+rank (6). Written to `data/<batch>/audit.jsonl`, one event per line, append-only.
+
+JSON Lines rather than a database because the debugging tool at 11pm is `grep`, and a
+format you can `tail -f` beats one you have to query.
+
+### The trace that makes the claim checkable
+
+*"Every number traces back to a Razorpay record"* is only a claim if it can be checked.
+Following one halted subscription through the log:
+
+```
+[  8] classify   MISSING
+        expected 87600, settled 0
+[ 63] correlate  resolved_as_HALTED_SUBSCRIPTION
+        join: order_id -> payment.subscription_id -> subscription.status
+        sub=sub_DnvzvP0lIuA2ec status=halted invoice=inv_MpubiRLFFZuSB8
+```
+
+Classified with its arithmetic, then resolved via the identifier chain to a specific
+subscription and invoice. `/api/trace/{batch}/{order_id}` returns exactly this for any
+order — the answer to *"why does this row say what it says?"*, which is the question an
+audit trail exists to answer.
+
+The strongest test is `test_verdict_totals_are_reconstructible_from_the_log`: every
+figure on the verdict screen must be recomputable from the log alone. If that ever
+fails, the audit trail has stopped being one.
+
+### Where the contract and reality had to be reconciled (ADR-022)
+
+`BEHAVIOR.md` says the audit stage *"refuses to summarise."* But a 5,000-row batch is
+~95% `RECONCILED`, and one event per correctly-settled order buries the ~250 interesting
+events in noise.
+
+Resolved by distinguishing what the refusal protects: it protects **decisions** — which
+rule fired, on which row, with which numbers. A `RECONCILED` row is the *absence* of a
+decision. No rule fired, nothing was judged, the money arrived as expected. Its per-row
+detail adds nothing the count does not, and the reconstructibility test still passes.
+
+Recorded as an ADR rather than quietly done, because it is a deliberate reading of a
+contract rather than an obvious implementation detail. If the engine ever makes a real
+decision about a reconciled row, that decision gets logged individually — the exemption
+is for the absence of a decision, not for a class of row.
+
+### The correlation bar, scaled honestly
+
+Both bars are proportional to the BEFORE figure, so the shrink is visually truthful.
+Scaling each bar to its own width would make any gain look total — which would be a
+chart that lies while showing correct numbers.
+
+```
+BEFORE  ████████████████████████████  ₹44,689.00
+AFTER                                      ₹0.00
+```
+
+### One page, not four routes (ADR-023)
+
+The brief lists four screens. Built as one page with three progressively deeper
+sections, because the demo is a two-minute story told by scrolling rather than a feature
+tour navigated by clicking. Every navigation is a moment where the presenter explains
+where they are going and the audience reorients — three of those is a meaningful
+fraction of a 2-minute slot.
+
+The layering is also the argument: verdict (what a merchant reads Monday) → correlation
+(the measured claim) → audit (how you check it). Stacked, that ordering is visible in one
+scroll. Split across routes, it has to be asserted verbally.
+
+### Verified in the browser again
+
+Drove Chrome through the DevTools Protocol, clicked "How do I know this is true?", and
+read the expanded DOM: content hashes, resolved column mappings, stage filter chips, and
+every decision with its arithmetic and order id. The screenshot showed
+`expected 87600, settled 0` and
+`ledger says 43400, Razorpay recorded gross 86800, difference -43400` — exactly what a
+sceptical judge should see.
+
+Two probes came back MISSING that were actually present: `innerText` returns
+CSS-uppercased headings, so `'What we read'` did not match `WHAT WE READ`. Worth
+recording as a testing-method note rather than a bug — a text probe against transformed
+content is checking the wrong string.
+
+### Redaction before the need
+
+The audit log drops credential-shaped keys recursively, through dicts and lists. The
+engine handles no secrets today, but an audit log is exactly the file that quietly
+accumulates them later, and it is far easier to add the guard now than to audit every
+`record()` call site afterwards.
+
+### State
+
+**345 tests green**, ruff clean across engine and api, tsc clean, production build clean.
+Full demo story renders: verdict → correlation → audit.
+
+Next: 2c — the LLM explanation layer, the one place AI is used.
