@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Blocks secrets from entering git history.
+#
+# A key committed and then deleted is still leaked — history keeps it. This hook is
+# the second line of defence behind .gitignore (see docs/DECISIONS.md ADR-002).
+#
+# Install:  git config core.hooksPath scripts
+set -euo pipefail
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+fail=0
+
+# 1. Never commit a real .env (the .example is fine).
+while IFS= read -r f; do
+  case "$f" in
+    *.env|.env|.env.*)
+      [ "$(basename "$f")" = ".env.example" ] && continue
+      echo "BLOCKED: $f looks like a secrets file." >&2
+      fail=1
+      ;;
+  esac
+done <<< "$staged"
+
+# 2. Live Razorpay keys and provider tokens in staged content.
+#    rzp_test_ is deliberately allowed — test keys are shareable and the demo needs them.
+for f in $staged; do
+  [ -f "$f" ] || continue
+  [ "$(basename "$f")" = "pre-commit" ] && continue
+  if git show ":$f" 2>/dev/null | grep -qE 'rzp_live_[A-Za-z0-9]{10,}|sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}'; then
+    echo "BLOCKED: $f contains something shaped like a live credential." >&2
+    fail=1
+  fi
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo "" >&2
+  echo "Commit refused. Move the value into .env (gitignored) and reference it by name." >&2
+  exit 1
+fi

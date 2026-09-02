@@ -1,0 +1,42 @@
+# --- Secrets: this block exists from commit one, deliberately ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# --- Generated data & runtime output ---
+# Batches are regenerated from a seed; the seed is the source of truth, not the CSVs.
+data/*
+!data/.gitkeep
+*.sqlite
+*.sqlite3
+*.db
+audit/*.jsonl
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
