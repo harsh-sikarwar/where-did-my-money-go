@@ -35,10 +35,27 @@ amount:
 # Materiality — benign vs actionable. Not a rupee threshold alone: a ₹31,000 timing
 # lag that resolves on Tuesday is benign; ₹3,800 of dead subscriptions is not.
 # Recoverability decides, size only orders the list. See docs/BEHAVIOR.md, stage `rank`.
+#
+# The test is "does a human need to DO something this week?", not "is this a
+# discrepancy?". Everything on this screen is a discrepancy; only some are actions.
 materiality:
-  # Classifications that never need a human, however large.
-  always_benign: [FEE, TAX_ON_FEE, TIMING, ROUNDING]
-  # Classifications that always need a human, however small.
-  always_actionable: [HALTED_SUBSCRIPTION, MISSING, NEEDS_REVIEW]
-  # For anything else, this is the cutoff.
+  # Never needs a human, however large. These resolve themselves or are correct-by-contract.
+  always_benign:
+    - FEE                     # correct fee, verified against the rate card
+    - TAX_ON_FEE              # GST on that fee
+    - TIMING                  # arrives on its own, no action possible
+    - ROUNDING                # sub-rupee noise
+    - REFUND                  # a bookkeeping divergence to reconcile, not a this-week action
+    - DUPLICATE               # a data-entry issue in the merchant's own ledger
+
+  # Always needs a human, however small. Money that will not arrive unless someone acts.
+  always_actionable:
+    - HALTED_SUBSCRIPTION     # recoverable revenue, dying silently
+    - MISSING                 # no record at Razorpay at all
+    - PAYMENT_FAILED          # some are worth retrying
+    - NEEDS_REVIEW            # we refused to guess; a human must
+    - UNEXPLAINED             # the honest residual deserves a look
+    - UNEXPECTED_SETTLEMENT   # money in for an order that is not in the books
+
+  # Anything not listed above falls through to this cutoff.
   actionable_above_paise: 10000  # ₹100

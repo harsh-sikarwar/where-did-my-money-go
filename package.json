@@ -1,0 +1,15 @@
+{
+  "name": "where-did-my-money-go",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Razorpay Buildathon Track 04 — settlement reconciliation with payment-failure correlation",
+  "scripts": {
+    "demo": "./scripts/demo.sh",
+    "api": "cd engine && uv run uvicorn api.main:app --reload --port 8000 --app-dir ..",
+    "web": "cd web && npm run dev",
+    "seed": "cd engine && uv run finctl generate --volume 200 --out data/demo",
+    "checkpoint": "cd engine && uv run finctl checkpoint --data data/demo",
+    "test": "cd engine && uv run pytest -q",
+    "lint": "cd engine && uv run ruff check . && cd ../web && npx tsc --noEmit"
+  }
+}

@@ -91,6 +91,22 @@ needs row-level dedup across batches, which is not built. The adversarial case "
 statement arriving after the first run" is therefore only partially handled: re-running is
 safe and non-corrupting, but overlapping rows would double-count.
 
+### Phase 2a — API and UI
+
+**The API has no authentication and permissive CORS.** It is a single-user local demo
+tool. Production auth is explicitly out of scope (see the deliberate cuts above), and the
+API binds to localhost. Batch names are validated against path traversal before touching
+the filesystem, so the one real risk in a local tool is covered.
+
+**Pipeline results are cached in a plain dict, keyed by batch name.** Regenerating a
+batch requires `?refresh=true` or an API restart to see new data. Fine for a demo tool;
+it would be wrong for anything multi-user. A cache library here would be infrastructure
+the problem does not have.
+
+**The UI renders one hardcoded batch (`demo`).** The batch-listing endpoint exists and
+works, but there is no picker. The demo-data button and CSV upload path are Phase 2
+items not yet built.
+
 ### Phase 1c-ii — classify / correlate
 
 **100% correlation gain is a property of our test data, not a general claim.** Every gap

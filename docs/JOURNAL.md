@@ -791,3 +791,98 @@ Recorded in `LIMITATIONS.md`. Day 3's decoy exists precisely to attack this.
 The Day-1 checkpoint is passed and verified against ground truth.
 
 Next: Phase 2 — FastAPI wrapper, then the verdict screen in Next.js.
+
+---
+
+## 2026-09-02 — Phase 2a: FastAPI wrapper + the verdict screen
+
+**Goal.** The four lines, on a screen, with the drill-down working.
+
+### Built
+
+`finctl/rank/ranker.py` (materiality) · `finctl/pipeline.py` (one entry point) ·
+`api/main.py` (FastAPI) · `web/` (Next.js 16 + React 19 + Tailwind 4) ·
+`scripts/demo.sh` + root `package.json`
+
+### One pipeline entry point, deliberately
+
+ADR-001 says the API is a thin wrapper. `finctl/pipeline.py` is what makes that literally
+true: the CLI and the API both call `run()`, and neither reimplements the stage order.
+Two callers with two copies of the sequence is exactly how a UI ends up showing a number
+the CLI never produced.
+
+### The ranker got materiality wrong on its first run
+
+`REFUND` landed in the actionable list — ₹23,628 of one-sided refunds marked "needs you
+this week", pushing actionable above benign and diluting the headline.
+
+The cause: `REFUND` was in neither config list, so it fell through to the ₹100 amount
+threshold. Which re-introduces size as the deciding factor — the precise thing the
+ranking design rejects. Recoverability decides; size only orders.
+
+Fixed by listing every classification explicitly (ADR-020). The test is *"does a human
+need to DO something this week?"*, not *"is this a discrepancy?"* — everything on the
+screen is a discrepancy, that is what the screen is. A one-sided refund is a bookkeeping
+divergence for month end; a halted subscription is revenue dying now.
+
+After: benign ₹54,732 vs actionable ₹44,689. The screen reads "mostly fine, one thing to
+do", which is the shape the product argues for.
+
+That fix exposed a latent trap: a typo in those config lists would silently fall through
+to the threshold, turning a benign-by-policy class actionable purely because it was
+large. The loader now validates every name against the `Classification` enum and raises
+at load. Found while writing the ranker; fixed there rather than left for later.
+
+### Server-rendered, because a demo is watched not measured (ADR-021)
+
+The verdict was first a client component fetching in `useEffect`. It worked — and the
+initial HTML contained no numbers. On a projector, numbers appearing a beat after load
+read as slow no matter how fast the engine is, and the engine runs in ~10ms.
+
+Converted the page to a server component that awaits the verdict. **Verified by checking
+the rendered HTML actually contains `₹10,51,081.00`** rather than assuming it would.
+Drill-downs stay client-side because they are genuinely on demand.
+
+### Verified in a real browser, not just by assertion
+
+Ran Chrome headless against the running app, drove it through the Chrome DevTools
+Protocol, clicked the halted-subscriptions line, and read the expanded DOM back:
+
+```
+Razorpay stopped attempting charges but kept generating invoices. Nobody was told...
+  ₹876.00   sub_DnvzvP0lIuA2ec · halted · invoice inv_MpubiRL…
+  ₹8,015.00 sub_aOYfllVOCn5HEC · halted · invoice inv_3GP04aJ…
+  ... six in total
+```
+
+That is demo step 4 working end to end: click the amber line, six dead subscriptions
+with evidence. Plain-English explanation on top, raw Razorpay ids beneath — layered
+rather than dumbed down, which is what makes the top-level simplicity defensible.
+
+Screenshots confirmed two layout problems a passing test would never have caught: the
+amount column was wider than its widest value, leaving an odd gap, and Next.js's
+dev-mode indicator sits as a dark circle in the corner. Both fixed; the second by
+`devIndicators: false`, since this gets demoed live.
+
+### `npm run demo`
+
+From the working practices: *"never a seven-step manual ritual."* One command seeds the
+batch, prints the checkpoint, starts both services, and waits for each to actually
+respond rather than sleeping a guessed number of seconds. Ctrl-C stops both — it kills
+the process group, so uvicorn's reloader children go too rather than surviving as
+orphans holding port 8000.
+
+### A test that was wrong, not code that was
+
+`test_is_deterministic` failed. The differences were `created_at` and the performance
+timings — a clock ticking, not a determinism failure. The assertion was over-broad: what
+must be identical is every number the engine *concluded*, not the wall-clock metadata
+around it. Narrowed, with a second test guarding that the exclusion is not hiding a real
+difference.
+
+### State
+
+**329 tests green**, ruff clean across engine and api, `tsc --noEmit` clean.
+The verdict screen renders the demo story.
+
+Next: 2b — correlation screen (before/after, visual) and the audit view.

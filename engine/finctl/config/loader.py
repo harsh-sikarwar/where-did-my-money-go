@@ -146,6 +146,21 @@ class Tolerances:
                 f"classifications in both always_benign and always_actionable in {source}: {sorted(overlap)}"
             )
 
+        # A typo here would not raise at use time -- the name simply would not match,
+        # and the classification would silently fall through to the amount threshold.
+        # A benign-by-policy class would then become actionable purely because it was
+        # large, which is precisely the ranking mistake this config exists to prevent.
+        from finctl.classify.classifier import Classification
+
+        known = {str(c) for c in Classification}
+        for key in ("always_benign", "always_actionable"):
+            unknown = [n for n in materiality.get(key, []) if n not in known]
+            if unknown:
+                raise ConfigError(
+                    f"{source}: materiality.{key} names unknown classification(s) "
+                    f"{unknown}. Known: {sorted(known)}"
+                )
+
         return cls(
             cycle_days=cycle,
             count_working_days_only=bool(settlement.get("count_working_days_only", True)),

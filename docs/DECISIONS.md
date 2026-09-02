@@ -703,3 +703,63 @@ it does not.
   none; it does not relabel what is already explained.
 - This is the false-attribution guard that Day 3 will attack deliberately. Building it
   now means the test-day exercise measures a real defence rather than its absence.
+
+---
+
+## ADR-020 — Materiality is a config policy, and REFUND is benign
+
+**Date:** 2026-09-02 · **Phase:** 2a
+
+**Context.** The ranker's first run put `REFUND` in the actionable list, because it was
+in neither config list and fell through to the ₹100 amount threshold. ₹23,628 of
+one-sided refunds became "needs you this week", pushing actionable above benign and
+diluting the headline.
+
+**Choice.** Every classification is explicitly listed as benign or actionable in
+`tolerances.yaml`. `REFUND` and `DUPLICATE` are benign; `PAYMENT_FAILED`, `UNEXPLAINED`
+and `UNEXPECTED_SETTLEMENT` join the actionable list.
+
+**Why.** The test is *"does a human need to DO something this week?"*, not *"is this a
+discrepancy?"*. Everything on the verdict screen is a discrepancy — that is what the
+screen is. A one-sided refund is a bookkeeping divergence to reconcile at month end; a
+halted subscription is revenue dying now. Both are real, only one is an action.
+
+The fall-through threshold is a poor default for this question because it re-introduces
+size as the deciding factor, which ADR-scale reasoning already rejected: recoverability
+decides, size only orders.
+
+**Consequences.**
+- After the change, benign ₹54,732 exceeds actionable ₹44,689 — the screen reads
+  "mostly fine, one thing to do", which is the intended shape.
+- A typo in these config lists would silently fall through to the threshold, so the
+  loader now validates every name against the `Classification` enum and raises at load.
+  Found while writing the ranker, fixed there rather than left as a trap.
+
+---
+
+## ADR-021 — The verdict is server-rendered; only drill-downs fetch on the client
+
+**Date:** 2026-09-02 · **Phase:** 2a
+
+**Context.** The verdict screen was first written as a client component fetching in
+`useEffect`. It worked, but the initial HTML contained no numbers — they appeared a
+moment after load.
+
+**Choice.** The page is a server component that awaits `api.verdict()` and passes the
+data in. Drill-downs stay client-side.
+
+**Why.** The product promise is a two-minute Monday glance, and this gets demoed live on
+a projector. Numbers that flash in after a beat read as slow regardless of how fast the
+engine is — and the engine runs in ~10ms, so there is no reason to pay a round trip
+after paint. Verified by checking the rendered HTML actually contains
+`₹10,51,081.00` rather than trusting that it would.
+
+Drill-downs remain client-fetched because they are genuinely on demand: fetching every
+classification's findings up front would move real work to the initial load for content
+most viewers never open.
+
+**Consequences.**
+- `export const dynamic = "force-dynamic"` — the verdict must not be baked at build time,
+  since the batch changes when data is regenerated.
+- The API being down now renders a server-side error message naming the fix
+  (`npm run api`) rather than an empty page with a console error.

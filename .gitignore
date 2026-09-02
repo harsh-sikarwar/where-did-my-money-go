@@ -20,6 +20,9 @@ build/
 
 # --- Node / Next.js ---
 node_modules/
+web/.next/
+web/out/
+web/.env.local
 .next/
 out/
 .turbo/

@@ -1,0 +1,36 @@
+@import "tailwindcss";
+
+/*
+ * A merchant opens this for two minutes on Monday. The visual hierarchy has one job:
+ * the gap, then what explains it, then the one thing that needs them.
+ *
+ * Restrained on purpose. Colour carries meaning here — amber means "this needs you" —
+ * so it cannot also be decoration.
+ */
+
+@theme {
+  --color-ink: #0f1115;
+  --color-ink-soft: #3d4450;
+  --color-ink-faint: #7b8494;
+  --color-paper: #fbfbfa;
+  --color-line: #e6e6e3;
+  --color-benign: #4a7c59;
+  --color-attention: #b45309;
+  --color-attention-bg: #fef6ec;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-feature-settings: "tnum" 1; /* tabular figures: money must align in columns */
+}
+
+/* Money is always tabular, everywhere, so columns line up without manual spacing. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
