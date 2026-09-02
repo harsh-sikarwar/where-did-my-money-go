@@ -21,6 +21,8 @@ from typing import Any
 
 from finctl.classify.classifier import Classification, Finding
 from finctl.config.loader import Tolerances
+from finctl.gap import decompose
+from finctl.match.matcher import MatchResult
 
 # The verdict screen's line ordering and human copy. Deliberately data rather than
 # code: the phrasing is product copy and belongs somewhere a non-programmer can edit.
@@ -29,20 +31,25 @@ from finctl.config.loader import Tolerances
 # MDR means must still understand the line. The exact numbers live one click down.
 LINE_COPY: dict[Classification, tuple[str, str]] = {
     Classification.TIMING: (
-        "not missing, just late",
-        "Money captured before the settlement cycle completed. It arrives on its own.",
+        "on its way — settled, not yet in your bank",
+        "Razorpay has released this money but it has not landed in your account yet. "
+        "It arrives on its own.",
     ),
     Classification.FEE: (
         "Razorpay's cut + tax on it",
-        "The processing fee, plus the 18% GST charged on that fee — not on your sale.",
+        "The processing fee Razorpay kept, plus the 18% GST charged on that fee — "
+        "not on your sale.",
     ),
     Classification.TAX_ON_FEE: (
         "tax on Razorpay's cut",
         "GST is charged on the processing fee, not on the transaction amount.",
     ),
     Classification.REFUND: (
-        "refunds recorded on one side only",
-        "You recorded a refund that never reached the settlement, or the reverse.",
+        "refunds you recorded but Razorpay still paid out",
+        "You wrote these down as refunded, so you expected less. Razorpay settled the "
+        "full amount anyway — your bank got MORE than your books expected, which is why "
+        "this line is negative. Worth reconciling: either the refund never went through, "
+        "or it was recorded twice.",
     ),
     Classification.ROUNDING: (
         "rounding differences",
@@ -196,22 +203,34 @@ class Ranker:
     def rank(
         self,
         findings: list[Finding],
-        *,
-        expected_paise: int,
-        received_paise: int,
+        matches: MatchResult,
     ) -> Verdict:
-        grouped: dict[Classification, list[Finding]] = {}
+        """Build the verdict from the GAP DECOMPOSITION, not from finding amounts.
+
+        This is the fix for the bug where the lines summed to ₹99,421 against a ₹38,372
+        gap. A finding's `amount_paise` is not a contribution to the gap — it means
+        something different per classification (a fee delta, a whole order, a refund
+        magnitude), so summing them could never equal anything.
+
+        Findings still supply counts, copy and drill-down proof. The decomposition
+        supplies the amounts, and it is asserted to balance.
+        """
+        d = decompose(matches, findings)
+        d.check()   # the identity must hold; a silent failure here is the original bug
+
+        counts: dict[Classification, int] = {}
         for f in findings:
             if f.classification is Classification.RECONCILED:
-                continue   # nothing to report about money that arrived correctly
-            grouped.setdefault(f.classification, []).append(f)
+                continue
+            counts[f.classification] = counts.get(f.classification, 0) + 1
+
+        by_class = {c.classification: c for c in d.components}
 
         lines: list[VerdictLine] = []
         for classification in _DISPLAY_ORDER:
-            group = grouped.get(classification)
-            if not group:
+            component = by_class.get(classification)
+            if component is None:
                 continue
-            total = sum(f.amount_paise for f in group)
             label, explanation = LINE_COPY.get(
                 classification, (str(classification).lower(), "")
             )
@@ -219,36 +238,33 @@ class Ranker:
                 classification=classification,
                 label=label,
                 explanation=explanation,
-                count=len(group),
-                amount_paise=total,
-                actionable=self.is_actionable(classification, total),
-                findings=group,
+                # Prefer the finding count where one exists: "6 subscriptions" is a
+                # human fact, while the component count is an accounting artefact
+                # (FEE spans every order that paid one).
+                count=counts.get(classification, component.count),
+                amount_paise=component.amount_paise,
+                actionable=self.is_actionable(classification, component.amount_paise),
+                findings=[f for f in findings if f.classification is classification],
             ))
 
-        # Any classification not in the display order still gets reported. Silently
-        # dropping an unknown label would hide exactly the thing worth seeing.
-        for classification, group in grouped.items():
+        for classification, component in by_class.items():
             if classification in _DISPLAY_ORDER:
                 continue
-            total = sum(f.amount_paise for f in group)
             label, explanation = LINE_COPY.get(
                 classification, (str(classification).lower(), "")
             )
             lines.append(VerdictLine(
                 classification=classification, label=label, explanation=explanation,
-                count=len(group), amount_paise=total,
-                actionable=self.is_actionable(classification, total), findings=group,
+                count=counts.get(classification, component.count),
+                amount_paise=component.amount_paise,
+                actionable=self.is_actionable(classification, component.amount_paise),
+                findings=[f for f in findings if f.classification is classification],
             ))
 
-        unexplained = sum(
-            f.amount_paise for f in findings
-            if f.classification in (Classification.UNEXPLAINED, Classification.NEEDS_REVIEW)
-        )
-
         return Verdict(
-            expected_paise=expected_paise,
-            received_paise=received_paise,
-            gap_paise=expected_paise - received_paise,
+            expected_paise=d.expected_paise,
+            received_paise=d.received_paise,
+            gap_paise=d.gap_paise,
             lines=lines,
-            unexplained_paise=unexplained,
+            unexplained_paise=d.residual_paise,
         )

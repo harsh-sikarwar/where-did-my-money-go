@@ -60,6 +60,19 @@ export function Verdict({ data }: { data: VerdictData }) {
           </span>
           <span className="text-sm">we can&rsquo;t explain</span>
         </div>
+
+        {/*
+          These lines sum to the gap exactly, and the engine asserts it on every run.
+          Showing the total is not decoration — it is the claim, and it was wrong once.
+        */}
+        <div className="mt-1 flex items-baseline gap-4 border-t border-[var(--color-line)] px-3 pt-3">
+          <span className="tnum w-28 shrink-0 text-right text-sm font-semibold">
+            {data.gap.display}
+          </span>
+          <span className="text-sm text-[var(--color-ink-faint)]">
+            every rupee of the gap, accounted for
+          </span>
+        </div>
       </section>
 
       {/* The verdict. One thing, not a list — if everything is urgent, nothing is. */}
@@ -107,6 +120,7 @@ function Line({
   batch: string;
 }) {
   const [open, setOpen] = useState(false);
+  const negative = line.amount.paise < 0;
 
   return (
     <div
@@ -121,7 +135,11 @@ function Line({
       >
         <span
           className={`tnum w-28 shrink-0 text-right text-sm font-medium ${
-            line.actionable ? "text-[var(--color-attention)]" : ""
+            line.actionable
+              ? "text-[var(--color-attention)]"
+              : negative
+                ? "text-[var(--color-benign)]"
+                : ""
           }`}
         >
           {line.amount.display}
@@ -129,6 +147,15 @@ function Line({
         <span className="flex-1 text-sm">
           <span className="text-[var(--color-ink-faint)]">{line.count}</span>{" "}
           {line.label}
+          {/*
+            A negative line on a money screen needs saying, not just showing. A minus
+            sign alone reads as an error; this says which direction the money went.
+          */}
+          {negative && (
+            <span className="ml-1.5 text-xs text-[var(--color-benign)]">
+              narrows the gap
+            </span>
+          )}
         </span>
         <span className="shrink-0 text-xs text-[var(--color-ink-faint)]">
           {open ? "hide" : "detail"}

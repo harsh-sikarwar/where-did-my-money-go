@@ -825,3 +825,74 @@ verbally.
   both. Two sequential round trips would have been visible.
 - If the audit view grows enough to need its own filtering and pagination UI, it earns a
   route. It has not yet.
+
+---
+
+## ADR-024 — The verdict is built from a gap decomposition, not a sum of findings
+
+**Date:** 2026-09-02 · **Phase:** 2b (bug fix)
+
+**Context.** The user looked at the verdict screen and asked how ₹30,501 + ₹603 +
+₹23,628 + ₹27,208 + ₹17,481 could describe a ₹38,372 gap. They were right: the lines
+summed to **₹99,421.65** against a **₹38,372.30** gap — a ₹61,049.35 error, on the
+screen that *is* the product.
+
+**Root cause.** The ranker built the verdict by summing `Finding.amount_paise` per
+classification. But that field is not a contribution to the gap. It means something
+different for each classification:
+
+| Classification | What `amount_paise` meant | What the gap needed |
+|---|---|---|
+| `FEE` | the **overcharge** vs the rate card (₹603) | the **whole fee kept** (₹17,311) |
+| `TIMING` | the whole order (₹30,501) | **₹0** — that money already arrived |
+| `REFUND` | the magnitude (₹23,628) | **−₹23,628** — it narrows the gap |
+| `HALTED_SUBSCRIPTION` | the whole order (₹27,208) | ₹27,208 ✓ |
+
+Only one of four was right. Three distinct bugs wearing one symptom:
+
+1. **Double-counting arrived money.** `TIMING` counted orders that settled *late but had
+   arrived*. That money is inside `received`, so counting it again inflated the gap.
+2. **A sign error.** A one-sided refund means the merchant wrote their books down while
+   Razorpay settled in full — the bank received **more** than expected. It narrows the
+   gap. Reporting its magnitude as positive was a ₹47,256 swing.
+3. **The wrong fee number.** The gap contains every rupee Razorpay kept, not just the
+   excess over the contracted rate. Whether the *rate* is correct is a separate question,
+   answered in the drill-down.
+
+**Choice.** A new module, `finctl/gap.py`, computes a **signed decomposition** directly
+from the matched data. Findings still supply counts, copy and drill-down proof; they no
+longer supply amounts. The identity
+
+```
+gap = fees_kept + never_arrived + in_flight − settled_above_ledger + residual
+```
+
+is asserted on **every run** by `GapDecomposition.check()`, which raises rather than
+logging.
+
+**Why this class of bug survived 345 tests.** Every individual number was correct and
+independently tested. Fees were right, correlation was right, the match rate was right,
+the gap was right. What no test asserted was that the lines **add up to the thing they
+claim to explain** — the relationship *between* correct numbers. A composition bug is
+invisible to component tests by construction.
+
+`test_gap.py` now asserts the identity across every defect profile, archetype, payment
+mix, settlement cycle and volume tier, plus one named test per original bug so a
+regression says which one returned.
+
+**Consequences.**
+- `residual_paise` is **computed**, not assumed. If a future change breaks the identity,
+  the residual becomes non-zero and appears on screen as "we can't explain" — the
+  failure surfaces as honesty rather than as a silent rebalance.
+- Negative lines are now possible and are rendered explicitly: green, with "narrows the
+  gap", because a minus sign alone on a money screen reads as an error.
+- The screen shows the balancing total. It is not decoration — it is the claim, and the
+  claim was wrong once.
+- The `Ranker.rank()` signature changed to take `MatchResult` rather than loose totals,
+  because the decomposition needs the matched rows and passing pre-summed figures is what
+  allowed the composition to drift in the first place.
+
+**The wider lesson.** *"Every number traces back to a Razorpay record"* was true. It was
+not sufficient. Individually traceable numbers can still be assembled into a false
+statement, and the assembly needs its own invariant. Caught by a human reading the
+screen, which is the one test that was missing.

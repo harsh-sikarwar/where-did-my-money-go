@@ -127,11 +127,7 @@ def run(data_dir: Path, config: Config | None = None) -> PipelineResult:
         }, order_id=f.order_id)
     log.record("correlate", "before_after", correlated.summary())
 
-    verdict = Ranker(cfg.tolerances).rank(
-        correlated.findings,
-        expected_paise=matches.expected_paise,
-        received_paise=matches.received_paise,
-    )
+    verdict = Ranker(cfg.tolerances).rank(correlated.findings, matches)
     for line in verdict.lines:
         log.record("rank", "verdict_line", {
             "classification": str(line.classification),

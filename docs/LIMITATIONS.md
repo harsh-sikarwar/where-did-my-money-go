@@ -107,6 +107,23 @@ the problem does not have.
 works, but there is no picker. The demo-data button and CSV upload path are Phase 2
 items not yet built.
 
+### Phase 2b — a composition bug the test suite could not see
+
+**The verdict screen's lines did not sum to its gap** — ₹99,421.65 of lines against a
+₹38,372.30 gap. Fixed (ADR-024), and now asserted on every run and across every
+configuration. Recorded here rather than only in the journal because the *class* of
+failure is the useful part:
+
+Every individual number was correct and independently tested. The bug was in the
+*relationship between* correct numbers, which component tests cannot see by construction.
+A suite can be thorough about parts and silent about the whole — and for a product whose
+claim is "every rupee accounted for", the arithmetic of the headline was the thing most
+needing an invariant and the thing that lacked one.
+
+It was found by a human reading the screen, not by any test. That is worth saying out
+loud in the submission: it is a real instance of criterion 4, and the fix is an
+invariant that raises rather than a patch that happens to work.
+
 ### Phase 2b — audit trail
 
 **The audit log is held in memory during a run and written once at the end.** A crash

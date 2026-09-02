@@ -999,3 +999,110 @@ accumulates them later, and it is far easier to add the guard now than to audit 
 Full demo story renders: verdict → correlation → audit.
 
 Next: 2c — the LLM explanation layer, the one place AI is used.
+
+---
+
+## 2026-09-02 — The verdict screen did not add up
+
+**Found by the user, not by the test suite.** Looking at the screen: how do
+₹30,501 + ₹603 + ₹23,628 + ₹27,208 + ₹17,481 describe a ₹38,372 gap?
+
+They don't. The lines summed to **₹99,421.65** against a **₹38,372.30** gap. A
+₹61,049.35 error, on the screen that *is* the product.
+
+### What it was
+
+The ranker built the verdict by summing `Finding.amount_paise` per classification. That
+field is not a contribution to the gap — it means something different for each
+classification, and I had treated them as commensurable:
+
+| Classification | `amount_paise` meant | The gap needed |
+|---|---|---|
+| `FEE` | the overcharge vs the rate card (₹603) | the whole fee kept (₹17,311) |
+| `TIMING` | the whole order (₹30,501) | **₹0** — it already arrived |
+| `REFUND` | the magnitude (₹23,628) | **−₹23,628** — it narrows the gap |
+| `HALTED_SUBSCRIPTION` | the whole order (₹27,208) | ₹27,208 ✓ |
+
+One of four correct. Three distinct bugs presenting as one symptom:
+
+1. **Double-counting money that arrived.** `TIMING` counted orders that settled *late
+   but had landed*. That money is already inside `received`; counting it again inflated
+   the gap by ₹30,501.
+2. **A sign error.** A one-sided refund means the merchant wrote their books down while
+   Razorpay settled in full — so the bank got **more** than expected and the gap
+   *shrinks*. Reporting the magnitude as positive was a ₹47,256 swing.
+3. **The wrong fee number.** The gap contains every rupee Razorpay kept (₹17,311), not
+   just the excess over the contracted rate (₹603). Whether the *rate* is right is a
+   different question, and it belongs in the drill-down.
+
+### The check that proved the engine was fine
+
+Before writing any fix, I decomposed the gap by hand from the matched data:
+
+```
+gap                ₹38,372.30
+  + fees kept      ₹17,311.30
+  + never arrived  ₹44,689.00
+  − refund excess  ₹23,628.00
+  = ₹38,372.30      residual ₹0.00
+```
+
+Exact, to the paise. **The engine's numbers were never wrong — the screen was assembling
+them wrongly.** That distinction mattered: it meant the fix was a new composition layer,
+not a hunt through the matcher.
+
+### The fix
+
+`finctl/gap.py` computes a **signed decomposition** directly from matched data. Findings
+still supply counts, copy and drill-down proof; they no longer supply amounts. The
+identity is asserted on every run by `check()`, which raises rather than logs.
+
+`residual_paise` is *computed*, not assumed. If a future change breaks the identity, the
+residual goes non-zero and appears on screen as "we can't explain" — the failure surfaces
+as honesty rather than as a silent rebalance.
+
+### Why 345 tests missed it
+
+Every individual number was correct and independently tested. Fees right, correlation
+right, match rate right, gap right. What nothing asserted was that the lines **add up to
+the thing they claim to explain**.
+
+That is a *composition* bug, and component tests cannot see it by construction — each one
+verifies its own piece and none looks at the relationship between them. The suite was
+thorough in exactly the way that produced false confidence.
+
+`test_gap.py` now asserts the identity across every defect profile, archetype, payment
+mix, settlement cycle and volume tier, with one named test per original bug so a
+regression says which one came back.
+
+### What I should have caught, and did not
+
+I built a verdict screen and never once checked that its lines summed to its own
+headline number. It was visible on the very first screenshot I took, and I looked at that
+screenshot and judged the *layout*. A user reading the numbers found it in seconds.
+
+Worth stating plainly rather than filing as a lesson: **I was checking that each part
+worked, not that the output was true.** For a product whose entire claim is "every rupee
+accounted for", the arithmetic of the headline was the one thing that most needed
+asserting, and it was the one thing that wasn't.
+
+### Also changed
+
+Negative lines are rendered explicitly — green, with "narrows the gap" — because a minus
+sign alone on a money screen reads as an error rather than as a direction. And the screen
+now shows the balancing total: *"₹38,372.30 · every rupee of the gap, accounted for"*.
+Not decoration. It is the claim, and the claim was wrong once.
+
+### State
+
+**379 tests green**, ruff clean, tsc clean. The screen adds up:
+
+```
+   ₹17,311.30  30 Razorpay's cut + tax on it
+  −₹23,628.00   8 refunds you recorded but Razorpay still paid out   narrows the gap
+ ⚠ ₹27,208.00   6 subscriptions died silently — recoverable
+ ⚠ ₹17,481.00   3 payments that failed
+        ₹0.00     we can't explain
+   ─────────────
+   ₹38,372.30     every rupee of the gap, accounted for
+```
