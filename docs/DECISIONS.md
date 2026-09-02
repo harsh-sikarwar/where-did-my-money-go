@@ -607,3 +607,99 @@ flattering is worse than no metric.
   gap, asserted by test.
 - Any UI rendering a match rate must distinguish "0% of 0" from "0% of 200". The summary
   carries `total` alongside `match_rate` for exactly this reason.
+
+---
+
+## ADR-017 — Scoring distinguishes "missed" from "below tolerance"
+
+**Date:** 2026-09-02 · **Phase:** 1c-ii
+
+**Context.** Scoring the engine against ground truth revealed that the engine and the
+generator can legitimately disagree about what counts as a defect. The generator plants
+timing lags of 1–2 working days. `tolerances.yaml` sets `grace_days: 1`, so a one-day lag
+is *within tolerance* and deliberately not flagged.
+
+Naively, that reads as 13 of 20 timing defects missed — a 35% recall on timing.
+
+**Options considered.**
+1. Count them as misses. Honest-looking, but wrong: it reports the tolerance working
+   correctly as an engine failure, and would push us to remove a tolerance that exists
+   for a good reason.
+2. Count them as caught. Flattering and wrong in the other direction.
+3. Give them their own category and report all three numbers.
+
+**Choice.** Option 3: `caught` / `missed` / `below_tolerance`, with recall computed over
+`caught + missed` only.
+
+**Why.** Both collapses misrepresent the engine, in opposite directions. The third
+category is the only one that describes what actually happened: the defect was planted,
+the engine did not flag it, and *config says it should not have*. A judge reading
+"13 below tolerance" alongside `grace_days: 1` can verify that judgement themselves —
+which is the whole point of reporting it rather than smoothing it away.
+
+**Consequences.**
+- Recall is computed over defects the engine was genuinely expected to find.
+- `below_tolerance` is printed on the checkpoint screen with an explanatory footnote,
+  never silently dropped.
+- Currently only timing has a tolerance large enough to swallow a whole defect; fee and
+  amount tolerances are one paise. If that changes, `_is_below_tolerance` needs the new
+  case, and its absence would show up as a sudden drop in recall rather than silently.
+
+---
+
+## ADR-018 — False positives are tracked separately, and matter more than misses
+
+**Date:** 2026-09-02 · **Phase:** 1c-ii
+
+**Context.** Recall alone is a one-sided metric. An engine that classified *every* order
+as a problem would score 100% recall.
+
+**Choice.** The score report counts false positives — orders flagged with a problem
+classification that were never planted as defects — and reports them separately, never
+folded into a single accuracy figure.
+
+**Why they matter more than misses.** A miss is a gap in coverage: the merchant does not
+learn about something. A false positive is the engine *telling a merchant something
+untrue* — chase this customer, question this fee, investigate this order. Acting on it
+costs real time and can damage a customer relationship. Worse, it erodes the one thing
+that makes the tool useful: that its short list is worth reading.
+
+This is the same reasoning as ADR-015's refusal of fuzzy matching. An honest gap can be
+investigated; a confident wrong answer cannot, because nothing signals it needs checking.
+
+**Consequences.**
+- `test_no_false_positives` is asserted on every archetype, not just the demo batch.
+- Currently zero across all tested configurations. That will be re-checked on test day
+  against the deliberately planted decoy, where a false positive is the *expected*
+  finding and the point of the exercise.
+
+---
+
+## ADR-019 — Correlation requires the identifier join to land, not to resemble
+
+**Date:** 2026-09-02 · **Phase:** 1c-ii
+
+**Context.** Correlation resolves an unexplained gap by looking up the payment and
+subscription behind it. The tempting shortcut is to treat a *failed subscription payment*
+as evidence of a halted subscription — they co-occur constantly, and it would raise the
+resolution rate.
+
+**Choice.** Two conditions must BOTH hold before claiming `HALTED_SUBSCRIPTION`: the
+payment must carry a `subscription_id` that resolves to a real subscription record, AND
+that subscription's status must literally be `halted`. Anything less is
+`PAYMENT_FAILED` — still resolved, still useful, but a different and truthful claim.
+
+**Why.** A failed payment on an *active* subscription is a normal retryable failure, not
+silent revenue death. Claiming otherwise tells the merchant to chase a customer whose
+subscription is working fine. And a dangling `subscription_id` must never borrow a
+different subscription's halted status — the join either lands on that specific record or
+it does not.
+
+**Consequences.**
+- Three refusal tests, asserted: active subscription not claimed as halted; unresolvable
+  subscription id not attributed elsewhere; successful payment does not explain a gap.
+- Correlation also never overrides arithmetic proof — a `FEE` finding is proven by
+  arithmetic and correlation leaves it alone. Correlation adds evidence where there was
+  none; it does not relabel what is already explained.
+- This is the false-attribution guard that Day 3 will attack deliberately. Building it
+  now means the test-day exercise measures a real defence rather than its absence.

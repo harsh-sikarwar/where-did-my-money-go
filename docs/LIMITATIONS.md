@@ -91,6 +91,32 @@ needs row-level dedup across batches, which is not built. The adversarial case "
 statement arriving after the first run" is therefore only partially handled: re-running is
 safe and non-corrupting, but overlapping rows would double-count.
 
+### Phase 1c-ii — classify / correlate
+
+**100% correlation gain is a property of our test data, not a general claim.** Every gap
+the generator plants has a correlatable payment record behind it, because that is how the
+generator creates gaps. Real data contains gaps with no payment record at all — bank
+errors, month-boundary timing, data-entry mistakes — and those correctly remain
+UNEXPLAINED. The refusal tests demonstrate the engine does not over-claim, but the headline
+gain number should be reported with this caveat, not as evidence that correlation resolves
+everything. Day 3's planted decoy exists to attack exactly this.
+
+**Correlation depends on the payments feed being complete.** If a payment record is absent
+for an order, the row stays UNEXPLAINED — correctly, but it means the differentiator's
+reach is bounded by data availability rather than by logic. A merchant whose Razorpay
+export omits failed payments would see the gain drop to near zero.
+
+**Only timing has a tolerance wide enough to hide a whole defect.** `_is_below_tolerance`
+handles the timing case only. If a future tolerance grows (a fee tolerance in basis points,
+say), that function needs the new case — its absence would show as a sudden unexplained
+drop in recall rather than a silent miscount, but it is a known sharp edge.
+
+**REFUND is inferred from direction, not from a refund record.** The classifier labels a
+negative amount gap as REFUND because that is the shape a one-sided refund makes. It does
+not verify against an actual `type: "refund"` recon row, because in the one-sided case
+there is none by definition. A negative gap with some other cause would be mislabelled.
+This is a genuine soft spot and a good candidate for the Day 3 adversarial pass.
+
 ### Phase 1 — engine
 
 **The fee/tax convention is unresolved, and it is the number everything depends on.**

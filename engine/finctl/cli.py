@@ -378,8 +378,179 @@ def reconcile(
         for key, value in anomalies.items():
             console.print(f"  {key}: {value if not isinstance(value, dict) else len(value)}")
 
+    # ---- classify -------------------------------------------------------
+    from finctl.classify.classifier import Classification, Classifier
+    from finctl.config.loader import load_config
+    from finctl.correlate.correlator import Correlator
+
+    cfg = load_config()
+    classified = Classifier(cfg).classify(result)
+
+    console.print("\n[bold]Classification[/bold]  [dim]deterministic, proof on every row[/dim]")
+    ctable = Table(show_header=True, header_style="bold")
+    ctable.add_column("classification")
+    ctable.add_column("rows", justify="right")
+    ctable.add_column("amount", justify="right")
+    for name, info in classified.summary().items():
+        style = "dim" if name == "RECONCILED" else ""
+        label = f"[{style}]{name}[/{style}]" if style else name
+        ctable.add_row(label, f"{info['count']:,}", format_rupees(info["paise"]))
+    console.print(ctable)
+
+    # ---- correlate — the differentiator ----------------------------------
+    correlated = Correlator(batch).correlate(classified)
+    c = correlated.summary()
+
+    console.print("\n[bold]Correlation[/bold]  [dim]unexplained rows -> payment status / subscriptions[/dim]")
+    before = c["unexplained_before_paise"]
+    after = c["unexplained_after_paise"]
+    console.print(
+        f"  unexplained BEFORE  [bold yellow]{format_rupees(before)}[/bold yellow]\n"
+        f"  unexplained AFTER   [bold green]{format_rupees(after)}[/bold green]\n"
+        f"  resolved            [bold]{format_rupees(c['resolved_paise'])}[/bold]"
+        f"  ({c['gain_ratio'] * 100:.1f}% of the residual, {c['resolved_count']} rows)"
+    )
+
+    if c["resolved_by_class"]:
+        console.print()
+        for name, info in c["resolved_by_class"].items():
+            console.print(f"    {name}: {info['count']} rows · {format_rupees(info['paise'])}")
+
+    if correlated.still_unexplained:
+        console.print(
+            f"\n  [dim]{len(correlated.still_unexplained)} rows remain unexplained — "
+            f"the honest residual[/dim]"
+        )
+
+    # ---- the four lines ---------------------------------------------------
+    console.print("\n[bold]────────────  the verdict  ────────────[/bold]\n")
+    console.print(
+        f"Expected [bold]{format_rupees(money['expected_paise'])}[/bold] · "
+        f"Received [bold]{format_rupees(money['received_paise'])}[/bold] · "
+        f"Gap [bold]{format_rupees(money['gap_paise'])}[/bold]\n"
+    )
+
+    lines = [
+        (Classification.TIMING, "not missing, just late", False),
+        (Classification.FEE, "Razorpay's cut + tax on it", False),
+        (Classification.REFUND, "refunds recorded on one side only", False),
+        (Classification.HALTED_SUBSCRIPTION, "subscriptions died silently — recoverable", True),
+        (Classification.PAYMENT_FAILED, "payments that failed", True),
+    ]
+    for classification, blurb, actionable in lines:
+        rows = correlated.by_class(classification)
+        if not rows:
+            continue
+        total = sum(f.amount_paise for f in rows)
+        marker = "[yellow]⚠[/yellow]" if actionable else "→"
+        console.print(
+            f"  {marker} [bold]{format_rupees(total):>14}[/bold]  "
+            f"{len(rows)} {blurb}"
+        )
+
+    console.print(
+        f"    [dim]{format_rupees(after):>14}  we can't explain[/dim]"
+    )
+
+    actionable_rows = [
+        f for f in correlated.findings
+        if f.classification in (Classification.HALTED_SUBSCRIPTION,)
+    ]
+    if actionable_rows:
+        customers = {
+            f.proof.get("correlation", {}).get("customer_id") for f in actionable_rows
+        }
+        console.print(
+            f"\n  [bold]→ One thing needs you this week:[/bold] "
+            f"those {len(customers - {None}) or len(actionable_rows)} customers."
+        )
+
     total_rows = sum(i["rows"] for i in manifest["sources"].values())
     console.print(
         f"\n[dim]{elapsed:.3f}s · {total_rows / elapsed:,.0f} rows/sec"
         f" · matching is identifier-based only, never fuzzy[/dim]"
     )
+
+
+@app.command()
+def checkpoint(
+    data: str = typer.Option("data/demo", "--data", "-D", help="Batch directory."),
+) -> None:
+    """Score the engine against ground truth. The Day-1 checkpoint.
+
+    Prints unexplained-before vs unexplained-after, plus the honest caught/missed list.
+    """
+    from pathlib import Path
+
+    from finctl.classify.classifier import Classifier
+    from finctl.config.loader import load_config
+    from finctl.correlate.correlator import Correlator
+    from finctl.generate.ground_truth import GroundTruth
+    from finctl.match.matcher import match
+    from finctl.money import format_rupees
+    from finctl.score import score
+    from finctl.stage.staging import stage_from_dir
+
+    d = Path(data)
+    gt_path = d / "ground_truth.json"
+    if not gt_path.exists():
+        console.print(f"[red]no ground_truth.json in {data}[/red] — generate a batch first.")
+        raise typer.Exit(1)
+
+    cfg = load_config()
+    batch = stage_from_dir(d)
+    matches = match(batch)
+    classified = Classifier(cfg).classify(matches)
+    correlated = Correlator(batch).correlate(classified)
+    report = score(GroundTruth.read(gt_path), correlated, matches, cfg)
+
+    before = report.unexplained_before_paise
+    after = report.unexplained_after_paise
+
+    console.print("[bold]════════  CORRELATION: the checkpoint  ════════[/bold]\n")
+    console.print(
+        f"  unexplained BEFORE   [bold yellow]{format_rupees(before):>16}[/bold yellow]\n"
+        f"  unexplained AFTER    [bold green]{format_rupees(after):>16}[/bold green]\n"
+        f"  resolved by joining  [bold]{format_rupees(before - after):>16}[/bold]"
+    )
+    moved = before != after
+    console.print(
+        f"\n  {'[bold green]✓ the number moved[/bold green]' if moved else '[bold red]✗ NO MOVEMENT[/bold red]'}"
+        f"  [dim]({correlated.gain_ratio * 100:.1f}% of the residual resolved)[/dim]"
+    )
+
+    console.print("\n[bold]Seeded defects — caught / missed[/bold]  [dim]the honest list[/dim]")
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("defect")
+    table.add_column("caught", justify="right")
+    table.add_column("missed", justify="right")
+    table.add_column("below tol.", justify="right")
+    table.add_column("recall", justify="right")
+    for name, s in sorted(report.by_type.items()):
+        colour = "green" if not s.missed else "red"
+        table.add_row(
+            name, str(len(s.caught)),
+            f"[{colour}]{len(s.missed)}[/{colour}]" if s.missed else "0",
+            f"[dim]{len(s.below_tolerance)}[/dim]" if s.below_tolerance else "0",
+            f"[{colour}]{s.recall * 100:.0f}%[/{colour}]",
+        )
+    console.print(table)
+
+    console.print(
+        f"\n  overall recall [bold]{report.recall * 100:.1f}%[/bold]"
+        f"  ({report.total_caught} caught, {report.total_missed} missed, "
+        f"{report.total_below_tolerance} below tolerance)"
+    )
+    if report.false_positives:
+        console.print(
+            f"  [red]{len(report.false_positives)} false positives[/red] — "
+            "orders flagged that were never planted as defects"
+        )
+    else:
+        console.print("  [green]0 false positives[/green]")
+
+    if report.total_below_tolerance:
+        console.print(
+            "\n[dim]'below tolerance' = planted, not flagged, because config says it is not\n"
+            "a defect (e.g. a 1-day timing lag inside grace_days). Not a miss.[/dim]"
+        )

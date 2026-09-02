@@ -1,0 +1,224 @@
+"""Correlation tests — the differentiator.
+
+The headline claim needs its own test matrix. Two things matter equally:
+  * that it RESOLVES what it legitimately can (the gain)
+  * that it REFUSES what it cannot (no false attribution)
+
+The second is the harder discipline. A correlator that resolves everything is not
+impressive, it is lying.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from finctl.classify.classifier import Classification, Classifier
+from finctl.config.loader import load_config
+from finctl.correlate.correlator import Correlator, failure_bucket
+from finctl.generate.generator import Generator
+from finctl.generate.ground_truth import GroundTruth
+from finctl.generate.writer import write_batch
+from finctl.match.matcher import match
+from finctl.schema import Source
+from finctl.score import score
+from finctl.stage.staging import StagedBatch, stage_from_dir
+
+
+def scenario(payments=None, subscriptions=None) -> StagedBatch:
+    """One unmatched order, with whatever payment/subscription evidence is supplied."""
+    b = StagedBatch(batch_id="t")
+    b.add(Source.LEDGER, [{"order_id": "O1", "amount_paise": 100000,
+                           "captured_at": None, "payment_method": "upi"}], "l")
+    if payments:
+        b.add(Source.PAYMENTS, payments, "p")
+    if subscriptions:
+        b.add(Source.SUBSCRIPTIONS, subscriptions, "s")
+    return b.seal()
+
+
+def classify_and_correlate(batch: StagedBatch):
+    cfg = load_config()
+    return Correlator(batch).correlate(Classifier(cfg).classify(match(batch)))
+
+
+class TestResolution:
+    def test_a_halted_subscription_is_resolved(self) -> None:
+        """The demo centrepiece: invoice generated, charge never attempted."""
+        b = scenario(
+            payments=[{"id": "pay_1", "order_id": "O1", "status": "failed",
+                       "error_reason": "subscription_halted", "subscription_id": "sub_1",
+                       "invoice_id": "inv_1"}],
+            subscriptions=[{"id": "sub_1", "status": "halted", "auth_attempts": 3,
+                            "remaining_count": 8, "customer_id": "cust_1"}],
+        )
+        f = classify_and_correlate(b).findings[0]
+        assert f.classification is Classification.HALTED_SUBSCRIPTION
+        c = f.proof["correlation"]
+        assert c["subscription_status"] == "halted"
+        assert c["invoice_id"] == "inv_1"          # the invoice DID get generated
+        assert c["join_chain"]                     # and we say how we got there
+
+    def test_a_failed_payment_is_resolved_with_its_reason(self) -> None:
+        b = scenario(payments=[{"id": "pay_1", "order_id": "O1", "status": "failed",
+                                "error_code": "GATEWAY_ERROR",
+                                "error_reason": "insufficient_funds",
+                                "error_description": "Card has insufficient funds",
+                                "subscription_id": None}])
+        f = classify_and_correlate(b).findings[0]
+        assert f.classification is Classification.PAYMENT_FAILED
+        assert f.proof["correlation"]["error_reason"] == "insufficient_funds"
+        assert f.proof["correlation"]["failure_bucket"] == "retry_later"
+
+    def test_the_before_after_number_moves(self) -> None:
+        """The Day-1 checkpoint, in miniature."""
+        b = scenario(payments=[{"id": "pay_1", "order_id": "O1", "status": "failed",
+                                "error_reason": "insufficient_funds",
+                                "subscription_id": None}])
+        r = classify_and_correlate(b)
+        assert r.unexplained_before_paise == 100000
+        assert r.unexplained_after_paise == 0
+        assert r.resolved_paise == 100000
+
+
+class TestRefusals:
+    """No inference from resemblance. The join lands, or the row stays unexplained."""
+
+    def test_no_payment_record_stays_unresolved(self) -> None:
+        r = classify_and_correlate(scenario())
+        f = r.findings[0]
+        assert f.classification is Classification.MISSING
+        assert f.proof["correlation"]["outcome"].startswith("no payment record")
+        assert r.unexplained_after_paise == 100000   # honestly still unexplained
+
+    def test_an_active_subscription_is_not_claimed_as_halted(self) -> None:
+        """THE false-attribution guard.
+
+        A failed payment on an ACTIVE subscription is a normal retryable failure, not
+        silent revenue death. Claiming otherwise would tell a merchant to chase a
+        customer whose subscription is working fine.
+        """
+        b = scenario(
+            payments=[{"id": "pay_1", "order_id": "O1", "status": "failed",
+                       "error_reason": "insufficient_funds", "subscription_id": "sub_1"}],
+            subscriptions=[{"id": "sub_1", "status": "active", "auth_attempts": 0}],
+        )
+        f = classify_and_correlate(b).findings[0]
+        assert f.classification is Classification.PAYMENT_FAILED
+        assert f.classification is not Classification.HALTED_SUBSCRIPTION
+
+    def test_an_unresolvable_subscription_id_is_not_attributed_elsewhere(self) -> None:
+        """A dangling reference must not borrow a different subscription's halted status."""
+        b = scenario(
+            payments=[{"id": "pay_1", "order_id": "O1", "status": "failed",
+                       "error_reason": "x", "subscription_id": "sub_GONE"}],
+            subscriptions=[{"id": "sub_OTHER", "status": "halted", "auth_attempts": 3}],
+        )
+        assert classify_and_correlate(b).findings[0].classification is (
+            Classification.PAYMENT_FAILED
+        )
+
+    def test_a_successful_payment_does_not_explain_a_gap(self) -> None:
+        """If the payment succeeded, the gap has some other cause. Say so."""
+        b = scenario(payments=[{"id": "pay_1", "order_id": "O1", "status": "captured",
+                                "subscription_id": None}])
+        f = classify_and_correlate(b).findings[0]
+        assert f.classification is Classification.MISSING
+        assert "did not fail" in f.proof["correlation"]["outcome"]
+
+    def test_correlation_never_overrides_arithmetic_proof(self) -> None:
+        """A FEE finding is proven by arithmetic. Correlation must leave it alone."""
+        b = StagedBatch(batch_id="t")
+        b.add(Source.LEDGER, [{"order_id": "O1", "amount_paise": 1000000,
+                               "captured_at": None, "payment_method": "card_credit"}], "l")
+        b.add(Source.RECON, [{"entity_id": "pay_1", "type": "payment", "order_id": "O1",
+                              "amount": 1000000, "credit": 972400, "debit": 0,
+                              "fee": 27600, "tax": 3600, "settlement_id": "s1",
+                              "settlement_utr": "U1", "settled_at": None,
+                              "method": "card_credit"}], "r")
+        b.add(Source.PAYMENTS, [{"id": "pay_1", "order_id": "O1", "status": "failed",
+                                 "error_reason": "insufficient_funds",
+                                 "subscription_id": None}], "p")
+        classes = {f.classification for f in classify_and_correlate(b.seal()).findings}
+        assert Classification.FEE in classes
+        assert Classification.PAYMENT_FAILED not in classes
+
+
+class TestFailureBuckets:
+    @pytest.mark.parametrize(
+        ("reason", "bucket"),
+        [("insufficient_funds", "retry_later"), ("incorrect_otp", "retry_later"),
+         ("gateway_timeout", "retry_soon"), ("payment_risk_check_failed", "never_retry"),
+         ("fraud_suspected", "never_retry"), ("some_new_code_razorpay_added", "unknown"),
+         (None, "unknown")],
+    )
+    def test_buckets(self, reason, bucket: str) -> None:
+        assert failure_bucket(reason) == bucket
+
+    def test_a_risk_block_is_never_recommended_for_retry(self) -> None:
+        """Retrying a risk block is at best futile and at worst account-damaging."""
+        assert failure_bucket("payment_risk_check_failed") == "never_retry"
+
+    def test_unknown_codes_are_not_silently_sorted_into_retry(self) -> None:
+        """An unrecognised decline getting sorted into 'retry' is confident bad advice."""
+        assert failure_bucket("brand_new_code") == "unknown"
+
+
+class TestGainMetric:
+    def test_zero_before_reports_zero_gain_not_perfect(self) -> None:
+        """Nothing to resolve is not a perfect score (same reasoning as ADR-016)."""
+        from finctl.correlate.correlator import CorrelationResult
+        assert CorrelationResult().gain_ratio == 0.0
+
+    def test_gain_ratio_is_the_fraction_resolved(self) -> None:
+        from finctl.correlate.correlator import CorrelationResult
+        r = CorrelationResult(unexplained_before_paise=1000, unexplained_after_paise=250)
+        assert r.gain_ratio == 0.75
+
+
+class TestEndToEndAgainstGroundTruth:
+    """The checkpoint itself, asserted."""
+
+    @pytest.fixture
+    def scored(self, tmp_path: Path):
+        write_batch(Generator(load_config(), seed=20260902, volume=200,
+                              defect_profile="demo").generate(), tmp_path)
+        cfg = load_config()
+        batch = stage_from_dir(tmp_path)
+        matches = match(batch)
+        correlated = Correlator(batch).correlate(Classifier(cfg).classify(matches))
+        return score(GroundTruth.read(tmp_path / "ground_truth.json"),
+                     correlated, matches, cfg), correlated
+
+    def test_the_unexplained_number_moves(self, scored) -> None:
+        """THE DAY-1 CHECKPOINT. If this fails, everything downstream is decoration."""
+        _, correlated = scored
+        assert correlated.unexplained_before_paise > 0
+        assert correlated.unexplained_after_paise < correlated.unexplained_before_paise
+
+    def test_no_false_positives(self, scored) -> None:
+        """Worse than a miss: telling a merchant something untrue."""
+        report, _ = scored
+        assert report.false_positives == []
+
+    def test_every_planted_defect_is_caught_or_honestly_below_tolerance(self, scored) -> None:
+        report, _ = scored
+        assert report.total_missed == 0, f"missed: {report.as_dict()['by_type']}"
+
+    def test_all_six_halted_subscriptions_are_found(self, scored) -> None:
+        report, _ = scored
+        assert len(report.by_type["halted_subscription"].caught) == 6
+
+    @pytest.mark.parametrize("archetype", ["saas_subscription", "d2c_ecommerce"])
+    def test_holds_across_archetypes(self, tmp_path: Path, archetype: str) -> None:
+        write_batch(Generator(load_config(), seed=7, volume=200, archetype=archetype,
+                              defect_profile="demo").generate(), tmp_path)
+        cfg = load_config()
+        batch = stage_from_dir(tmp_path)
+        matches = match(batch)
+        correlated = Correlator(batch).correlate(Classifier(cfg).classify(matches))
+        report = score(GroundTruth.read(tmp_path / "ground_truth.json"),
+                       correlated, matches, cfg)
+        assert report.total_missed == 0
+        assert report.false_positives == []

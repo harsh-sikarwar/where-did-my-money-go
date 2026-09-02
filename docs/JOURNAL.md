@@ -635,3 +635,159 @@ order that lost money twice, showing as reconciled.
 200 rows (~86k rows/sec).
 
 Next: 1c-ii — classify and correlate, ending at the Day-1 checkpoint.
+
+---
+
+## 2026-09-02 — Phase 1c-ii: classify + correlate — THE DAY-1 CHECKPOINT
+
+**The gate the whole project depends on.** From `build-plan-3.5-days.md`: *"Unexplained-
+before ≠ unexplained-after, printed to console. If this doesn't work, everything
+downstream is decoration."*
+
+### It works
+
+```
+════════  CORRELATION: the checkpoint  ════════
+
+  unexplained BEFORE         ₹44,689.00
+  unexplained AFTER               ₹0.00
+  resolved by joining        ₹44,689.00
+
+  ✓ the number moved  (100.0% of the residual resolved)
+
+  overall recall 100.0%  (54 caught, 0 missed, 13 below tolerance)
+  0 false positives
+```
+
+And the verdict screen the product promised:
+
+```
+Expected ₹10,51,081.00 · Received ₹10,12,708.70 · Gap ₹38,372.30
+
+  →     ₹30,501.15   7 not missing, just late
+  →        ₹603.50  30 Razorpay's cut + tax on it
+  →     ₹23,628.00   8 refunds recorded on one side only
+  ⚠     ₹27,208.00   6 subscriptions died silently — recoverable
+  ⚠     ₹17,481.00   3 payments that failed
+             ₹0.00   we can't explain
+
+  → One thing needs you this week: those 6 customers.
+```
+
+### But the first 100% was a lie, and finding out why was the work
+
+The correlator reported 100% resolution immediately. That is exactly the moment to be
+suspicious rather than pleased, because a perfect score on the first run usually means the
+measurement is wrong, not the engine.
+
+Checking planted-vs-detected per defect type:
+
+```
+one_sided_refund   planted= 8  ₹23,628.00      REFUND found = 0   ₹0.00
+timing_lag         planted=20  ₹87,912.10      TIMING found = 7   ₹30,501.15
+```
+
+**Zero of eight refunds.** The 100% was real but vacuous — correlation had resolved 100%
+of the residual *the classifier produced*, and the classifier was not producing these at
+all. A metric measuring the wrong denominator.
+
+### Two real bugs behind it
+
+**1. The generator recorded refunds without creating them.** The one-sided-refund defect
+wrote a ground-truth entry and changed nothing in the data. Ledger and settlement agreed
+exactly, so `gap_paise == 0` and the classifier correctly found nothing.
+
+Same failure class as the under-planting bug from 1c-i: **ground truth asserting a defect
+the data does not contain.** Fixed so the ledger row is actually written down by the refund
+amount, which is what makes the Side A / Side B divergence real.
+
+**2. I had the refund direction backwards.** With the data fixed, still 0 of 8. The gap was
+**negative** and my classifier only labelled `REFUND` on a positive gap.
+
+Reasoning it through properly: a one-sided refund is one the *merchant* recorded that never
+reached settlement. Their ledger is written DOWN; Razorpay still shows the full amount. So
+the shape is `settlement > ledger` — negative under our sign convention. I had reasoned
+about it as "the merchant expected less money", which is true of the *net* but not of the
+recorded order amount.
+
+The opposite sign is a genuinely different problem — the ledger expected more than Razorpay
+ever recorded, which is money that never arrived rather than money that went back. Both
+directions now carry an explicit `interpretation` field, because this is evidently easy to
+get backwards.
+
+After both fixes: **8 of 8, exact to the rupee.**
+
+### The timing "misses" were not misses (ADR-017)
+
+13 of 20 timing defects unflagged. But the generator plants 1–2 day lags and `grace_days: 1`
+means a one-day lag is *within tolerance by design*. Counting those as misses would report
+a correctly-working tolerance as an engine failure — and would push toward removing a
+tolerance that exists for a good reason.
+
+So the score has three categories: `caught` / `missed` / `below_tolerance`, with recall over
+`caught + missed` only. Both collapses misrepresent the engine in opposite directions; the
+third category is the only one that describes what actually happened. A judge reading
+"13 below tolerance" next to `grace_days: 1` can verify that judgement themselves.
+
+### The refusals matter more than the resolutions (ADR-019)
+
+A correlator that resolves everything is not impressive, it is lying. The tempting shortcut
+is treating any failed subscription payment as evidence of a halted subscription — they
+co-occur constantly and it would raise the resolution rate.
+
+Verified by direct test that the engine refuses:
+
+```
+no payment record at all                     -> MISSING          (not resolved)
+failed payment, NO subscription              -> PAYMENT_FAILED
+failed pay, subscription ACTIVE (decoy)      -> PAYMENT_FAILED   ← not claimed as halted
+failed pay, subscription HALTED              -> HALTED_SUBSCRIPTION
+subscription halted but id DOES NOT resolve  -> PAYMENT_FAILED   ← no borrowing
+```
+
+A failed payment on an *active* subscription is a normal retryable failure, not silent
+revenue death — claiming otherwise tells a merchant to chase a customer whose subscription
+works fine. This is the false-attribution guard Day 3 will attack deliberately, built
+before the attack rather than after it.
+
+**False positives are tracked separately and matter more than misses** (ADR-018). Recall
+alone is one-sided: an engine flagging every order scores 100%. A miss is a coverage gap; a
+false positive is the engine telling a merchant something untrue, which costs them real time
+and erodes the only thing that makes a short list worth reading. Currently zero across every
+tested configuration.
+
+### The golden files earned their keep again
+
+Three failed after the generator fix. Correct behaviour — the data legitimately changed. Per
+my own rule I read the diff before regenerating:
+
+```
+gross_paise: 107470900 -> 105108100     (difference: exactly ₹23,628)
+```
+
+Exactly the refund total, nothing else moved. One explainable line, so regenerating was
+justified. This is precisely the discipline the golden files exist to enforce: had something
+*else* moved, I would have found out before shipping it.
+
+A fourth failure was my own test's arithmetic — the gap-decomposition assertion predated
+refunds existing in the data, so it was missing a term. And the term is negative, which is
+the same sign trap as the classifier bug: a one-sided refund means the bank received MORE
+than the ledger expected, shrinking the gap rather than widening it.
+
+### Honest note on the 100%
+
+100% resolution across every archetype and volume tested is **not** a claim that
+correlation resolves everything in general. It reflects a property of our synthetic data:
+every planted gap has a correlatable payment record, because the generator only creates
+gaps that way. Real data contains gaps with no payment record at all — bank errors,
+timing at month boundaries, data-entry mistakes — and those correctly stay UNEXPLAINED, as
+the refusal tests demonstrate.
+
+Recorded in `LIMITATIONS.md`. Day 3's decoy exists precisely to attack this.
+
+### State
+
+**296 tests green, ruff clean.** Full pipeline runs CSV → verdict in 9ms on 200 rows.
+The Day-1 checkpoint is passed and verified against ground truth.
+
+Next: Phase 2 — FastAPI wrapper, then the verdict screen in Next.js.

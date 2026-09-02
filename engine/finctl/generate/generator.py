@@ -445,11 +445,23 @@ class Generator:
             batch.recon.append(recon_row)
 
             # ---- DEFECT: one-sided refund --------------------------------------
-            # A refund the merchant recorded but which never appears in settlement.
-            # Modelled as a recon refund row that we then DROP, so the ledger's
-            # expectation and the settlement disagree — Side A vs Side B.
+            # A refund the merchant recorded but which never reached settlement.
+            #
+            # This MUST be visible in the data, not merely asserted in ground truth. The
+            # first implementation recorded the defect and changed nothing, so the ledger
+            # and settlement agreed exactly and the classifier correctly found nothing --
+            # 0 of 8 detected. Ground truth claiming a defect the data does not contain is
+            # the same failure as the under-planting bug: metrics that are confidently
+            # wrong.
+            #
+            # Side A (ledger) says the order NETTED amount - refund, because the merchant
+            # refunded part of it. Side B (settlement) never saw the refund and still shows
+            # the full amount. The ledger row is written down accordingly, which is what
+            # makes gap_paise non-zero and the divergence detectable.
             if i in assigned[DefectType.ONE_SIDED_REFUND]:
                 refund_amount = amount // 2 // 100 * 100
+                batch.ledger[-1]["amount"] = amount - refund_amount
+                gt.total_gross_paise -= refund_amount
                 gt.add(PlantedDefect(
                     defect_id=f"refund-{order_id}",
                     defect_type=DefectType.ONE_SIDED_REFUND,
@@ -457,7 +469,9 @@ class Generator:
                     impact_paise=refund_amount,
                     expected_classification="REFUND",
                     detail={"refund_paise": refund_amount, "recorded_in": "ledger_only",
-                            "note": "merchant issued a refund that never reached settlement"},
+                            "ledger_amount_paise": amount - refund_amount,
+                            "settled_gross_paise": amount,
+                            "note": "merchant recorded a refund that never reached settlement"},
                 ))
 
         # ---- group recon rows into settlements, then into bank credits ----------

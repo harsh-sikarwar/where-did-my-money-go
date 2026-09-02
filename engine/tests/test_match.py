@@ -58,15 +58,23 @@ class TestAgainstGroundTruth:
         for m in result.unmatched_orders():
             assert m.order_id in planted
 
-    def test_the_gap_decomposes_completely(self, result) -> None:
-        """expected - received == fees + missing, with nothing left over.
+    def test_the_gap_decomposes_completely(self, result, truth) -> None:
+        """expected - received == fees + missing - one-sided refunds, nothing left over.
 
         A residual here would mean money the matcher cannot account for at all, which
-        would silently pollute the 'we can't explain' bucket downstream.
+        would silently pollute the "we can't explain" bucket downstream.
+
+        The refund term is NEGATIVE and is easy to get backwards. A one-sided refund
+        means the merchant's ledger was written DOWN while Razorpay still settled the
+        full amount -- so the bank received MORE than the ledger expected, which shrinks
+        the gap rather than widening it. This assertion originally omitted the term
+        entirely, because at the time the generator recorded refunds in ground truth
+        without putting them in the data at all.
         """
         fees = sum(m.fee_paise for m in result.order_matches)
         missing = sum(m.ledger_amount_paise for m in result.order_matches if not m.matched)
-        assert result.gap_paise - fees - missing == 0
+        refunds = sum(d.impact_paise for d in truth.by_type(DefectType.ONE_SIDED_REFUND))
+        assert result.gap_paise - fees - missing + refunds == 0
 
 
 class TestTwoPassesNameTheLeg:
