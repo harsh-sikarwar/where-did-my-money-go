@@ -322,3 +322,64 @@ def golden(
         path.write_text(json.dumps(generate_case(name), indent=2, sort_keys=True))
         console.print(f"  {'updated' if existed else 'created'} {path.name}")
     console.print(f"\n[bold]{len(CASES)}[/bold] golden files written.")
+
+
+@app.command()
+def reconcile(
+    data: str = typer.Option("data/demo", "--data", "-D", help="Batch directory."),
+) -> None:
+    """Run the two-pass matcher over a staged batch and report match rates."""
+    import time as _time
+    from pathlib import Path
+
+    from finctl.match.matcher import match
+    from finctl.money import format_rupees
+    from finctl.stage.staging import stage_from_dir
+
+    started = _time.perf_counter()
+    batch = stage_from_dir(Path(data))
+    result = match(batch)
+    elapsed = _time.perf_counter() - started
+
+    manifest = batch.manifest()
+    console.print(f"[bold]batch {manifest['batch_id']}[/bold]  [dim]{data}[/dim]")
+    ingest = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+    ingest.add_column("source")
+    ingest.add_column("rows", justify="right")
+    ingest.add_column("sha256")
+    for name, info in manifest["sources"].items():
+        ingest.add_row(name, f"{info['rows']:,}", info["sha256"][:12])
+    console.print(ingest)
+
+    s = result.summary()
+    console.print()
+    for key in ("pass1", "pass2"):
+        p = s[key]
+        rate = p["match_rate"] * 100
+        colour = "green" if rate >= 95 else "yellow" if rate >= 60 else "red"
+        console.print(
+            f"[bold]{p['leg']}[/bold]  [dim]{p['question']}[/dim]\n"
+            f"  matched [bold {colour}]{p['matched']:,}/{p['total']:,}[/bold {colour}]"
+            f"  ([{colour}]{rate:.1f}%[/{colour}])"
+            f"  unmatched {p['unmatched']:,}"
+        )
+
+    money = s["money"]
+    console.print()
+    console.print(
+        f"Expected [bold]{format_rupees(money['expected_paise'])}[/bold] · "
+        f"Received [bold]{format_rupees(money['received_paise'])}[/bold] · "
+        f"Gap [bold yellow]{format_rupees(money['gap_paise'])}[/bold yellow]"
+    )
+
+    anomalies = {k: v for k, v in s["anomalies"].items() if v}
+    if anomalies:
+        console.print("\n[bold]Anomalies[/bold]")
+        for key, value in anomalies.items():
+            console.print(f"  {key}: {value if not isinstance(value, dict) else len(value)}")
+
+    total_rows = sum(i["rows"] for i in manifest["sources"].values())
+    console.print(
+        f"\n[dim]{elapsed:.3f}s · {total_rows / elapsed:,.0f} rows/sec"
+        f" · matching is identifier-based only, never fuzzy[/dim]"
+    )

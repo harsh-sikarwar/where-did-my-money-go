@@ -73,6 +73,24 @@ handling it. That is the intended behaviour, but it is an assumption, not a veri
 the merchant recorded that never reaches settlement. The reverse case — a settlement refund
 the merchant never recorded — is not yet generated. Both should exist; only one does.
 
+### Phase 1c — normalize / stage / match
+
+**Our match rate is an exact-identifier rate, which is stricter than the industry
+convention.** Many tools count fuzzy matches (amount + date proximity) toward their
+headline number. We do not (ADR-015), so our figure is not directly comparable to a
+published match rate unless that caveat is stated. It should be stated.
+
+**Column aliases are a finite hand-written list.** A merchant whose CSV uses an unlisted
+spelling gets a loud error naming the accepted spellings, not a guess. That is the intended
+behaviour, but it does mean first-run friction on an unfamiliar export format. AI column
+mapping (ReconPe's approach) would remove it and is deliberately out of scope.
+
+**Duplicate detection is whole-file, by content hash.** The same file staged twice is
+caught. A file containing *some* rows already staged in a previous batch is not — that
+needs row-level dedup across batches, which is not built. The adversarial case "bank
+statement arriving after the first run" is therefore only partially handled: re-running is
+safe and non-corrupting, but overlapping rows would double-count.
+
 ### Phase 1 — engine
 
 **The fee/tax convention is unresolved, and it is the number everything depends on.**

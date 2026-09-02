@@ -535,3 +535,103 @@ convention), with ground truth that makes scoring automatic.
 
 Next: Phase 1c — normalize, stage, match, classify, correlate, ending at the Day-1
 checkpoint: unexplained-before ≠ unexplained-after in a console.
+
+---
+
+## 2026-09-02 — Phase 1c-i: normalize, stage, match
+
+**Goal.** Get from files on disk to a reported match rate, with the two-pass structure
+naming which leg broke.
+
+### Built
+
+`finctl/schema.py` (canonical columns + alias tables) · `finctl/normalize/normalizer.py` ·
+`finctl/stage/staging.py` · `finctl/match/matcher.py` · `finctl reconcile`
+
+### The result that matters
+
+```
+Order -> PSP   did each sale reach Razorpay?      191/200  (95.5%)
+PSP  -> Bank   did Razorpay's payout reach bank?   32/32  (100.0%)
+
+Expected ₹10,74,709.00 · Received ₹10,12,708.70 · Gap ₹62,000.30
+```
+
+**This is why there are two passes.** A single ledger-to-bank join reports a ₹62,000 gap
+and stops. Two passes say the break is entirely on the sale-to-Razorpay leg and the payout
+leg is perfect — which is a different problem with a different fix. The merchant does not
+need to know money is missing; they need to know *where* it went missing.
+
+Verified against ground truth: the 9 unmatched orders are an **exact set match** with the
+9 planted gaps (3 missing + 6 halted). No false positives. And the gap decomposes to zero
+residual — ₹62,000.30 = ₹17,311.30 fees + ₹44,689.00 missing.
+
+### Two bugs found, one in my own code and one much worse
+
+**1. Every well-formed file was rejected.** The alias resolver collected `"order_id"` and
+`"orderid"` as two hits for the same canonical field — but both fold to the same key, so
+they were the *same input column* counted twice. It raised "ambiguous mapping" on the very
+first real file. Fixed by de-duplicating hits before the ambiguity check: the same column
+hit twice is one candidate; only *distinct* columns are a genuine ambiguity.
+
+Caught immediately by running against real generated data rather than only unit tests —
+worth noting, because a unit test with a hand-written header list would have passed.
+
+**2. The generator silently under-planted defects.** Much more serious.
+
+A staging test at `volume=40` failed with zero subscriptions. Not a staging bug: the demo
+profile demands **51 defects** (3 + 30 + 8 + 6 + 4), and each order carries at most one.
+Below 51 orders, the index slices ran off the end and the *last* defect types silently got
+nothing — while `ground_truth.json` still cheerfully claimed 6 halted subscriptions were
+planted.
+
+That is the one failure mode this project cannot tolerate: **a batch whose metrics are
+confidently wrong.** Every accuracy number computed from it would have been a fabrication,
+and nothing would have flagged it. The generator now refuses, naming the arithmetic:
+
+```
+defect profile 'demo' demands 51 defects but the batch has only 40 orders
+(missing_order=3, wrong_fee_rate=30, one_sided_refund=8, halted_subscription=6,
+timing_lag=4). Each order carries at most one defect. Either raise --volume or use a
+rate-based profile such as 'scale'.
+```
+
+The guard then found a **second** instance: the `chaos` profile's rates summed to **1.55**
+— impossible by construction. It had been silently under-planting since Phase 1b. Fixed to
+sum to 1.0, which is what "nothing reconciles" actually means.
+
+Worth recording plainly: I wrote that profile, tested it, and it passed, because the test
+only asserted "does not crash and records something." The guard found what the test could
+not. This is the argument for invariants over assertions — a test checks the case you
+thought of, an invariant checks every case.
+
+### Design decisions
+
+**Identifier-only matching, no fuzzy fallback** (ADR-015). Fuzzy matching on amount and
+date proximity would raise our headline match rate substantially. It would also mean two
+₹4,999 orders on the same Friday are indistinguishable, and matching the wrong one produces
+a reconciliation that is *confidently* wrong — totals balance, match rate looks excellent,
+one customer's payment attributed to another's order, and nothing signals that it needs
+investigating. An honest unmatched row can be investigated; a confident wrong match cannot.
+
+This costs headline match rate, and that is the right trade: *"every number traces back to
+a Razorpay record"* is incompatible with a number that traces to a heuristic. What fuzzy
+matching would have guessed at, `correlate` will recover with evidence — still a join,
+still deterministic.
+
+**Empty batches report 0%, not 100%** (ADR-016). `matched/total` is undefined at zero, and
+the convenient answer renders as a perfect green 100%. But an empty batch has not achieved
+a perfect reconciliation; it has said nothing. Worse, it is a *silent* lie — an empty
+upload looks identical to a clean one in the summary. Same instinct as ADR-004: a metric
+that can be accidentally flattering is worse than no metric.
+
+**Refunds excluded from pass-1 matching.** A refund row is not evidence that a sale reached
+Razorpay. Counting it would let a refunded-but-never-settled order appear matched — an
+order that lost money twice, showing as reconciled.
+
+### State
+
+253 tests green, ruff clean. The pipeline runs end to end from CSV to match rate in 7ms on
+200 rows (~86k rows/sec).
+
+Next: 1c-ii — classify and correlate, ending at the Day-1 checkpoint.

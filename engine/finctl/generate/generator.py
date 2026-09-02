@@ -186,16 +186,33 @@ class Generator:
         # two conflicting defects and the counts are exact rather than probabilistic.
         indices = list(range(self.volume))
         self.rng.shuffle(indices)
-        cursor = 0
-        assigned: dict[str, set[int]] = {}
-        for defect_type in (
+        # Each order carries at most one defect, so the demanded counts must fit inside
+        # the batch. If they do not, the slices below run off the end and the LAST
+        # defect types silently get nothing -- while ground truth still claims they were
+        # planted. That produces a batch whose metrics are confidently wrong, which is
+        # the one failure mode this project cannot tolerate. So: refuse, loudly, naming
+        # the arithmetic. Found by a test at volume=40 (51 defects demanded), where it
+        # had silently produced zero halted subscriptions.
+        demanded = {dt: self._defect_count(dt) for dt in (
             DefectType.MISSING_ORDER,
             DefectType.WRONG_FEE_RATE,
             DefectType.ONE_SIDED_REFUND,
             DefectType.HALTED_SUBSCRIPTION,
             DefectType.TIMING_LAG,
-        ):
-            n = self._defect_count(defect_type)
+        )}
+        total_demanded = sum(demanded.values())
+        if total_demanded > self.volume:
+            breakdown = ", ".join(f"{k}={v}" for k, v in demanded.items() if v)
+            raise ValueError(
+                f"defect profile {self.defect_profile_name!r} demands {total_demanded} "
+                f"defects but the batch has only {self.volume} orders ({breakdown}). "
+                "Each order carries at most one defect. Either raise --volume or use a "
+                "rate-based profile such as 'scale'."
+            )
+
+        cursor = 0
+        assigned: dict[str, set[int]] = {}
+        for defect_type, n in demanded.items():
             assigned[defect_type] = set(indices[cursor : cursor + n])
             cursor += n
 

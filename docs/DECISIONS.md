@@ -552,3 +552,58 @@ being a risk to correctness and becomes a fact to be discovered.
 - Honest framing for a judge: *"we found an ambiguity in Razorpay's own documentation,
   built the engine to detect which convention a batch uses rather than assume, and tested
   it against both."*
+
+---
+
+## ADR-015 — Matching is identifier-only; no fuzzy matching, ever
+
+**Date:** 2026-09-02 · **Phase:** 1c-i
+
+**Context.** Reconciliation tools commonly fall back to fuzzy matching when an identifier
+join fails: same amount, same day, close enough — match it with a confidence score. It
+raises the headline match rate substantially, which is the number everyone reports.
+
+**Choice.** Identifier joins only. If `order_id` does not join, the order is unmatched.
+No amount proximity, no date windows, no scores.
+
+**Why.** A fuzzy match is a guess wearing a number. Two ₹4,999 orders on the same Friday
+are indistinguishable on amount and date, and matching the wrong one produces a
+reconciliation that is *confidently* wrong — every total balances, the match rate looks
+excellent, and one customer's payment has been attributed to another's order. A merchant
+cannot detect that from the output. An honest unmatched row can be investigated; a
+confident wrong match cannot, because nothing signals that it needs investigating.
+
+This costs us headline match rate, and that is the correct trade. The product promise is
+*"every number traces back to a Razorpay record"* — a probabilistic match does not trace
+to a record, it traces to a heuristic.
+
+**Consequences.**
+- Our reported match rate is directly comparable to the Terra Insight baseline only with
+  this caveat stated: ours is an exact-identifier rate, which is a stricter measure.
+- Unmatched rows flow to `correlate`, which resolves them using the *identifier chain*
+  into payments and subscriptions — still a join, still deterministic. The differentiator
+  recovers what fuzzy matching would have guessed at, but with evidence.
+- Asserted by test: same amount, same day, different order id must not match.
+
+---
+
+## ADR-016 — Empty batches report a 0% match rate, not 100%
+
+**Date:** 2026-09-02 · **Phase:** 1c-i
+
+**Context.** `matched / total` is undefined when total is zero. The convenient answer is
+1.0 ("nothing failed"), which renders as a perfect green 100% on a demo screen.
+
+**Choice.** Return 0.0, and let the surrounding output say there was nothing to match.
+
+**Why.** An empty batch has not achieved a perfect reconciliation; it has said nothing. A
+100% on an empty batch is exactly the kind of number that reads well on a slide and is a
+lie — and it is a *silent* lie, because an empty upload looks identical to a clean one in
+the summary. This is the same instinct as ADR-004: a metric that can be accidentally
+flattering is worse than no metric.
+
+**Consequences.**
+- The adversarial "empty batch" case from `build-spec.md` §6e produces `0.0` and a zero
+  gap, asserted by test.
+- Any UI rendering a match rate must distinguish "0% of 0" from "0% of 200". The summary
+  carries `total` alongside `match_rate` for exactly this reason.

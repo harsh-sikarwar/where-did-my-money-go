@@ -45,17 +45,21 @@ clean:
 # plausible-looking nonsense?
 chaos:
   description: "Nothing reconciles. Tests that the engine does not invent explanations."
+  # Each order carries at most ONE defect, so these rates must sum to <= 1.0.
+  # They previously summed to 1.55, which the generator now refuses outright. An
+  # impossible profile is a config bug; silently under-planting it would have made
+  # ground truth claim defects that were never planted.
   missing_order:
-    rate: 0.40
+    rate: 0.25
   wrong_fee_rate:
-    rate: 0.30
+    rate: 0.25
     overcharge_bps: 100
   one_sided_refund:
-    rate: 0.20
-  timing_lag:
-    rate: 0.50
-  halted_subscription:
     rate: 0.15
+  timing_lag:
+    rate: 0.25
+  halted_subscription:
+    rate: 0.10
 
 # Scale profile: rates rather than counts, so proportions hold at any volume.
 scale:
