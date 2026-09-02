@@ -1,0 +1,61 @@
+# Rate card — what the merchant's contract says Razorpay should charge.
+#
+# THIS FILE IS THE POINT OF THE CONFIG LAYER.
+#
+# A hardcoded 2% fee will pass the demo and be wrong for most Indian merchants.
+# UPI carries ZERO MDR — mandated for banks — while cards carry ~2% plus 18% GST
+# on that MDR. A UPI-heavy merchant and a card-heavy merchant have completely
+# different expected-fee profiles. See build-spec.md section 6c.
+#
+# There is deliberately NO DEFAULT MDR. An unknown payment method raises rather
+# than silently assuming 2%. See docs/BEHAVIOR.md, stage `config`.
+#
+# Distinguish two different questions, which this file answers only the first of:
+#   1. "Was the fee what my contract says?"  <- this file, the expected rate
+#   2. "How is the fee encoded in the data?" <- ADR-007, derived from the data
+# A rate card cannot answer question 2 and must not be used to guess at it.
+
+name: "standard-india-2026"
+description: "Razorpay standard pricing for a domestic Indian merchant."
+currency: INR
+
+# GST on the MDR — not on the transaction amount.
+# On a ₹10,000 card txn: MDR ₹200, GST on that MDR ₹36, net ₹9,764.
+gst:
+  rate_bps: 1800          # 18.00%, in basis points
+  applies_to: mdr         # never `amount` — this is the most common way to get it wrong
+
+# Rounding policy, applied at each step independently.
+# MDR is rounded to whole paise first, then GST is computed on the ROUNDED MDR.
+# Rationale: it is the common convention, and it keeps the two fee lines
+# independently checkable by a merchant — they can verify MDR without having to
+# reproduce our GST arithmetic. See ADR-009.
+rounding:
+  mode: half_up           # half_up | half_even | floor | ceil
+  gst_on_rounded_mdr: true
+
+# Per-method MDR in basis points. 1 bps = 0.01%.
+# Basis points keep everything integer: no float rate ever multiplies a money value.
+methods:
+  upi:
+    mdr_bps: 0
+    note: "Zero MDR, mandated for banks. Not an oversight — assert it in tests."
+  card_debit:
+    mdr_bps: 90           # 0.90%
+    note: "Debit cards are capped lower than credit under RBI rules."
+  card_credit:
+    mdr_bps: 200          # 2.00%
+  card_international:
+    mdr_bps: 300          # 3.00%
+    note: "Higher rate; forex conversion is a separate line and is out of scope."
+  netbanking:
+    mdr_bps: 200
+  wallet:
+    mdr_bps: 200
+  emi:
+    mdr_bps: 300
+
+# Fixed per-transaction fees, in paise. Zero for standard Indian pricing, but the
+# field exists because some contracts are flat-fee and a missing field would force
+# a code change rather than a config change.
+fixed_fee_paise: 0

@@ -315,3 +315,76 @@ be literally true.
   refund column. This makes the one-sided-refund defect realistic rather than a toy.
 - `PROJECT-CONTEXT.md` §7's schema sketch is superseded on these three points. The
   document is left unedited as the original brief; this ADR is the amendment.
+
+---
+
+## ADR-009 — GST is computed on the rounded MDR, half-up, and the policy is config
+
+**Date:** 2026-09-02 · **Phase:** 1a
+
+**Context.** GST-on-MDR is a percentage of a percentage, so it produces fractional paise
+constantly. ₹10,000 at 2% is a clean ₹200 → ₹36. ₹333 at 2% is ₹6.66 → GST ₹1.1988.
+Something must round, and where the rounding happens changes the answer.
+
+**Options considered.**
+1. Round only at the end — compute GST against the unrounded MDR, round the total once.
+   Fewest rounding operations, smallest theoretical error.
+2. Round at each step — round MDR to whole paise, then compute GST on the *rounded* MDR.
+3. Don't round; carry fractional paise through the engine.
+
+**Choice.** Option 2, half-up, with both the mode and the step-vs-end behaviour exposed as
+config (`rounding.mode`, `rounding.gst_on_rounded_mdr`).
+
+**Why.** The product promise is *"every number traces back to a Razorpay record"* and the
+`[detail]` view shows an MDR line and a GST line separately. Under option 1 those two
+lines do not independently reconcile: a merchant who takes the displayed MDR and computes
+18% of it gets a different number from the one displayed, because our GST came from an
+unrounded intermediate they never saw. That makes our own proof unverifiable by hand,
+which defeats the point of showing it.
+
+Option 3 is rejected outright: fractional paise cannot be compared to Razorpay's integer
+paise fields without rounding somewhere, so it moves the decision rather than removing it.
+
+Half-up over banker's rounding because it is the common commercial convention in Indian
+payments and is what a merchant checking by hand will expect. Banker's rounding is
+available as `half_even` for the same reason the whole thing is config.
+
+**Consequences.**
+- Both fee lines in `[detail]` are independently checkable by a merchant with a
+  calculator. This is a UI-honesty property enforced by an arithmetic decision.
+- The alternative is one config flag away, so if live data shows Razorpay rounds
+  differently, matching them is a config change, not a code change.
+- The engine's own rounding is bounded at one paise per line, well inside the
+  `rounding_paise: 1` tolerance — so our rounding can never manufacture a spurious
+  `ROUNDING` classification.
+
+---
+
+## ADR-010 — Rates are integer basis points, never float percentages
+
+**Date:** 2026-09-02 · **Phase:** 1a
+
+**Context.** ADR-003 established money as integer paise. Rates were still open: a 2% MDR
+could be stored as `0.02`, as `2.0`, or as `200` basis points.
+
+**Choice.** Integer basis points (1 bps = 0.01%) throughout config, code and audit log.
+
+**Why.** ADR-003 removes floats from money but a float *rate* reintroduces them at the
+multiplication: `amount_paise * 0.02` is a float operation whose result must then be
+coerced back to int, and `0.02` is not exactly representable in binary. With integer bps
+the calculation is `amount * bps / 10000` — integer times integer, with a single division
+whose rounding boundary is explicit and controlled by ADR-009.
+
+The practical consequence is that **no float ever touches a money value anywhere in the
+engine.** That is a property that can be stated flatly and defended, rather than a
+convention that mostly holds.
+
+**Consequences.**
+- The rate card reads `mdr_bps: 200` rather than `2%`. Slightly less readable, so every
+  entry carries a comment with the percentage.
+- `apply_bps()` is the single chokepoint for rate application, so the rounding policy has
+  exactly one implementation.
+- Float is permitted in exactly one place: payment-mix proportions in the generator, which
+  are population weights and never produce a money value. The loader validates they sum to
+  1.0 with a float tolerance; this is called out in the code so it is not mistaken for a
+  money tolerance.

@@ -1,0 +1,19 @@
+# Named payment mixes — the sharpest test axis.
+#
+# A hardcoded 2% fee assumption passes demo #1 and fails every UPI-heavy merchant in
+# India. These named mixes exist so the payment-mix axis can be varied on test day
+# without editing an archetype. See build-spec.md 6c.
+#
+# Each mix must sum to exactly 1.0; the loader raises otherwise.
+
+upi_heavy:
+  description: "Typical Indian small merchant. Expected fees near zero."
+  mix: {upi: 0.90, card_debit: 0.05, card_credit: 0.05}
+
+card_heavy:
+  description: "High-ticket or cross-border. Expected fees ~2% plus GST."
+  mix: {card_credit: 0.70, card_debit: 0.20, upi: 0.10}
+
+even:
+  description: "Even spread across rails. Exercises every rate-card row."
+  mix: {upi: 0.25, card_credit: 0.25, card_debit: 0.20, netbanking: 0.15, wallet: 0.15}

@@ -1,0 +1,44 @@
+# Tolerances — how much difference is "the same", and how late is "late".
+#
+# Every threshold in the engine lives here. A magic number in classifier code is a
+# bug, because test day varies these deliberately (T+1 / T+2 / T+7).
+
+# Settlement timing. Standard is T+2 working days from capture; merchants with strong
+# history and low chargeback rates get T+1; international runs longer.
+settlement:
+  cycle_days: 2                  # the T+N in T+2
+  count_working_days_only: true  # weekends do not count toward the cycle
+  # How many days past the expected settlement date before "late" becomes "missing".
+  # Below this, a gap is TIMING (benign, resolves itself). Above it, the money is
+  # genuinely absent and needs a human.
+  grace_days: 1
+
+# Weekend and holiday calendar. Friday orders landing Tuesday is the canonical
+# timing defect, and it only happens if weekends are modelled.
+calendar:
+  weekend_days: [saturday, sunday]
+  # Bank holidays, ISO dates. Kept short deliberately — an incomplete holiday list
+  # produces false TIMING classifications, so it is better to have a few known ones
+  # than a guessed-at full calendar.
+  holidays: []
+
+# Amount matching. Money is integer paise, so exact equality is achievable and is
+# the default. A non-zero tolerance here is a deliberate loosening, not a fudge.
+amount:
+  # Rounding differences we will absorb without flagging. One paise covers
+  # half-paise rounding in percentage arithmetic.
+  rounding_paise: 1
+  # Above this, an unexplained difference is material enough to surface even if it
+  # is a small fraction of the batch.
+  material_paise: 10000          # ₹100
+
+# Materiality — benign vs actionable. Not a rupee threshold alone: a ₹31,000 timing
+# lag that resolves on Tuesday is benign; ₹3,800 of dead subscriptions is not.
+# Recoverability decides, size only orders the list. See docs/BEHAVIOR.md, stage `rank`.
+materiality:
+  # Classifications that never need a human, however large.
+  always_benign: [FEE, TAX_ON_FEE, TIMING, ROUNDING]
+  # Classifications that always need a human, however small.
+  always_actionable: [HALTED_SUBSCRIPTION, MISSING, NEEDS_REVIEW]
+  # For anything else, this is the cutoff.
+  actionable_above_paise: 10000  # ₹100

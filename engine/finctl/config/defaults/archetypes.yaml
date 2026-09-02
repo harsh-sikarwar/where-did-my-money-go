@@ -1,0 +1,30 @@
+# Business archetypes — the generalizability test.
+#
+# Each archetype stresses different engine logic. An engine that only works on one
+# is a demo; saying WHICH one it works on is honest calibration. See build-spec.md 6b.
+#
+# Correlation gain is expected to be LARGE for saas_subscription (halted subscriptions
+# are the mechanism) and NEAR ZERO for d2c_ecommerce. Stating that in advance means the
+# result cannot be retrofitted to the expectation.
+
+d2c_ecommerce:
+  description: "High volume, small ticket, heavy refunds."
+  stresses: "Refund-offset math and rounding at scale."
+  ticket_paise: {min: 29900, max: 499900}      # ₹299 – ₹4,999
+  payment_mix: {upi: 0.65, card_debit: 0.15, card_credit: 0.10, netbanking: 0.05, wallet: 0.05}
+  refund_rate: 0.08                             # 8% of orders refunded
+  subscription_share: 0.0                       # no recurring revenue
+  orders_per_day_shape: steady
+  expected_correlation_gain: low
+  note: "Near-zero correlation gain expected. Reporting that is calibration, not weakness."
+
+saas_subscription:
+  description: "Recurring revenue, halted states, invoices."
+  stresses: "The correlation path — the core claim."
+  ticket_paise: {min: 49900, max: 999900}      # ₹499 – ₹9,999
+  payment_mix: {card_credit: 0.55, card_debit: 0.20, upi: 0.20, netbanking: 0.05}
+  refund_rate: 0.01
+  subscription_share: 0.85                      # most revenue is recurring
+  orders_per_day_shape: steady
+  expected_correlation_gain: high
+  note: "Halted subscriptions live here. This is the demo archetype."

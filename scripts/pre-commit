@@ -24,7 +24,10 @@ while IFS= read -r f; do
 done <<< "$staged"
 
 # 2. Live Razorpay keys and provider tokens in staged content.
-#    rzp_test_ is deliberately allowed — test keys are shareable and the demo needs them.
+#    rzp_test_ is allowed in general — test keys are shareable and the demo needs them —
+#    but NOT inside a .example template. A real key pasted into .env.example instead of
+#    .env is an easy mistake (it happened on 2026-09-02) and .example files are tracked,
+#    so the value would ship. Templates must contain placeholders only.
 for f in $staged; do
   [ -f "$f" ] || continue
   [ "$(basename "$f")" = "pre-commit" ] && continue
@@ -32,6 +35,17 @@ for f in $staged; do
     echo "BLOCKED: $f contains something shaped like a live credential." >&2
     fail=1
   fi
+
+  # A .example template must never hold a real value, test-mode included.
+  case "$f" in
+    *.example|*.sample|*.template)
+      if git show ":$f" 2>/dev/null | grep -qE 'rzp_test_[A-Za-z0-9]{10,}'; then
+        echo "BLOCKED: $f is a template but contains a real-looking test key." >&2
+        echo "         Put the value in .env (gitignored); keep placeholders here." >&2
+        fail=1
+      fi
+      ;;
+  esac
 done
 
 if [ "$fail" -ne 0 ]; then

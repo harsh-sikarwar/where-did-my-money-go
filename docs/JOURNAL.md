@@ -198,3 +198,117 @@ ADR-008 (canonical schema follows Razorpay's real names).
 
 Fixtures committed, contract tests green, schema corrected before a line of the generator
 was written. Next: Phase 1a — the config layer, now with a known-correct target schema.
+
+---
+
+## 2026-09-02 — Phase 1a: the config layer
+
+**Goal.** Every rate, tolerance and threshold in YAML before any engine logic exists, so
+that a hardcoded fee constant is *impossible* rather than something to clean up later.
+
+### A security incident, first
+
+Test-mode Razorpay keys were pasted into **`.env.example`** rather than `.env`.
+`.env.example` is git-tracked, so the values were staged to ship.
+
+*Caught by:* checking for `.env` before using it, and finding only `.env.example` with the
+IDE reporting it open.
+
+*Contained:* values moved to `.env` (gitignored, mode 600), `.env.example` restored to
+placeholders, verified zero diff on the tracked file. Nothing was ever committed, so
+nothing is in history.
+
+*The real lesson.* The pre-commit hook **would not have caught this.** It deliberately
+allows `rzp_test_` — test keys are shareable and the demo needs them. But a real key in a
+*tracked template* is wrong regardless of mode. The hook now has a rule: any `*.example`,
+`*.sample` or `*.template` file containing a real-looking key is blocked, test-mode
+included. Verified by attempting a blocked commit.
+
+Worth recording plainly: the original hook was written to catch the obvious failure and
+missed an adjacent one. Finding that gap through an actual near-miss rather than
+imagination is the honest version of "we thought about security."
+
+### Built
+
+**Four YAML config files.** `rate_card.yaml` · `tolerances.yaml` · `archetypes.yaml` ·
+`payment_mixes.yaml`. Every number the engine will use to make a judgement lives in one of
+them.
+
+**`finctl/money.py`** — the arithmetic core. Integer paise only, `Decimal` used solely at
+the single rounding boundary. `parse_money()` is the one place rupee strings are parsed,
+handling `"1,234.50"`, `"₹1,234.50"`, `"1234.5"` — and *refusing* sub-paise precision
+rather than rounding it away silently.
+
+**`finctl/config/loader.py`** — validated dataclasses. Every failure raises at **load**
+time, not at use time, so a bad rate card is caught before a batch starts rather than
+midway through 50,000 rows.
+
+**`finctl/fees.py`** — expected-fee arithmetic returning a `FeeBreakdown` that carries
+every input and output. That object *is* the proof required by BEHAVIOR.md invariant 3;
+it goes into the audit log verbatim and is what the UI `[detail]` view will render.
+
+**`finctl rates`** — a CLI command printing the fee for one amount across every method.
+This is the answer to *"what about a UPI-heavy merchant?"* in one command, with the
+arithmetic visible rather than asserted.
+
+### Design decisions worth naming
+
+**Rates are integer basis points, not float percentages** (ADR-010). ADR-003 removed
+floats from money, but a float *rate* smuggles them back in at the multiplication —
+`amount * 0.02` is float arithmetic, and `0.02` is not exactly representable in binary.
+With integer bps the whole calculation is integer × integer ÷ 10000, one explicit
+rounding boundary. The result is a property that can be stated flatly: **no float touches
+a money value anywhere in the engine.**
+
+**The config layer's job is to refuse** (BEHAVIOR.md, stage `config`). `rate_for()` on an
+unpriced method raises and names the known methods. It never returns a default. This is
+the single most important refusal in the project: a default 2% would charge a UPI-heavy
+merchant 2% *in our model*, making every row show a fee discrepancy that is **ours, not
+theirs** — the engine manufacturing the very problem it claims to detect.
+
+Validation also refuses `gst.applies_to: amount` (≈18× fee overstatement), non-zero UPI
+MDR, float MDR values, and materiality lists that mark a classification both always-benign
+and always-actionable. Cross-file validation catches an archetype naming a method the rate
+card does not price — at load, not deep inside a batch.
+
+**GST on the rounded MDR, half-up** (ADR-009), answering the open question from the last
+report. The reason is a UI-honesty property, not a numerical one: the `[detail]` view
+shows MDR and GST as separate lines, and if GST were computed against an unrounded
+intermediate the merchant never saw, those two lines would not reconcile by hand. Our own
+proof would be unverifiable with a calculator, which defeats showing it. Both the mode and
+the step-vs-end behaviour are config, so matching Razorpay is a config change if live data
+disagrees.
+
+### Verified, not assumed
+
+```
+₹10,000 card_credit → MDR ₹200.00 · GST ₹36.00 · fee ₹236.00 · net ₹9,764.00
+₹10,000 upi         → MDR   ₹0.00 · GST  ₹0.00 · fee   ₹0.00 · net ₹10,000.00
+```
+
+The canonical case from the brief matches exactly. UPI is genuinely zero, not
+approximately zero.
+
+**103 tests green**, including: GST asserted *not* to equal 18% of the transaction amount;
+10,000 repeated fee applications summing exactly with no drift; every rail asserted to use
+its own rate; debit proven cheaper than credit; and a test that a *different* rate card
+produces a different answer, proving the values are config rather than constants wearing a
+YAML costume.
+
+### Obstacles
+
+**Ruff caught a genuinely muddled branch** in `expected_fee()` — the `gst_on_rounded_mdr:
+false` path had a dead `if False` expression left in from an abandoned approach. It
+computed the right answer by accident through the surviving branch. Rewritten to fold both
+rates into a single bps product with one division. A lint rule catching a real logic
+smell, not a style nit.
+
+**`pytest.raises(match="must sum to 1.0")`** — the `.` is an unescaped regex
+metacharacter. Ruff RUF043 flagged it. Harmless here, but the class of bug is a match
+pattern that passes for the wrong reason.
+
+### State
+
+Config layer complete and proven. Zero magic numbers in code. Next: Phase 1b — the seeded
+generator, which will consume this config and emit Razorpay-shaped records validated
+against the fixtures captured in the probe.
