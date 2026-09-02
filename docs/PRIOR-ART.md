@@ -114,6 +114,15 @@ be read against — a match rate reported without a baseline means nothing.
   invoices continue to be generated but charges are not attempted. This is a *documented
   Razorpay state*, not an invented scenario. It is the demo centrepiece precisely because
   it is real and verifiable.
+- **Ambiguity found, and how it is handled.** The recon docs state `fee` is the
+  processing charge and `tax` is *"the tax on the fee charged"*, with
+  `Net = Gross − MDR − GST on MDR`. The published example response shows
+  `credit = amount − fee` with `tax: 0`, which does not follow that formula. Rather than
+  pick a reading, the engine derives the convention from the data and refuses an
+  inconsistent batch (ADR-007). Worth stating plainly if asked: we found an ambiguity in
+  the counterparty's own documentation and made the engine resolve it empirically instead
+  of assuming.
+
 - **Razorpay's T&C: the merchant is responsible for daily reconciliation**, and
   discrepancies must be reported within 3 days. Razorpay contractually states this is the
   merchant's job — which is the strongest available answer to "why doesn't Razorpay just

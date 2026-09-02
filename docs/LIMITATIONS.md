@@ -58,4 +58,22 @@ where corrupted characters propagate silently.
 
 ### Phase 1 — engine
 
-*(none yet)*
+**The fee/tax convention is unresolved, and it is the number everything depends on.**
+Razorpay's prose says `Net = Gross − MDR − GST on MDR`; its own documented example shows
+`credit = amount − fee` with `tax: 0`. The two cannot both be literally true. The engine
+therefore *derives* the convention per batch and raises on inconsistency (ADR-007) rather
+than assuming — but the derivation currently runs against our own synthetic data, so it
+proves internal consistency, not agreement with Razorpay. `finctl probe` reports
+**UNDETERMINED** on the documented fixture, correctly, because every row there has
+`tax: 0` and both identities hold.
+
+*Resolution:* Day-2 live capture with non-zero tax. Until then this is an open assumption,
+stated rather than hidden. If a judge asks "how do you know your fee math is right", the
+honest answer today is: *the engine detects the convention rather than assuming one, and
+refuses a batch where the identity fails — but we have not yet confirmed it against a
+live response.*
+
+**Fixtures are documented-shape, not live-captured.** No Razorpay test credentials were
+available during Phase 1. Per ADR-006 this was not allowed to block the build. Every
+fixture declares `live_capture: false` inline, and a test asserts that declaration exists,
+so the distinction cannot be lost by reading a file alone.

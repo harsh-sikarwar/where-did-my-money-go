@@ -163,3 +163,155 @@ backwards to avoid a problem not yet observed adds a constraint without evidence
   is a one-line change, and this entry is the note explaining why.
 - Golden-file tests will catch any silent behavioural difference introduced by an
   upgrade later.
+
+---
+
+## ADR-006 — Real API is verification, not foundation
+
+**Date:** 2026-09-02 · **Phase:** 1 (pre-work)
+
+**Context.** The two planning documents appear to disagree. `build-spec.md` §4 opens with
+*"Stage 1 — Prove the pipe (do not skip): pull one real settlement recon response from
+test mode. Look at the actual JSON before designing anything."* `build-plan-3.5-days.md`
+says build Day 1 against a seeded generator and swap in the live API on Day 2, with a hard
+2-hour timebox.
+
+Read as *"build the adapter first,"* these conflict. Read correctly, they do not.
+
+**The distinction.**
+
+> **Real API = verification.** Not: real API = foundation.
+
+The purpose of touching the live API early is **not** to depend on it. It is to check that
+our synthetic data actually resembles reality — that the fields we invent have the names,
+types, units and nullability that Razorpay really uses.
+
+**Choice.** A one-off **shape probe**, run before the generator is written, whose only
+output is a captured JSON fixture and a field inventory. The engine never imports it. The
+generator is validated against it. The live adapter remains a Day-2 task under its
+original 2-hour timebox.
+
+**Why this ordering is strictly better than either extreme.**
+
+- *Adapter-first* risks auth and pagination consuming Day 1, producing no demoable
+  artefact — the exact failure `build-plan-3.5-days.md` was written to prevent.
+- *Seeded-only* risks building a beautiful engine against a schema that doesn't exist.
+  Discovering on Day 2 that `settlement.fees` is a per-settlement aggregate rather than
+  per-payment would invalidate the fee classifier after it was already built and tested.
+- The probe costs well under an hour and converts an unbounded schema risk into a fixed
+  file on disk.
+
+**The cost of being wrong, asymmetrically.** A wrong guess about field shape is not caught
+by any test we write, because our tests would assert our own wrong assumption. Golden-file
+tests lock in the schema — so locking in an unverified schema is worse than having no
+tests at all. This is the one class of error the rest of the plan's rigour cannot catch.
+
+**Consequences.**
+- Probe output lands in `engine/tests/fixtures/razorpay/` as committed JSON. Test-mode
+  data, no live keys, safe to commit — and it becomes the contract the generator is held to.
+- A test asserts generator output is **field-compatible** with the captured fixture. If
+  Razorpay's shape and ours diverge, the suite says so rather than a judge saying so.
+- If no test credentials are available, the probe degrades to a documented-shape fixture
+  transcribed from Razorpay's published docs, clearly labelled as such in the fixture
+  file. Blocking Phase 1 on credentials would be the failure this ADR exists to prevent.
+- The Day-2 live adapter is unchanged: still P0, still 2-hour timebox, still first to cut.
+
+---
+
+## ADR-007 — The `fee` / `tax` relationship is derived from data, not assumed
+
+**Date:** 2026-09-02 · **Phase:** 1 (shape probe)
+
+**Context.** The shape probe (ADR-006) surfaced a genuine ambiguity in Razorpay's own
+published material, on the single number this entire product depends on.
+
+Razorpay's settlement recon documentation states the two fields are separate:
+> *"The `fees` field shows the fees charged to process the transaction, while the `tax`
+> field shows the tax on the fee charged."*
+
+and gives the settlement formula as:
+> `Net = Gross − MDR − GST on MDR − refunds − chargebacks`
+
+Read literally, `credit = amount − fee − tax`.
+
+But the documented example response on the fetch-recon page does not follow that:
+
+```json
+"amount": 100000, "fee": 2900, "tax": 0, "credit": 97100
+```
+
+Here `credit = amount − fee` exactly, with `tax` zero. If `fee` were MDR-only at 2%, it
+would be 2000 with tax 360 — this shows 2900 with tax 0. So either that example's `fee`
+is GST-inclusive with `tax` left unpopulated, or the example is illustrative rather than
+real.
+
+**Why this matters more than it looks.** Our four-line verdict has a line reading
+*"Razorpay's cut + tax on it — matches your rate."* If the engine subtracts tax that was
+already inside `fee`, every card transaction is wrong by the GST amount, in the merchant's
+favour, and the residual "we can't explain" bucket absorbs the error silently. It would
+look like a small rounding issue at 50 rows and like a real discrepancy at 5,000.
+
+**Options considered.**
+1. Assume `fee` is MDR-only and always subtract tax separately (follows the prose).
+2. Assume `fee` is GST-inclusive and never subtract tax separately (follows the example).
+3. **Derive it per batch** from the identity that must hold, and assert it.
+
+**Choice.** Option 3.
+
+For every settled row, exactly one of these holds:
+```
+credit == amount - fee          →  fee is GST-inclusive  (tax is informational)
+credit == amount - fee - tax    →  fee is MDR-only       (tax is additive)
+```
+The engine tests both on ingest, picks whichever is consistent across the batch, records
+the verdict in the audit log, and **raises if neither holds or the batch is mixed**.
+
+**Why.** This is a question the data answers unambiguously, so guessing is unnecessary. It
+also converts a silent, systematic, GST-sized error into a loud failure at ingest time —
+which is the behaviour `BEHAVIOR.md` demands everywhere else, applied to the place it
+matters most. As a bonus, an engine that *detects* its counterparty's fee convention is a
+stronger answer to "how do you know your fee math is right" than one that hardcodes it.
+
+**Consequences.**
+- `config` still holds the expected MDR rate card — that is what "does the fee *match your
+  contract*" is checked against, a separate question from "how is the fee encoded."
+- The derived convention is a field in the audit log, so any number on the verdict screen
+  can be traced back to which convention produced it.
+- Day-2 live API work has a concrete first task: confirm the convention against real
+  test-mode data and pin it. Currently our answer comes from synthetic data we generate,
+  so this remains **unverified against reality** until then — logged in `LIMITATIONS.md`.
+
+---
+
+## ADR-008 — Canonical schema follows Razorpay's real field names, including its oddities
+
+**Date:** 2026-09-02 · **Phase:** 1 (shape probe)
+
+**Context.** The probe found three places where the schema sketched in
+`PROJECT-CONTEXT.md` §7 differs from Razorpay's actual recon response. Each would have
+produced a silently broken engine.
+
+| Sketched | Actually | Consequence if unfixed |
+|---|---|---|
+| `settlement.payment_id` identifies the payment | `payment_id` is **null** on `type: "payment"` rows; the id is in **`entity_id`** | Pass-1 join matches nothing. Every order reads as `MISSING`. |
+| `refund_adjustment` is a column on the settlement row | Refunds are **their own rows**, discriminated by `type` (`payment`/`refund`/`transfer`/`adjustment`) | Refund logic looks for a column that never exists; one-sided-refund defect undetectable. |
+| `gross · fee · tax_on_fee` all subtract | `debit`/`credit` are the settled movement; `amount` is the transaction | See ADR-007. |
+
+**Choice.** Adopt Razorpay's field names and semantics verbatim in the canonical schema —
+`entity_id`, `type`, `debit`, `credit`, `settlement_utr`, `settled_at` — rather than a
+tidier invented schema mapped at the boundary.
+
+**Why.** The whole point of the two-source design is that swapping seeded data for live
+API data should be a *source* change, not a *schema* change. Every renaming is a place
+where the swap can silently mismatch on Day 2, under a 2-hour timebox, which is precisely
+when there is no time to debug it. Razorpay's naming is also what a judge will recognise,
+and what the audit trail must cite for "every number traces back to a Razorpay record" to
+be literally true.
+
+**Consequences.**
+- The join chain is corrected to:
+  `ledger.order_id → recon.order_id → recon.entity_id (= payment id) → settlement_utr → bank.utr`
+- The generator must emit `type`-discriminated rows, including refund rows, not a
+  refund column. This makes the one-sided-refund defect realistic rather than a toy.
+- `PROJECT-CONTEXT.md` §7's schema sketch is superseded on these three points. The
+  document is left unedited as the original brief; this ADR is the amendment.
