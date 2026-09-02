@@ -89,7 +89,13 @@ class StagedBatch:
 
         digest = content_hash(rows)
 
-        for existing_source, existing in self.sources.items():
+        # An EMPTY source cannot be a duplicate of another empty source. Two empty files
+        # hash identically because they contain the same nothing, and treating that as a
+        # duplicate upload made the adversarial "empty batch" case raise instead of
+        # answering "nothing to reconcile" — which BEHAVIOR.md requires to be a valid
+        # answer that reaches the verdict stage.
+        candidates = self.sources.items() if rows else []
+        for existing_source, existing in candidates:
             if existing.content_sha256 == digest:
                 raise DuplicateBatchError(
                     f"refusing to stage {origin!r} as {source}: identical content "

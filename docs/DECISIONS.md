@@ -896,3 +896,91 @@ regression says which one returned.
 not sufficient. Individually traceable numbers can still be assembled into a false
 statement, and the assembly needs its own invariant. Caught by a human reading the
 screen, which is the one test that was missing.
+
+---
+
+## ADR-025 — Duplicated ledger rows are phantom expectation, not duplicated settlement
+
+**Date:** 2026-09-02 · **Phase:** composition audit
+
+**Context.** Duplicating five ledger rows produced a **₹7,305.71 residual** — money the
+decomposition could not attribute. Found by running the adversarial cases from
+`build-spec.md` §6e against the balance invariant, not by reasoning about the code.
+
+**The mechanism.** A duplicated order is in the ledger twice, so `expected` counts it
+twice — correctly, that is what the file says. But the matcher joins *each copy* to the
+same settlement, so its fee and settled amount were also counted twice. One real sale,
+two settlements' worth of arithmetic.
+
+**Choice.** The first occurrence of an order is the real one and is processed normally.
+Every copy after it becomes a `DUPLICATE` component carrying its ledger amount, and is
+excluded from fee, settlement and refund arithmetic.
+
+**Why that framing is the correct one.** The duplicate is not duplicated *money*, it is
+duplicated *expectation*. Razorpay settled the sale once; the merchant's books claim it
+twice. So the extra copy is a real contribution to the gap — the merchant is expecting
+money that was never owed — and it belongs on the screen under its own name rather than
+being netted away silently.
+
+**Consequences.**
+- `DUPLICATE` appears as a verdict line when it occurs, with the copies' order ids.
+- Duplicating a ledger row no longer changes the `FEE` line, asserted by test.
+- The merchant sees the problem is in *their own file*, which is actionable in a way
+  "unexplained residual" is not.
+
+---
+
+## ADR-026 — Two empty sources are not duplicates of each other
+
+**Date:** 2026-09-02 · **Phase:** composition audit
+
+**Context.** The adversarial "empty batch" case raised `DuplicateBatchError` instead of
+answering "nothing to reconcile". Two empty CSVs hash identically — they contain the same
+nothing — so content-hash duplicate detection fired on them.
+
+**Choice.** Duplicate detection is skipped for sources with zero rows.
+
+**Why.** `BEHAVIOR.md` requires "nothing to reconcile" to be a *valid answer that survives
+to the verdict stage*, not an exception. An empty ledger and an empty bank statement being
+"identical" is a true statement about their bytes and a meaningless one about their
+meaning — the check exists to catch the same file uploaded twice, and an empty file
+carries no evidence of having been uploaded at all.
+
+**Consequences.**
+- An empty batch now produces a ₹0 gap, no lines, "Nothing needs you this week", and a
+  **0%** match rate rather than a flattering 100% (ADR-016 still holds).
+- Duplicate detection is unweakened for real data: any source with rows is still checked
+  against every other.
+
+---
+
+## ADR-027 — Composition invariants are verified by mutation, not by passing
+
+**Date:** 2026-09-02 · **Phase:** composition audit
+
+**Context.** After ADR-024, the obvious risk was writing tests that assert the identity
+and *pass* without being capable of failing — the same false confidence in a new place.
+
+**Choice.** Every composition invariant was verified by deliberately reintroducing a bug
+and confirming the suite catches it. Four mutations were run:
+
+| Mutation | Caught by |
+|---|---|
+| Reintroduce the TIMING double-count | `test_no_order_appears_in_two_gap_components` |
+| Flip the refund sign back to positive | the balance identity, all configurations |
+| Understate the fee total by **₹1** | `test_fee_line_equals_the_fees_in_the_recon_file` |
+| Off-by-one on a line count | `test_halted_count_matches_the_subscriptions_file` |
+
+**Why.** A ₹1 error being caught is the meaningful result: it shows the assertions are
+exact rather than approximate, so a real drift of any size surfaces.
+
+The audit tests also deliberately **do not reuse the engine's aggregation helpers**. They
+recompute from the rawest available source — parsing the ledger CSV by hand rather than
+calling `parse_money`. Checking `matches.expected_paise` against `matches.expected_paise`
+would prove only that a property is deterministic; two independent paths agreeing proves
+something.
+
+**Consequences.**
+- 127 composition tests across 6 configurations, each verified capable of failing.
+- The four mutations are documented here so the same checks can be re-run after any
+  future change to the decomposition.

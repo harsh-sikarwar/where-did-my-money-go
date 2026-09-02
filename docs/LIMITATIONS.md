@@ -107,6 +107,17 @@ the problem does not have.
 works, but there is no picker. The demo-data button and CSV upload path are Phase 2
 items not yet built.
 
+### Composition audit — what it found, and what it did not cover
+
+Two further bugs, both found by *running* adversarial cases rather than reasoning about
+code: duplicated ledger rows left ₹7,305.71 unattributed (ADR-025), and an empty batch
+raised instead of answering "nothing to reconcile" (ADR-026). Both fixed and asserted.
+
+**Not covered by this audit:** one order split across two settlements, and a refund
+issued before its original settled. Both are listed in `build-spec.md` §6e and neither is
+exercised by the generator yet, so the engine's behaviour on them is *unverified* rather
+than known-good. They belong in the Day 3 adversarial block.
+
 ### Phase 2b — a composition bug the test suite could not see
 
 **The verdict screen's lines did not sum to its gap** — ₹99,421.65 of lines against a

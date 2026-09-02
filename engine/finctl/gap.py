@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from finctl.classify.classifier import Classification, Finding
-from finctl.match.matcher import MatchResult
+from finctl.match.matcher import MatchResult, OrderMatch
 
 
 @dataclass
@@ -129,22 +129,48 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
         )
     }
 
+    # --- duplicated ledger rows -------------------------------------------------------
+    # A duplicated order inflates `expected` with a sale that happened once. Razorpay
+    # settled it once, so the extra copy is pure phantom expectation and belongs in the
+    # gap under its own name.
+    #
+    # Every copy after the first is a duplicate. The FIRST copy is the real order and is
+    # processed normally below; the rest are excluded from fee and settlement arithmetic
+    # so their settlement is not counted once per copy.
+    seen_orders: set[str] = set()
+    duplicate_rows: list[OrderMatch] = []
+    primary_rows: list[OrderMatch] = []
+    for m in matches.order_matches:
+        if m.order_id in seen_orders:
+            duplicate_rows.append(m)
+        else:
+            seen_orders.add(m.order_id)
+            primary_rows.append(m)
+
+    if duplicate_rows:
+        d.components.append(GapComponent(
+            classification=Classification.DUPLICATE,
+            amount_paise=sum(m.ledger_amount_paise for m in duplicate_rows),
+            count=len(duplicate_rows),
+            order_ids=[m.order_id for m in duplicate_rows],
+        ))
+
     # --- money Razorpay kept as fees -------------------------------------------------
     # The gap includes the WHOLE fee, not just the overcharge. The overcharge is a
     # separate question (is the rate correct?) answered in the drill-down.
-    fees = sum(m.fee_paise for m in matches.order_matches)
+    fees = sum(m.fee_paise for m in primary_rows)
     if fees:
         d.components.append(GapComponent(
             classification=Classification.FEE,
             amount_paise=fees,
-            count=sum(1 for m in matches.order_matches if m.fee_paise),
+            count=sum(1 for m in primary_rows if m.fee_paise),
         ))
 
     # --- orders that never reached settlement ----------------------------------------
     # Grouped by how correlation explained them, so the verdict can say WHY the money is
     # absent rather than only that it is.
     by_cause: dict[Classification, list[tuple[str, int]]] = {}
-    for m in matches.order_matches:
+    for m in primary_rows:
         if m.matched:
             continue
         cause = resolution.get(m.order_id, Classification.MISSING)
@@ -177,7 +203,7 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
     # amount. The bank received more than expected, so this NARROWS the gap. Negative.
     excess = 0
     excess_count = 0
-    for m in matches.order_matches:
+    for m in primary_rows:
         if m.matched and m.settled_gross_paise > m.ledger_amount_paise:
             excess += m.settled_gross_paise - m.ledger_amount_paise
             excess_count += 1
@@ -192,7 +218,7 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
     # A shortfall on an order that did settle. Widens the gap.
     shortfall = 0
     shortfall_count = 0
-    for m in matches.order_matches:
+    for m in primary_rows:
         if m.matched and m.settled_gross_paise < m.ledger_amount_paise:
             shortfall += m.ledger_amount_paise - m.settled_gross_paise
             shortfall_count += 1

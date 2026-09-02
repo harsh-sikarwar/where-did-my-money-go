@@ -1106,3 +1106,81 @@ Not decoration. It is the claim, and the claim was wrong once.
    ─────────────
    ₹38,372.30     every rupee of the gap, accounted for
 ```
+
+---
+
+## 2026-09-02 — Composition audit
+
+**Why.** The verdict-screen bug survived 379 tests because nothing checked whether
+*composed output was true* — only that parts worked. The same class of bug could easily
+exist elsewhere. This pass checked every number the UI displays against an independent
+recomputation.
+
+### Method: recompute from the rawest source, then mutate
+
+`tests/test_composition.py` deliberately **does not reuse the engine's aggregation
+helpers**. It parses the ledger CSV by hand rather than calling `parse_money`, so the two
+paths share no code. Checking `matches.expected_paise` against `matches.expected_paise`
+would prove only determinism; two independent paths agreeing proves something.
+
+Then, because an invariant that cannot fail is the same false confidence in a new place,
+each was verified by **deliberately reintroducing a bug**:
+
+```
+reintroduce the TIMING double-count  -> caught (no_order_appears_in_two_components)
+flip the refund sign back to positive -> caught (balance identity, all configs)
+understate the fee total by ₹1        -> caught (fee_line_equals_recon_file)
+off-by-one on a line count            -> caught (halted_count_matches_subscriptions)
+```
+
+The **₹1** catch is the meaningful one: the assertions are exact, not approximate.
+
+### Two real bugs found
+
+Running the adversarial cases from `build-spec.md` §6e against the balance invariant:
+
+```
+empty batch                RAISED DuplicateBatchError
+no bank file               balances ✓
+renamed ledger columns     balances ✓
+comma-formatted amounts    balances ✓
+bank file half-arrived     balances ✓
+duplicate ledger rows      RAISED ArithmeticError — residual ₹7,305.71
+```
+
+**1. Duplicated ledger rows left ₹7,305.71 unattributed.** A duplicated order is in the
+ledger twice, so `expected` counts it twice — correctly, that is what the file says. But
+the matcher joins *each copy* to the same settlement, so its fee and settled amount were
+counted twice too. One real sale, two settlements' worth of arithmetic.
+
+Fixed by treating copies after the first as **phantom expectation**, not duplicated
+money (ADR-025). Razorpay settled the sale once; the merchant's books claim it twice, so
+the extra copy genuinely widens the gap and belongs on screen under its own name. The
+merchant then sees the problem is in *their own file*, which is actionable in a way
+"unexplained residual" is not.
+
+**2. An empty batch raised instead of answering.** Two empty CSVs hash identically — they
+contain the same nothing — so content-hash duplicate detection fired. `BEHAVIOR.md`
+requires "nothing to reconcile" to be a valid answer that reaches the verdict stage.
+
+Fixed by skipping duplicate detection for zero-row sources (ADR-026). An empty file
+carries no evidence of having been uploaded at all, and the check exists to catch the
+same file uploaded twice.
+
+Both were found by *running* the cases, not by reasoning about the code. The invariant
+did its job: it converted a silent wrong number into a loud exception naming the residual.
+
+### What the audit confirmed was already right
+
+Match rates consistent with their counts · before/after arithmetic on the correlation
+screen · `resolved_by_class` summing to the resolved bar · recall matching its own
+caught/missed · every planted defect in exactly one bucket · audit-log reconstructibility
+· `actionable + benign` partitioning the lines · no order in two gap components.
+
+### State
+
+**506 tests green** (up from 379), ruff clean, golden files unchanged, live UI balances.
+The adversarial block from Day 3 is now substantially pre-run, with two bugs fixed rather
+than discovered on test day.
+
+Next: the Day 3 metrics matrix.
