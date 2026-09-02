@@ -388,3 +388,90 @@ convention that mostly holds.
   are population weights and never produce a money value. The loader validates they sum to
   1.0 with a float tolerance; this is called out in the code so it is not mistaken for a
   money tolerance.
+
+---
+
+## ADR-011 — Subscriptions is not enabled on the test account; the demo does not depend on it
+
+**Date:** 2026-09-02 · **Phase:** 1a (live probe)
+
+**Context.** The live probe reached Razorpay test mode successfully. `/v1/payments`,
+`/v1/orders`, `/v1/settlements`, `/v1/customers`, `/v1/invoices` and
+`/v1/settlements/recon/combined` all return `200`. But:
+
+```
+GET /v1/subscriptions  → 401 {"error":"Unauthorized"}
+GET /v1/plans          → 401 {"error":"Unauthorized"}
+```
+
+Independently reproduced with `curl` using the same key that returns `200` elsewhere, so
+this is **not** an authentication failure. The Subscriptions product is not enabled on
+this account — it requires separate activation on the Razorpay dashboard.
+
+**Why this matters more than a missing endpoint.** The `halted` subscription cluster is
+the demo centrepiece. Six subscriptions dying silently is the "one thing needs you this
+week" line, and the entire correlation claim is illustrated through it.
+
+**Choice.** Nothing changes. The demo continues to run on seeded data, and this is
+recorded as an open item rather than a blocker.
+
+**Why this is not a crisis.**
+1. The track bar explicitly permits synthetic data — *"close one finance-ops loop across a
+   50+ record batch of synthetic data."* Seeded data was always the demo path (ADR-006);
+   the live API was always verification.
+2. The `halted` lifecycle is *documented* Razorpay behaviour. We are not inventing a state;
+   we are modelling a published one. The subscription entity shape in our fixture comes
+   from Razorpay's own documentation.
+3. The account is empty anyway. Even with Subscriptions enabled, there would be zero
+   subscriptions to capture until some were created and deliberately failed.
+
+**Consequences.**
+- `LIMITATIONS.md` carries this as a stated limitation: our subscription shape is
+  documented-derived, not live-verified. Said plainly, this is stronger than silence.
+- If Subscriptions is enabled later, the path to closing it is known: enable on the
+  dashboard, create a plan and subscription, use the test-charge option to force the
+  `failed → pending → halted` arc, then re-run `finctl probe --live`. Note the 3-day
+  test-token validity constraint — do not build the demo on an old token.
+- This does not consume the Day-2 API timebox. That budget is for the settlement/payment
+  adapter, which works.
+
+---
+
+## ADR-012 — ADR-007 may be unanswerable in test mode, and that is now a tripwire not a hope
+
+**Date:** 2026-09-02 · **Phase:** 1a (live probe)
+
+**Context.** The live probe was expected to settle ADR-007 — whether `fee` is GST-inclusive
+or MDR-only. It could not, for a reason worth distinguishing carefully:
+
+**Not** "the data was ambiguous." **The account has never processed a payment.**
+`/v1/settlements/recon/combined` returns `200` with `count: 0` for every month tried. There
+are zero settled rows, not zero-tax rows.
+
+A further constraint surfaced: test-mode settlements are not reliably generated on the
+usual T+2 schedule, so even creating and capturing a test payment may not produce a settled
+recon row. **ADR-007 may not be answerable in test mode at all.**
+
+**Choice.** Keep the derive-from-data mechanism exactly as built, and convert the open
+question from a note someone must remember into a **test that fails when it becomes
+answerable**.
+
+`test_live_recon_capture_has_no_rows_to_settle_adr_007` asserts the live capture is empty.
+The moment any capture lands real rows, that test fails — which is the prompt to re-run the
+convention analysis and close the ADR.
+
+**Why.** An unresolved assumption tracked only in prose gets forgotten under time pressure,
+which is exactly when it matters. A failing test cannot be forgotten. This is the same
+device used for the original `UNDETERMINED` assertion: a test designed to break on new
+information.
+
+**Consequences.**
+- The engine's behaviour is unchanged and correct: it derives the convention per batch and
+  raises on inconsistency. What is unverified is only whether Razorpay's real data matches
+  either identity — not whether our detection works, which is tested directly.
+- The honest answer to *"how do you know your fee math is right?"* remains: **the engine
+  detects the convention rather than assuming one, and refuses a batch where the identity
+  fails. We could not confirm against live data because the test account has no
+  settlements, and we say so rather than implying we checked.**
+- This is a genuinely good failure-recovery artefact for criterion 4: a real limitation,
+  found by real investigation, with a mechanism that closes it automatically.

@@ -312,3 +312,85 @@ pattern that passes for the wrong reason.
 Config layer complete and proven. Zero magic numbers in code. Next: Phase 1b — the seeded
 generator, which will consume this config and emit Razorpay-shaped records validated
 against the fixtures captured in the probe.
+
+---
+
+## 2026-09-02 — Live probe run (delegated to a subagent, in parallel with Phase 1a)
+
+Keys arrived, so the `--live` half of ADR-006 was delegated to a subagent while the main
+session built the config layer. Different files, no collision. Worth recording that the
+parallelism worked: two independent workstreams, one merge conflict of zero.
+
+### What the live probe actually established
+
+**Reachability, and nothing else.** The account authenticates and returns `200` on
+`/v1/payments`, `/v1/orders`, `/v1/settlements`, `/v1/customers`, `/v1/invoices` and
+`/v1/settlements/recon/combined` — every one of them with `count: 0`. The account has never
+processed a payment.
+
+This is a genuinely useful negative result. It means the probe proved the *pipe*, which was
+`build-spec.md` Stage 1's actual instruction, without proving anything about *shape*.
+
+### Two findings that change what we can claim
+
+**1. Subscriptions is not enabled.** `/v1/subscriptions` and `/v1/plans` return
+`401 Unauthorized` while the same key returns `200` everywhere else. I reproduced this
+independently with `curl` rather than taking the agent's word for it, because it directly
+threatens the demo centrepiece. Confirmed: it is product activation, not authentication.
+
+Nothing changes about the build — the track bar explicitly allows synthetic data, and the
+`halted` lifecycle is documented Razorpay behaviour we are modelling rather than inventing.
+But we can no longer say the subscription shape is live-verified, so `LIMITATIONS.md` now
+says exactly that. See ADR-011.
+
+**2. ADR-007 is still open, and may be unanswerable in test mode.** The reason matters and
+is easy to blur: not *"the data was ambiguous"* but *"there is no data."* Zero settled
+rows, not zero-tax rows. And test mode does not reliably generate settlements on the T+2
+schedule, so even creating and capturing a payment may not produce a settled recon row.
+
+The agent's response to this was the right one: rather than leave a note someone must
+remember, it added `test_live_recon_capture_has_no_rows_to_settle_adr_007`, which **fails
+the moment any capture lands real rows**. An unresolved assumption tracked in prose gets
+forgotten under time pressure — which is exactly when it matters. A failing test cannot be.
+See ADR-012.
+
+### The bug worth the delegation
+
+While verifying the overwrite path, the agent found that `write_capture()` trusted its
+caller to have already redacted PII. Writing a non-empty payload from anywhere other than
+`capture_live()` would put raw `email`, `contact` and `vpa` values straight into a
+git-tracked file. It reproduced this by writing `real@person.com` to disk.
+
+Redaction now happens at the **write boundary** — the last point before disk — with a
+regression test, and it preserves nulls, since nullability is part of the shape the fixture
+exists to capture.
+
+The detail that makes this worth recording: **the path never executed during the live run**,
+because both collections were empty. It would have sat latent until the first run that
+actually had data — which is to say, until the first run where it mattered. I verified the
+fix directly (`redact_pii` on a payload with real-looking values, checking idempotency and
+null preservation) rather than accepting the report.
+
+### Empty-account guard
+
+The agent correctly did **not** overwrite the documented-shape fixtures with empty
+collections — that would have destroyed the contract the test suite relies on and replaced
+it with nothing. Empty captures landed as `*_live.json` alongside. Verified: all three
+documented fixtures still carry their original item counts.
+
+### Also fixed
+
+`.env` could not be `source`d from bash. The angle-bracket placeholders I had written
+(`<your-anthropic-api-key>`) break shell parsing, since `<` is a redirect. Fixed in both
+`.env` and the template, with a comment in `.env.example` explaining why the values are
+quoted, so the next person does not reintroduce it.
+
+### Verification of the agent's work
+
+Every checkable claim was checked rather than taken at face value: the 401s reproduced with
+`curl`; the PII fix exercised directly; the documented fixtures confirmed intact; the full
+suite and repo-wide lint re-run. **104 tests green, ruff clean.**
+
+One reported issue was a phantom: the agent flagged an `RUF043` in `test_config.py` as
+pre-existing and out of its scope. It was mine, from concurrent work, and I had already
+fixed it. Timing overlap, not a disagreement.

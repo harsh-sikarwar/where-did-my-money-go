@@ -73,6 +73,21 @@ honest answer today is: *the engine detects the convention rather than assuming 
 refuses a batch where the identity fails — but we have not yet confirmed it against a
 live response.*
 
+**Razorpay Subscriptions is not enabled on our test account.** `/v1/subscriptions` and
+`/v1/plans` return `401` while every other endpoint returns `200` with the same key —
+independently reproduced with `curl`, so it is product activation, not auth. The `halted`
+subscription cluster is the demo centrepiece, so this is worth stating plainly: **our
+subscription entity shape is derived from Razorpay's documentation, not verified against a
+live response.** The lifecycle we model (`failed → pending → halted`, invoices generated
+but charges not attempted) is documented Razorpay behaviour, not invented. See ADR-011.
+
+**The test account has processed nothing.** Payments, orders, settlements, customers,
+invoices and recon all return `count: 0`. The live probe therefore proves *reachability*
+and nothing about *shape*. Combined with test mode not reliably generating settlements on
+the T+2 schedule, **ADR-007 may not be answerable in test mode at all** — see ADR-012.
+This is now enforced by a test that fails the moment a capture lands real rows, rather
+than tracked as a note.
+
 **Fixtures are documented-shape, not live-captured.** No Razorpay test credentials were
 available during Phase 1. Per ADR-006 this was not allowed to block the build. Every
 fixture declares `live_capture: false` inline, and a test asserts that declaration exists,

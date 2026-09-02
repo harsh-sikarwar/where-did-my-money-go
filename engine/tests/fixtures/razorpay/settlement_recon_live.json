@@ -1,0 +1,16 @@
+{
+  "_provenance": {
+    "status": "live-capture",
+    "source": "GET https://api.razorpay.com/v1/settlements/recon/combined?month=9&year=2026",
+    "captured_at": "2026-09-02T13:12:01+00:00",
+    "live_capture": true,
+    "empty_collection": true,
+    "pii_redacted": true,
+    "pii_note": "email / contact / vpa and other identity fields are replaced with fixed placeholders (['card_holder_name', 'contact', 'customer_contact', 'customer_email', 'customer_name', 'email', 'name', 'vpa']) before writing. Redaction is applied unconditionally, whether or not the response contained any.",
+    "note": "Live test-mode capture of the settlement recon endpoint. The account returned an EMPTY collection - it holds no data of this kind, so this file records reachability and the envelope shape only, not the item shape.",
+    "why_this_matters": "ADR-007 lives or dies here: only settled payment rows with NON-ZERO tax can distinguish a GST-inclusive fee from an MDR-only one. Rows with tax == 0 satisfy both identities and prove nothing."
+  },
+  "entity": "collection",
+  "count": 0,
+  "items": []
+}
