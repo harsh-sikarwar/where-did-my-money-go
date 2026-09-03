@@ -37,6 +37,41 @@ class ReconType(StrEnum):
     ADJUSTMENT = "adjustment"
 
 
+# The recon row's discriminator, under both spellings we have seen it.
+#
+# ADR-008 committed to Razorpay's own field names so that swapping seeded data for live
+# data would be a SOURCE change, not a SCHEMA change. We wrote `type`. Razorpay's actual
+# settlement recon export uses `transaction_entity` (confirmed against
+# `sample-settlements-recon-report.xlsx`). The VALUES agree — `payment`, `refund` — so
+# only the key drifted, and no test could catch it because both sides of every test used
+# our spelling. See ADR-038.
+RECON_TYPE_KEYS = ("transaction_entity", "type")
+
+
+def recon_type(row: dict) -> str | None:
+    """The kind of recon row, reading whichever key this source spelled it with.
+
+    Razorpay's export says `transaction_entity`; our generator and the live API say
+    `type`. Read through this accessor rather than indexing either key directly, so a
+    third spelling is a one-line change here instead of a hunt through five call sites.
+
+    Returns the raw string rather than a ReconType so an UNKNOWN value stays visible.
+    Coercing an unrecognised discriminator into a known member would silently reclassify
+    a row we do not understand.
+    """
+    for key in RECON_TYPE_KEYS:
+        value = row.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def is_recon_type(row: dict, expected: ReconType) -> bool:
+    """True when a recon row is of the given kind, under either spelling."""
+    actual = recon_type(row)
+    return actual is not None and actual == expected.value
+
+
 class MatchStatus(StrEnum):
     """Adopted from Hyperswitch, not invented — see docs/PRIOR-ART.md.
 

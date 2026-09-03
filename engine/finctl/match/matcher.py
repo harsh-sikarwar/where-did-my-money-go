@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from finctl.normalize.normalizer import to_date
-from finctl.schema import ReconType, Source
+from finctl.schema import ReconType, Source, is_recon_type
 from finctl.stage.staging import StagedBatch
 
 
@@ -245,9 +245,9 @@ def match(batch: StagedBatch) -> MatchResult:
     for row in recon:
         if not row.get("order_id"):
             continue
-        if row.get("type") == ReconType.PAYMENT:
+        if is_recon_type(row, ReconType.PAYMENT):
             recon_by_order[row["order_id"]].append(row)
-        elif row.get("type") == ReconType.REFUND:
+        elif is_recon_type(row, ReconType.REFUND):
             refunds_by_order[row["order_id"]].append(row)
 
     payments_by_order = {p["order_id"]: p for p in payments if p.get("order_id")}

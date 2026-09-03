@@ -147,6 +147,49 @@ class TestTimestamps:
             normalize_ledger(p)
 
 
+class TestExcelSerialDates:
+    """Razorpay's dashboard exports carry Excel serial dates. ADR-037.
+
+    The regression these guard is not a crash — it is a plausible wrong answer.
+    Serial 44658 read as epoch seconds is 1970-01-01, which raises nothing, looks
+    like a date, and makes every settlement appear ~52 years late.
+    """
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # Both of these appear in the SAME column of the real sample file.
+            ("44658.44689814815", date(2022, 4, 7)),
+            ("29/06/2022 07:34:39", date(2022, 6, 29)),
+            # The bare-integer form is the one that was silently wrong.
+            ("44658", date(2022, 4, 7)),
+        ],
+    )
+    def test_real_sample_file_forms(self, tmp_path: Path, raw: str, expected: date) -> None:
+        p = write_csv(tmp_path / "l.csv", f"order_id,amount,timestamp\nO1,100.00,{raw}")
+        rows, _ = normalize_ledger(p)
+        assert rows[0]["captured_at"].date() == expected
+
+    def test_the_1970_regression(self, tmp_path: Path) -> None:
+        """THE bug. 44658 must not become 1970-01-01."""
+        p = write_csv(tmp_path / "l.csv", "order_id,amount,timestamp\nO1,100.00,44658")
+        rows, _ = normalize_ledger(p)
+        assert rows[0]["captured_at"].year != 1970
+        assert rows[0]["captured_at"].date() == date(2022, 4, 7)
+
+    def test_epoch_seconds_still_win_outside_the_serial_window(self, tmp_path: Path) -> None:
+        """The fix must not break the API path. Epoch seconds are ~10^9, serials ~10^4."""
+        p = write_csv(tmp_path / "l.csv", "order_id,amount,timestamp\nO1,100.00,1785769200")
+        rows, _ = normalize_ledger(p)
+        assert rows[0]["captured_at"].date() == date(2026, 8, 3)
+
+    def test_fractional_outside_the_window_is_refused_not_coerced(self, tmp_path: Path) -> None:
+        """A number we cannot place is an error, not a guess."""
+        p = write_csv(tmp_path / "l.csv", "order_id,amount,timestamp\nO1,100.00,999.5")
+        with pytest.raises(NormalizationError, match="Refusing to guess"):
+            normalize_ledger(p)
+
+
 class TestAdversarialInput:
     def test_empty_file_with_a_header_is_not_an_error(self, tmp_path: Path) -> None:
         """'Nothing to reconcile' is a valid answer that must reach the verdict stage."""
@@ -218,3 +261,48 @@ class TestToDate:
 
     def test_none_passes_through(self) -> None:
         assert to_date(None) is None
+
+
+class TestReconTypeSpelling:
+    """Razorpay's export says `transaction_entity`; we wrote `type`. ADR-038.
+
+    No prior test could catch this: both sides of every test used our spelling.
+    """
+
+    def test_razorpays_own_key_is_read(self) -> None:
+        from finctl.schema import ReconType, is_recon_type, recon_type
+
+        # Verbatim shape from sample-settlements-recon-report.xlsx.
+        real = {"transaction_entity": "payment", "entity_id": "pay_JpAZJjN9O1lKuG"}
+        assert recon_type(real) == "payment"
+        assert is_recon_type(real, ReconType.PAYMENT)
+        assert not is_recon_type(real, ReconType.REFUND)
+
+    def test_the_reverse_refund_row_from_the_sample_file(self) -> None:
+        """Row 10 of the real recon sample: a settlement-side refund, no order_id."""
+        from finctl.schema import ReconType, is_recon_type
+
+        real = {"transaction_entity": "refund", "entity_id": "rfnd_Jt7Bq2djxtuWo5",
+                "debit": "1.0", "credit": "0.0", "settlement_id": "setl_JtAs2E7Uf55JMV"}
+        assert is_recon_type(real, ReconType.REFUND)
+
+    def test_our_own_spelling_still_works(self) -> None:
+        """The generator and the live API both use `type`. Both must keep working."""
+        from finctl.schema import ReconType, is_recon_type
+
+        assert is_recon_type({"type": "payment"}, ReconType.PAYMENT)
+        assert is_recon_type({"type": "refund"}, ReconType.REFUND)
+
+    def test_an_unknown_discriminator_is_not_coerced(self) -> None:
+        """A value we do not recognise stays visible rather than becoming a known one."""
+        from finctl.schema import ReconType, is_recon_type, recon_type
+
+        row = {"transaction_entity": "adjustment_of_some_new_kind"}
+        assert recon_type(row) == "adjustment_of_some_new_kind"
+        assert not is_recon_type(row, ReconType.PAYMENT)
+        assert not is_recon_type(row, ReconType.REFUND)
+
+    def test_a_row_with_no_discriminator_returns_none(self) -> None:
+        from finctl.schema import recon_type
+
+        assert recon_type({"entity_id": "pay_x"}) is None

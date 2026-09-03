@@ -33,7 +33,7 @@ Identified in advance, actively mitigated. Not yet observed as failures.
 
 | Risk | Mitigation | Status |
 |---|---|---|
-| Hardcoded fee rate wrong for UPI-heavy merchants | Rate card is config; `config` refuses to supply a default MDR; explicit payment-mix test | Mitigated by design, unverified |
+| Hardcoded fee rate wrong for UPI-heavy merchants | Rate card is config; `config` refuses a default MDR | **Occurred.** The mechanism worked; the shipped *value* was wrong — UPI billed at 0 when the ~2% platform fee applies. Found by reading Razorpay's pricing page, not by the suite. Fixed in ADR-035 |
 | Correlation mis-attributes a gap | Planted deliberately on test day and documented | Planned |
 | Timing tolerance breaks on bursty volume | Tolerance configurable, T+1/T+2/T+7 tested | Planned |
 | Live API integration eats the clock | Hard 2h timebox, seeded fallback always ready | Not started |
@@ -244,3 +244,78 @@ than tracked as a note.
 available during Phase 1. Per ADR-006 this was not allowed to block the build. Every
 fixture declares `live_capture: false` inline, and a test asserts that declaration exists,
 so the distinction cannot be lost by reading a file alone.
+
+### Review — external checks against published pricing and prior art
+
+**A UPI-labelled row can carry two different rates, and we cannot always tell which.**
+`method: upi` covers both a bank-to-bank UPI payment (~2% platform fee) and a RuPay
+*credit card* paid through a UPI app (2.15% + GST) — a credit-card transaction wearing a
+UPI mask. The rate card prices both (`upi`, `upi_rupay_credit`), but if a batch labels the
+masked case as plain `upi` with no distinguishing field, we will check it against the
+wrong rate and report a small FEE discrepancy on a transaction that was billed correctly.
+The 15 bps gap is under most rounding tolerances at single-transaction scale and becomes
+visible in aggregate. We do not currently detect the ambiguity, and cannot without a field
+that separates them. See ADR-035.
+
+**No fuzzy matching, by choice — and it costs recall.** ADR-015 refuses approximate
+matching on identifiers. A comparable open-source implementation (Sashank2006) matches on
+`order_id + amount + date window` with numeric tolerance, arguing that nobody misspells an
+order id so the tolerance is on the *numbers*, not the string. That is a reasonable
+position and it will match rows we leave unmatched. We chose the opposite failure: we
+would rather report "unmatched, look at it" than assert a pairing we cannot prove. This is
+a real recall cost on messy merchant data, not a claim of superiority.
+
+**No composite hypotheses.** When two line items together explain a gap that neither
+explains alone, we go to UNEXPLAINED. The same prior implementation attempts a composite
+path. Compound faults are common in real data, so this is a genuine coverage gap; the
+residual absorbs it honestly rather than guessing, but it does absorb it.
+
+**Bank-leg aggregation is N:1 and depends on it.** A settlement consolidates many payments
+into one bank credit under one UTR, so pass 2 aggregates per UTR rather than comparing row
+to row. This is the same cardinality Hyperswitch documents for its second leg. It is
+tested and it holds — noted here because a row-to-row comparison would appear to work on
+small batches and fail on any batch with real consolidation.
+
+**We refuse to guess a column mapping; Cointab lets the user draw one.** A commercial
+implementation of this same reconciliation accepts CSV/XLS/XLSX and has the user map
+columns in a UI. We raise on an unrecognised header instead. Defensible for an engine that
+must never silently misread a money column, but it is the friction point on a real
+merchant's file, and "raise" is not a substitute for the mapping step a product would need.
+
+### Real-data phase — what Razorpay's own sample files falsified
+
+We obtained Razorpay's twelve official sample report exports to build the upload path
+against real headers. Four assumptions did not survive contact with them.
+
+**A date format we could not read, that failed silently.** The recon export carries Excel
+serial dates (`44658.44689814815`) and `DD/MM/YYYY HH:MM:SS` **in the same column**. Our
+parser read the bare-integer form as epoch seconds and returned **1970-01-01**. It raised
+nothing. Every affected order would have looked ~52 years late and been filed as TIMING —
+the benign bucket — while also corrupting the observed settlement cycle for the whole
+batch. Fixed in ADR-037. That this survived 547 tests is the point: the generator emits
+epoch seconds, so no batch it produced could reach the branch.
+
+**The exports are `.xlsx`, not CSV.** The normalizer is `csv.DictReader` only. "Real CSV
+upload" was the wrong framing of the feature — Razorpay's dashboard hands a merchant an
+Excel file, so an upload path that accepts only CSV stops a real merchant on step one.
+
+**Our recon type discriminator had the wrong name.** `matcher.py` branched on
+`row["type"]`; the real column is `transaction_entity`. The *values* match (`payment`,
+`refund`) but the key did not, so on a real export every recon row was dropped and every
+order reported as MISSING. ADR-008 committed to Razorpay's own field names precisely so a
+live-data swap would be a source change rather than a schema change — this is one place
+that promise had drifted, and no test could catch it because both sides of the test used
+our name. Fixed in ADR-038 via an accessor that reads either spelling; both remain
+supported, since the live API and the dashboard export genuinely differ.
+
+**Amounts are rupee decimals, not paise.** `amount: 1.0` means one rupee. Our JSON
+ingest path (`load_collection`) assumes canonical integer paise. The CSV/xlsx path parses
+rupee strings correctly, so this is a live hazard only where the two paths meet.
+
+**What these files do and do not establish.** They are authoritative for **schema and
+format**, which is what we most needed. They are *not* a real merchant's data: 10 recon
+rows, one payment method (`bank_transfer`), `sample utr` as a literal string, and no
+populated disputes. So they close the "am I reading the right columns" question and
+leave the "are my accuracy numbers self-graded" question open. The accuracy figures in
+METRICS.md are still measured against generator-produced ground truth, and obtaining
+these files does not change that.

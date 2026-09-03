@@ -32,7 +32,7 @@ from typing import Any
 
 from finctl.classify.classifier import Classification, Finding
 from finctl.match.matcher import MatchResult, OrderMatch
-from finctl.schema import ReconType
+from finctl.schema import ReconType, is_recon_type
 
 
 @dataclass
@@ -185,6 +185,27 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             order_ids=[o for o, _ in orders],
         ))
 
+    # --- payments the PSP is holding --------------------------------------------------
+    # A held payment has a recon row, so it is `matched` and skips the "never reached
+    # settlement" branch above — but it has no settlement and never reaches the bank, so
+    # its net is absent from `received`. Without its own component that money lands in
+    # the residual and the decomposition refuses to balance.
+    #
+    # Booked at the NET the merchant would have received, since the fee is already
+    # counted in the FEE component above. See ADR-036.
+    held_ids = {
+        f.order_id for f in findings
+        if f.order_id and f.classification is Classification.ON_HOLD
+    }
+    if held_ids:
+        held = [m for m in primary_rows if m.order_id in held_ids]
+        d.components.append(GapComponent(
+            classification=Classification.ON_HOLD,
+            amount_paise=sum(m.ledger_amount_paise - m.fee_paise for m in held),
+            count=len(held),
+            order_ids=[m.order_id for m in held],
+        ))
+
     # --- settled but not yet in the bank ---------------------------------------------
     # Genuinely still in flight: Razorpay has it, the bank does not. This is the only
     # TIMING that belongs in the gap. An order that settled late but HAS arrived is
@@ -243,7 +264,7 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
         row.get("debit", 0)
         for sm in matches.settlement_matches
         for row in sm.recon_rows
-        if row.get("type") == ReconType.REFUND
+        if is_recon_type(row, ReconType.REFUND)
     )
     if refund_debits:
         d.components.append(GapComponent(
@@ -252,7 +273,7 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             count=sum(
                 1 for sm in matches.settlement_matches
                 for row in sm.recon_rows
-                if row.get("type") == ReconType.REFUND
+                if is_recon_type(row, ReconType.REFUND)
             ),
         ))
 

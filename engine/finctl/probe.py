@@ -27,6 +27,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from finctl.schema import ReconType, is_recon_type
+
 FIXTURE_DIR = Path(__file__).parent.parent / "tests" / "fixtures" / "razorpay"
 
 # Razorpay test-mode endpoints. Used only by --live.
@@ -85,7 +87,7 @@ def analyse_fee_convention(recon: dict[str, Any]) -> dict[str, Any]:
     ambiguous: list[str] = []
 
     for item in recon.get("items", []):
-        if item.get("type") != "payment" or not item.get("settled"):
+        if not is_recon_type(item, ReconType.PAYMENT) or not item.get("settled"):
             continue
         amount, fee, tax = item.get("amount"), item.get("fee"), item.get("tax")
         credit = item.get("credit")

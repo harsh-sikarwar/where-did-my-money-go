@@ -1572,3 +1572,81 @@ generator's *structure* rules out. That is the honest limit of every number in
 ### State
 
 **543 tests green**, ruff clean. Blind score: 26 caught, 0 missed, PASSED.
+
+---
+
+## 2026-09-03 — Real files: the third time reality beat the generator
+
+Obtained Razorpay's twelve official sample report exports. The plan was to use them for
+column names before building the upload path. They cost about twenty minutes to read and
+falsified four assumptions, one of them a live bug.
+
+### The one that mattered
+
+`sample-settlements-recon-report.xlsx`, column `entity_created_at`:
+
+```
+row 1:  44658.44689814815
+row 2:  29/06/2022 07:34:39
+```
+
+Same column. Same file. A spreadsheet stores dates as serial numbers and writes whichever
+form the cell format dictates, so any real export mixes them.
+
+Our parser's first branch was `if text.isdigit(): datetime.fromtimestamp(...)`. And
+`"44658"` is all digits. It became **1970-01-01**.
+
+Nothing raises. Nothing looks corrupt. It is a *plausible date*, and it poisons three
+things downstream: every affected order looks ~52 years late and files as TIMING (the
+benign bucket, so it disappears from the actionable list), `observe_cycle` derives the
+settlement cycle from those dates so one bad row skews what the entire batch is judged
+against, and the verdict screen calls it "money on its way" — the precise opposite of
+true.
+
+The float form was never wrong: `44658.4469` is not `.isdigit()`, so it fell through and
+raised loudly. Only the midnight-exact integer form was dangerous. That is why no test
+found it — the generator emits epoch seconds, so **no batch it produced could reach that
+branch**.
+
+Fixed by parsing serials explicitly, checked before epoch seconds. The two encodings are
+four orders of magnitude apart (2020-01-01 is serial `43831`, epoch `1577836800`), so the
+range test is disjoint rather than a heuristic. A fractional number outside the serial
+window now raises instead of being coerced into a date that looks reasonable. ADR-037.
+
+### The other three
+
+- The exports are **`.xlsx`**, not CSV. The normalizer is `csv.DictReader` only. "Real
+  CSV upload" was the wrong name for the feature: Razorpay hands merchants an Excel file.
+- Our recon discriminator is `row["type"]`; the real column is **`transaction_entity`**.
+  Values match, key does not. ADR-008 exists specifically to prevent this drift, and it
+  had drifted anyway — invisibly, because both sides of every test used our name. On a
+  real export this drops *every* recon row and reports the whole batch as MISSING. Fixed
+  the same day (ADR-038) behind an accessor that reads both spellings, with tests built
+  from rows copied verbatim out of the sample file.
+- Amounts are **rupee decimals** (`amount: 1.0` = one rupee), not paise.
+
+### And one gift
+
+Row 10 of the recon sample is `transaction_entity: refund`, `debit: 1.0`, `credit: 0.0`,
+with a `settlement_id` and no `order_id`. That is the **reverse refund** — the
+settlement-side refund the merchant never recorded — sitting in Razorpay's own sample
+file. It is the next item on the list, and it can now be built against a real row instead
+of an imagined one.
+
+`dispute_id`, `dispute_created_at` and `dispute_reason` are real columns too, so the
+DISPUTE rule gets a real schema rather than a synthesised field.
+
+### The pattern, now three for three
+
+ADR-031, ADR-033, and now ADR-037: every bug found in the last two days came from data
+the generator **structurally could not produce**, not from reasoning about the code. The
+generator tests the failure modes we imagined. Real files test the ones we didn't.
+
+Worth being precise about what this does and does not change: no previously published
+metric is invalidated, because none of them ever exercised this path. But that is the
+uncomfortable half of the sentence — the numbers measured the engine against the
+generator's idea of a date, and the first real file disagreed.
+
+### State
+
+**553 tests green** (6 added, including a named regression for the 1970 case).

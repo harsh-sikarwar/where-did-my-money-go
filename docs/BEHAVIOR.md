@@ -42,7 +42,9 @@ wrong (`build-spec.md` §6c), so the failure is made loud by design.
 Missing required key → raise, naming the key and the file.
 
 **Key content.**
-- MDR per payment method. **UPI is 0** — mandated for banks, not an oversight.
+- Per-method rate: the charge the merchant actually pays. **UPI is ~2%** — zero MDR is
+  statutory, but the aggregator's platform fee is deducted anyway and is what appears on
+  the settlement row. Conflating the two was a real bug; see ADR-035.
 - GST at 18% applied **to the MDR**, never to the transaction amount.
 - Settlement cycle (T+1 / T+2 / T+7) and the working-day calendar.
 - Tolerances: rounding tolerance in paise, timing tolerance in days.
@@ -79,6 +81,12 @@ the column name and the candidates it was between.
 **On bad input.**
 - Renamed/reordered columns → resolved by the mapping table, or raise. Never positional.
 - `"1,234.50"`, `"₹1234.50"`, `"1234.5"` → all parse to `123450` paise.
+- **Timestamps** → accepts Excel serial dates (`44658.4469`), epoch seconds
+  (`1656487479`), `DD/MM/YYYY HH:MM:SS`, `YYYY-MM-DD` and ISO 8601. Razorpay's own
+  dashboard exports mix serials and `DD/MM/YYYY` **in the same column**, so this is not
+  optional. A bare number in `[20000, 80000]` is a serial; outside it, epoch seconds.
+  The ranges are ~10⁴ apart, so this is disjoint, not a guess. A fractional number
+  outside the serial window raises rather than being coerced (ADR-037).
 - Empty file → returns an empty frame with the correct schema. Not an error: "nothing to
   reconcile" is a valid answer and must survive to the verdict stage.
 - Negative amounts → allowed only where the schema expects them (refunds); otherwise raise.

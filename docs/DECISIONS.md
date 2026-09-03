@@ -256,6 +256,22 @@ look like a small rounding issue at 50 rows and like a real discrepancy at 5,000
 2. Assume `fee` is GST-inclusive and never subtract tax separately (follows the example).
 3. **Derive it per batch** from the identity that must hold, and assert it.
 
+**A third convention, at the settlement level (added 2026-09-03).** The ambiguity above
+is on the *recon* endpoint. The settlement object itself does something different again:
+both documented examples — `amount: 9973635` and `amount: 50000` — report `fees: 0` and
+`tax: 0`, with the note that *"in case of a normal settlement, the fee charge will be 0."*
+
+So a settlement-level `fee` of zero does **not** mean no fee was charged. It means the
+fees were already netted off at the payment level and are itemised on the recon rows, not
+re-stated on the settlement. An engine that read fees from the settlement object would
+conclude a merchant paid nothing at all.
+
+This strengthens the case for Option 3 rather than complicating it: there are at least
+three conventions in play across two endpoints of one provider, so *any* assumed reading
+is wrong somewhere. Deriving the relationship per batch and refusing an inconsistent one
+is the only approach that survives all three. It also sharpens where we read fees from:
+the recon rows, never the settlement envelope.
+
 **Choice.** Option 3.
 
 For every settled row, exactly one of these holds:
@@ -1244,3 +1260,248 @@ rules out. Only data from outside the generator reaches those.
 
 This is the honest limit of every accuracy number in `METRICS.md`, and it is now
 demonstrated rather than merely conceded.
+
+---
+
+## ADR-035 — Zero MDR is not a zero fee: UPI carries the platform fee
+
+**Date:** 2026-09-03 · **Phase:** review
+
+**Context.** The rate card shipped `upi: mdr_bps: 0`, and `config/loader.py` enforced it
+— a non-zero UPI rate raised `ConfigError`. Both cited the same fact: UPI carries zero
+MDR, mandated under Section 10A of the Payment and Settlement Systems Act 2007, in force
+since January 2020.
+
+The fact is true. The inference from it was wrong.
+
+Zero MDR is a statement about **interchange** — what the network and issuing bank levy.
+It is not a statement about what the merchant pays. Razorpay is a payment aggregator, not
+a bank: it charges a **platform fee** for the rails, and its published pricing applies ~2%
++ 18% GST to standard bank-to-bank UPI *despite* the zero MDR. It is the platform fee, not
+the MDR, that lands in the `fee` field of a settlement row.
+
+So on a real UPI transaction the merchant sees ~2% deducted. The engine expected 0, and
+would have reported a FEE discrepancy on **every UPI row of every real batch** — worst on
+exactly the `upi_heavy` merchants the config layer was built to serve.
+
+**Why 22 passing configurations did not catch it.** ADR-013 has the generator compute fees
+with `expected_fee()` — the engine's own function. So the generator emitted zero-fee UPI
+rows, the classifier expected zero-fee UPI rows, and they agreed. This is precisely the
+failure mode ADR-013 accepted and `LIMITATIONS.md` names: *generator and classifier can be
+wrong together, and the test suite cannot see it.* The 0-false-positive result across the
+matrix was real, and structurally blind to this.
+
+It is worth being exact about what the risk register got wrong. The row read "Hardcoded fee
+rate wrong for UPI-heavy merchants → Mitigated by design, unverified," and the mitigation
+was "rate card is config, config refuses a default MDR." That mitigation addressed the
+*mechanism* — no hardcoded rate, no silent default — and the mechanism worked as designed.
+The **value** it faithfully applied was wrong. A config layer guarantees a rate is easy to
+change; it cannot make the shipped default correct. Worse, the loader's guard promoted the
+wrong value from a default into an *invariant*, so the one place that might have caught it
+instead enforced it.
+
+**Decision.**
+1. `upi.mdr_bps` is **200** — the platform fee. `mdr_component_bps: 0` records that the MDR
+   component is genuinely zero, for explanation only; it never enters the arithmetic.
+2. The loader guard is **inverted**: a UPI rate of *zero* now raises, since that is the
+   error that silently flags every UPI row. A merchant genuinely paying nothing must say so
+   deliberately.
+3. `card_debit` moves 90 → 200. The RBI debit cap is real, but Razorpay's published card
+   pricing is a flat 2%; the 90 bps was the same category error.
+4. A new method `upi_rupay_credit` at **215** bps. A RuPay credit card paid through a UPI
+   app is a credit-card transaction wearing a UPI mask, priced at 2.15% + GST. Two
+   different rates can both arrive labelled `method: upi` (see LIMITATIONS.md).
+
+**Consequences.** Four golden files were regenerated. Defect counts, volumes and method
+mixes are byte-identical; only rupee amounts moved — fee/tax/credit on UPI rows, and
+`timing_lag` impact, which is measured in settled rupees and so shifts when fees do. A
+blind run on a 610-order `upi_heavy` batch passes with 0 missed and 0 false positives, with
+`wrong_fee_rate` at 30/30 — that detector is now exercised against a non-zero baseline
+rather than agreeing trivially at zero.
+
+**What this says about the method.** The bug was not found by the test suite, the metrics
+matrix, or the blind harness. It was found by reading a vendor's published pricing page.
+Every layer of internal verification here shares one assumption set; checking against the
+world outside it is a *different* activity, and the only one that could have caught this.
+ADR-029 established that hand-edited data reaches failures the generator cannot invent.
+This is the same lesson one level up: an external *fact* reaches errors that no amount of
+internally-consistent data can.
+
+---
+
+## ADR-036 — `on_hold` is a classification, not an unexplained gap
+
+**Date:** 2026-09-03 · **Phase:** review
+
+**Context.** Razorpay's settlement recon schema carries two booleans we were reading past:
+`on_hold` (the settlement for this payment is being withheld) and `settled`. We parsed
+them into the staged batch and then ignored them.
+
+The consequence is specific. When `on_hold` is true, the money is not late and not
+missing — it is being withheld on purpose, usually for pending KYC, a risk review, or a
+dispute. Our engine had no rule for it, so such an order fell through every money check
+and landed in UNEXPLAINED. That is the worst available answer: the engine tells a merchant
+*"we cannot account for this"* while the reason sits in a field it already parsed. Worse,
+once the settlement cycle elapsed, `_check_timing` would eventually call it TIMING —
+"on its way, it arrives on its own" — which is actively false. Held money does not arrive
+on its own; waiting is precisely the wrong action.
+
+**Decision.** Add `ON_HOLD` as a first-class classification.
+
+1. `_check_on_hold` runs **before** `_check_timing`. Ordering is load-bearing: a held
+   payment also looks late, and "late" is the wrong answer.
+2. It is **not** in `BENIGN`. TIMING is benign because it resolves itself; a hold does not.
+   It needs a human to open the Razorpay dashboard, so it belongs on the actionable list.
+3. The verdict copy says so plainly: *"waiting will not release it."*
+4. `gap.py` gets an `ON_HOLD` component. A held order is `matched` — a recon row exists —
+   so it skips the "never reached settlement" branch, but its money never reaches the
+   bank. Without its own component that money lands in the residual and the decomposition
+   refuses to balance. It is booked at **net of fee**, since the fee is already counted in
+   the FEE component.
+
+**Generating it.** A classification with no data to exercise it is unverified, which is
+the ADR-035 lesson applied. `payment_on_hold` is now a defect type: 2 in the `demo`
+profile. The generator emits the recon row with `on_hold=true` and deliberately **excludes
+it from settlement grouping** — no `settlement_id`, no UTR, no `settled_at`, and no bank
+credit. A test asserts that inverse invariant directly, because a held row that acquired a
+UTR would mean money appearing in the bank while the engine reported it withheld.
+
+**Consequences.** Three golden files gained 2 defects each, with bank credit down by
+exactly the held amount. On a 400-order `upi_heavy` demo batch, `payment_on_hold` scores
+2 caught / 0 missed with 0 false positives and the gap still balances to ₹0.00.
+
+**Cost.** `on_hold` narrows UNEXPLAINED, so the honest-residual number gets slightly
+smaller for a reason that is not engine cleverness — it is reading a field we already had.
+Worth stating plainly rather than claiming as an accuracy improvement.
+
+---
+
+## ADR-037 — An Excel serial date read as epoch seconds is a silent 1970
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** We obtained Razorpay's twelve official sample report files
+(`razorpay-sample-files/`) to build the upload path against real headers rather than
+imagined ones. The first thing they falsified was not a column name — it was a date.
+
+`sample-settlements-recon-report.xlsx` carries this in the `entity_created_at` column:
+
+| row | value |
+|-----|-------|
+| 1   | `44658.44689814815` |
+| 2   | `29/06/2022 07:34:39` |
+
+The **same column**, in the **same file**, in two formats. A spreadsheet stores a date as
+a serial number and writes whichever representation the cell format dictates, so any real
+export mixes them.
+
+Our `_parse_timestamp` had this as its first branch:
+
+```python
+if text.isdigit():
+    return datetime.fromtimestamp(int(text), tz=UTC)   # epoch seconds
+```
+
+`"44658"` is all digits. It parsed as 44,658 seconds after the Unix epoch:
+**1970-01-01 12:24:18**. The correct answer is 2022-04-07.
+
+This is the worst class of bug this project exists to prevent, and it was inside the
+project. It does not raise. It does not look like corruption. It produces a *plausible
+date*, and every downstream consumer trusts it:
+
+- `_check_timing` compares captured-at against settled-at, so every affected order
+  appears **~52 years late** — TIMING, the benign bucket, absorbing a real anomaly.
+- `observe_cycle` derives the settlement cycle from those same dates, so one poisoned
+  batch corrupts the cycle the *whole batch* is judged against.
+- The verdict screen reports it as "money on its way", which is the one thing it is not.
+
+The float form (`44658.44689814815`) was never silently wrong — it is not `.isdigit()`,
+so it fell through to `fromisoformat` and raised. Only the bare-integer form was
+dangerous. That is worth stating precisely: the bug needed a date whose time component
+was exactly midnight to trigger, which is why no synthetic test found it. The generator
+emits epoch seconds, so no batch it produced could reach this branch.
+
+**Decision.** Parse Excel serial dates explicitly, and check that branch **before** epoch
+seconds.
+
+1. `EXCEL_EPOCH = 1899-12-30`. Not 1900-01-01: Excel wrongly treats 1900 as a leap year,
+   and 1899-12-30 is the origin that makes modern dates come out right.
+2. A bare number in `[20000, 80000]` is an Excel serial. That window is 1954-10-03 to
+   2119-01-25 — wider than any settlement file, and **four orders of magnitude** away
+   from the epoch-seconds encoding of the same dates (2020-01-01 is serial `43831` but
+   epoch `1577836800`). The two interpretations are separated by a gap of ~10⁴, so this
+   is a disjoint-range test, not a heuristic. A number outside the window still parses
+   as epoch seconds, so the Razorpay API path is untouched.
+3. A **fractional** number outside the serial window raises rather than being coerced.
+   We can tell it is not epoch seconds (those are integers) and not a serial (out of
+   range), which leaves no reading we can defend.
+4. `datetime`/`date` objects pass through, because `openpyxl` hands back real datetimes
+   for date-formatted cells and re-stringifying them to re-parse would be a second place
+   to get this wrong.
+5. Added `%d/%m/%Y %H:%M:%S` and siblings to the string formats — the other shape the
+   real files use. Ordered longest-first so a datetime is not truncated to a bare date
+   by an earlier partial match.
+
+**Why a range test rather than "trust the file extension".** Tying the interpretation to
+`.xlsx` would be wrong in both directions: a CSV exported *from* Excel carries serials
+too, and an xlsx can hold epoch seconds in a text cell. The value's own magnitude is the
+only honest evidence available.
+
+**Consequences.** Six tests added, including a named regression for the 1970 case and one
+asserting epoch seconds still resolve correctly. 553 tests green.
+
+**Cost, stated plainly.** This is a bug found by obtaining real files, not by reasoning
+about the code — the same lesson as ADR-031 and ADR-033, now for the third time. Every
+prior accuracy figure was measured on generated data using epoch seconds, so **no
+previously published metric is invalidated by this fix**; equally, none of them ever
+exercised this path. The honest reading is that the metrics measured the engine against
+the generator's idea of a date, and the first real file disagreed.
+
+---
+
+## ADR-038 — Read the recon discriminator through an accessor, not a key
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** ADR-008 committed to using Razorpay's own field names, including their
+oddities, so that swapping seeded data for live data would be a **source** change rather
+than a **schema** change. The stated reason was that every rename is a place the swap can
+silently mismatch under time pressure.
+
+Razorpay's actual settlement recon export names the row discriminator
+**`transaction_entity`**. We wrote **`type`**.
+
+The values agree exactly — `payment`, `refund` — so only the key drifted. The failure
+mode is total and silent: `row.get("type")` on a real export returns `None`, no branch
+matches, and **every recon row is dropped**. Each order then looks unmatched, and the
+engine reports MISSING — "no PSP record at all" — for a batch where Razorpay recorded
+everything.
+
+No test could catch this. Both sides of every test used our spelling, so the generator
+wrote `type` and the matcher read `type` and agreed with itself. This is the same class
+of blind spot as ADR-031/033/037, in a different disguise: not a shape the generator
+could not produce, but a **name only we used**.
+
+**Decision.** Add `recon_type(row)` and `is_recon_type(row, ReconType.X)` to `schema.py`,
+reading `transaction_entity` first and falling back to `type`. Replace all five direct
+reads (`matcher.py` ×2, `gap.py` ×2, `probe.py` ×1).
+
+1. **An accessor, not scattered `or` clauses.** A third spelling — and Razorpay's reports
+   are not internally consistent, see the settlements report's blank leading column — is
+   then a one-line change here rather than a hunt through call sites.
+2. **`recon_type` returns the raw string, not a `ReconType`.** Coercing an unrecognised
+   discriminator into a known member would silently reclassify a row we do not
+   understand. An unknown value stays visible and matches nothing.
+3. **Both spellings stay supported permanently.** The live API and our generator use
+   `type`; the dashboard export uses `transaction_entity`. Neither is "wrong" — they are
+   two real Razorpay surfaces, and the engine ingests both.
+
+**Consequences.** Five tests added, using rows copied verbatim from
+`sample-settlements-recon-report.xlsx` — including the reverse-refund row that the next
+piece of work needs. Verified end to end: a `transaction_entity` row now matches, where
+before it produced a false MISSING. 558 tests green.
+
+**What this says about ADR-008.** The principle was right and we still drifted from it,
+because there was no *check* that our field names matched Razorpay's — only an intention
+to keep them aligned. The sample files are now that check. Naming a convention is not the
+same as enforcing one.

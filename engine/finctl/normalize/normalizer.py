@@ -16,7 +16,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -119,17 +119,88 @@ def resolve_columns(
     )
 
 
+# Excel's day-zero. Serial 1 is 1900-01-01, but Excel wrongly treats 1900 as a leap
+# year, so the epoch that makes modern dates come out right is 1899-12-30.
+EXCEL_EPOCH = datetime(1899, 12, 30, tzinfo=UTC)
+
+# The window in which a bare number is read as an Excel serial rather than epoch
+# seconds. 20000 is 1954-10-03 and 80000 is 2119-01-25 — wider than any settlement
+# file will contain, and four orders of magnitude below the epoch-seconds range for
+# the same dates (2020-01-01 is serial 43831 but epoch 1577836800). The two
+# interpretations are therefore separated by a gap of ~10^4, not adjacent ranges
+# needing a judgement call. See ADR-037.
+EXCEL_SERIAL_MIN = 20_000
+EXCEL_SERIAL_MAX = 80_000
+
+
+def _looks_numeric(text: str) -> bool:
+    """True for a bare decimal number, e.g. "44658" or "44658.44689814815".
+
+    Deliberately narrower than float(): it rejects "1e9", "inf", "nan" and signed
+    values, none of which are dates, so they fall through to the string formats and
+    ultimately to a raised error rather than being coerced.
+    """
+    if not text:
+        return False
+    whole, _, frac = text.partition(".")
+    return whole.isdigit() and (frac == "" or frac.isdigit())
+
+
+def _from_excel_serial(serial: float) -> datetime:
+    """Convert an Excel/OOXML serial date to UTC.
+
+    The fractional part is the time of day: 44658.44689814815 is 2022-04-07 10:43:32.
+    """
+    return EXCEL_EPOCH + timedelta(days=serial)
+
+
 def _parse_timestamp(value: Any, source_name: str, row_num: int) -> datetime | None:
-    """Parse a timestamp to UTC. Accepts epoch seconds, ISO dates, and ISO datetimes."""
+    """Parse a timestamp to UTC. Accepts Excel serials, epoch seconds, ISO, DD/MM/YYYY.
+
+    The Excel-serial branch exists because Razorpay's own dashboard exports carry them.
+    In `sample-settlements-recon-report.xlsx` the SAME column holds both
+    `44658.44689814815` and `29/06/2022 07:34:39` — a spreadsheet writes whichever the
+    cell format dictates, so a real file mixes the two. Reading 44658 as epoch seconds
+    yields 1970-01-01, which is not an error a merchant would ever see raised: it is a
+    plausible-looking date that quietly makes every settlement look years late. See
+    ADR-037.
+    """
     if value in (None, ""):
         return None
+
+    # A real datetime can arrive already parsed (openpyxl hands back datetimes for
+    # date-formatted cells). Nothing to do but normalise the timezone.
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
+
     text = str(value).strip()
 
-    # Epoch seconds — what Razorpay returns.
+    # Excel serial, integer or fractional. Checked BEFORE epoch seconds: the ranges do
+    # not overlap, and getting the order wrong is the silent-1970 bug.
+    if _looks_numeric(text):
+        number = float(text)
+        if EXCEL_SERIAL_MIN <= number <= EXCEL_SERIAL_MAX:
+            return _from_excel_serial(number)
+        # A fractional number outside the serial window is not a timestamp we know.
+        # Refusing beats coercing it into a date that looks reasonable.
+        if not float(number).is_integer():
+            raise NormalizationError(
+                f"{source_name} row {row_num}: {value!r} is fractional but outside the "
+                f"Excel serial-date range ({EXCEL_SERIAL_MIN}–{EXCEL_SERIAL_MAX}). "
+                "Refusing to guess whether it is a date."
+            )
+
+    # Epoch seconds — what Razorpay's API returns.
     if text.isdigit():
         return datetime.fromtimestamp(int(text), tz=UTC)
 
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+    # "%d/%m/%Y %H:%M:%S" and "%d-%m-%Y %H:%M:%S" are the shapes Razorpay's dashboard
+    # exports use alongside the serials. Longest-first so a datetime is not truncated
+    # to a bare date by an earlier partial match.
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%d-%m-%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
         try:
             return datetime.strptime(text, fmt).replace(tzinfo=UTC)
         except ValueError:
@@ -140,7 +211,8 @@ def _parse_timestamp(value: Any, source_name: str, row_num: int) -> datetime | N
     except ValueError:
         raise NormalizationError(
             f"{source_name} row {row_num}: cannot parse timestamp {value!r}. "
-            "Accepted: epoch seconds, YYYY-MM-DD, DD/MM/YYYY, or ISO 8601."
+            "Accepted: Excel serial date, epoch seconds, YYYY-MM-DD, "
+            "DD/MM/YYYY, or ISO 8601."
         ) from None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
