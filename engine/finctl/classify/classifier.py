@@ -283,6 +283,22 @@ class Classifier:
         # that went back. That is not a refund and must not be labelled as one.
         if gap < 0:
             proof["direction"] = "settlement_exceeds_ledger"
+
+            # A ledger amount of ZERO is not a partial refund — it is a sale the
+            # merchant recorded as worth nothing while Razorpay settled real money for
+            # it. That is a data-entry error, and calling it a refund would tell a
+            # merchant they refunded a customer they never refunded.
+            #
+            # Found by a hand-edited blind test that set one ledger amount to 0. The
+            # generator never produces a zero-value order, so no synthetic case could
+            # have reached this branch.
+            if m.ledger_amount_paise == 0:
+                proof["interpretation"] = (
+                    "the ledger records this sale as worth nothing, but Razorpay settled "
+                    f"{m.settled_gross_paise} for it — a data-entry error rather than a refund"
+                )
+                return Classification.UNEXPLAINED, proof
+
             proof["interpretation"] = (
                 "merchant's ledger is lower than the settled amount — consistent with a "
                 "refund recorded on the merchant side that never reached settlement"

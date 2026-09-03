@@ -1181,3 +1181,66 @@ test we have.
 - The unmatched findings are printed with their arithmetic, so the human can check them
   against the edits they actually made — which is the correct way to score a hand-edited
   run, by inspection rather than by a list the generator wrote.
+
+---
+
+## ADR-033 — A ledger amount of zero is a data-entry error, not a refund
+
+**Date:** 2026-09-03 · **Phase:** blind testing (hand-edited, round 2)
+
+**Context.** A hand-edited blind test set one ledger amount to `0.00` against a real
+₹2,480 settlement. The engine classified it `REFUND`, on the correct general rule that
+settlement-exceeding-ledger is the shape a one-sided refund makes (ADR-024).
+
+**Why that is wrong here.** The merchant did not record a refund. They recorded the sale
+as worth **nothing**, while Razorpay settled real money for it. Reporting that as a refund
+tells a merchant they refunded a customer they never refunded — a **false statement**,
+which is strictly worse than an unexplained one. An honest "we can't explain this" can be
+investigated; a confident wrong explanation cannot, because nothing signals it needs
+checking. Same reasoning as ADR-015's refusal of fuzzy matching.
+
+**Choice.** A zero ledger amount against a non-zero settlement classifies `UNEXPLAINED`,
+with an interpretation naming it as a probable data-entry error.
+
+**Why no generated case found it.** The generator draws ticket sizes from an archetype's
+configured range, whose minimum is ₹299. A zero-value order is not merely unlikely there,
+it is **unreachable** — so this branch had never once executed in 22 matrix runs, 8 blind
+configurations, or 500+ tests.
+
+**A dead branch removed on the way.** I also added a guard for "the difference exceeds the
+settled amount, so it cannot be a partial refund." Writing the test proved it
+**unreachable**: with `gap = ledger − settled` and a non-negative ledger, `|gap|` can never
+exceed `settled`. The only boundary case is zero, which the first check already handles.
+Removed rather than kept as an untested branch — a guard that cannot fire is not
+protection, it is a false suggestion that the case was considered and handled.
+
+---
+
+## ADR-034 — What the hand-edited rounds establish about coverage
+
+**Date:** 2026-09-03 · **Phase:** blind testing
+
+Two rounds of human edits found **two real bugs**, both structurally unreachable by the
+generator:
+
+| Edit | Bug found | Why generation could not reach it |
+|---|---|---|
+| Delete two ledger rows | Orphan settlements left ₹16,992.29 unaccounted (ADR-031) | The generator writes the ledger **first** and derives settlements from it, so settled money with no ledger row cannot occur |
+| Set an amount to `0` | A zero ledger amount reported as `REFUND` (ADR-033) | Ticket sizes are drawn from an archetype range with a ₹299 minimum |
+
+Three edits that found **nothing** are equally worth recording, because they are evidence
+the design decisions they probe actually hold:
+
+| Edit | Result |
+|---|---|
+| Rename `payment_method` → `Mode` | Resolved through the alias table; **every number byte-identical**; the mapping recorded in the audit trail (ADR-015: never positional) |
+| Duplicate a ledger row | Correctly `DUPLICATE`, +₹2,244, phantom expectation widening the gap (ADR-025) |
+| Inflate an amount | Correctly `UNEXPLAINED` at exactly the difference — **not** `REFUND` (ADR-024's sign rule, opposite direction) |
+
+**The generalisable finding.** Both bugs were in the same place: a *shape* the generator
+cannot produce, because the generator's own construction order forbids it. Synthetic data
+tests the failure modes you imagined; it cannot test the ones your generator's structure
+rules out. Only data from outside the generator reaches those.
+
+This is the honest limit of every accuracy number in `METRICS.md`, and it is now
+demonstrated rather than merely conceded.

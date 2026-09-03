@@ -1503,3 +1503,72 @@ Second time in this project I have blamed the engine for being right before chec
 ### State
 
 **537 tests green**, ruff clean.
+
+---
+
+## 2026-09-03 — Hand-edited blind test, round 2
+
+Three more edits on a fresh 123-order batch: duplicate data row 67, set row 69's amount to
+`0`, rename a column header.
+
+### Predictions, before running
+
+- **Renamed header** — `Mode` is in the alias table, so this should resolve silently with
+  no change to any number.
+- **Duplicated row** — should be `DUPLICATE`, +₹2,244, widening the gap.
+- **Zeroed amount** — settlement exceeds ledger, so by the sign rule this becomes `REFUND`.
+  **Predicted, and flagged as probably wrong**: a zero is not a refund.
+
+All three correct, including the one I expected to be a bug.
+
+### Two clean passes
+
+The renamed header resolved through the alias table with **every number byte-identical**,
+and the audit trail recorded `'Mode'->payment_method` — so a merchant disputing a figure
+can see which column was read. That is ADR-015's "never positional" rule working, not
+asserted.
+
+The duplicate produced exactly ₹2,244 as phantom expectation. ADR-025 holding.
+
+### One real bug
+
+```
+order_pjcaQoN5IL7SQf   REFUND   ₹2,480.00
+  "consistent with a refund recorded on the merchant side"
+```
+
+The merchant did not record a refund. They recorded the sale as worth **nothing** while
+Razorpay settled ₹2,480 for it. Reporting that as a refund tells a merchant they refunded
+a customer they never refunded — a **false statement**, strictly worse than an unexplained
+one. An honest "we can't explain this" can be investigated; a confident wrong explanation
+cannot, because nothing signals it needs checking.
+
+Now classified `UNEXPLAINED`, naming it as a probable data-entry error.
+
+**Why no generated case could reach it:** ticket sizes are drawn from an archetype range
+with a ₹299 minimum. A zero-value order is not unlikely there, it is **impossible** — so
+that branch had never executed in 22 matrix runs, 8 blind configurations, or 500+ tests.
+
+### A dead branch, found by writing its test
+
+I also added a guard for "the difference exceeds the settled amount, so it cannot be a
+partial refund." The test failed, and the code was right: with `gap = ledger − settled` and
+a non-negative ledger, `|gap|` can never exceed `settled`. The branch was **unreachable**.
+
+Removed rather than left in. A guard that cannot fire is not protection — it is a false
+suggestion that the case was considered and handled.
+
+### What two rounds of hand-editing established
+
+Two bugs found, both in the same place: **a shape the generator cannot produce**, because
+its own construction order forbids it. It writes the ledger first (so orphan settlements
+are impossible) and draws amounts from a range with a positive minimum (so zero amounts
+are impossible).
+
+Synthetic data tests the failure modes you imagined. It cannot test the ones your
+generator's *structure* rules out. That is the honest limit of every number in
+`METRICS.md`, and it is now demonstrated rather than conceded.
+
+### State
+
+**543 tests green**, ruff clean. Blind score: 26 caught, 0 missed, PASSED.

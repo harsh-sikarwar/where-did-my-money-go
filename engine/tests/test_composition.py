@@ -677,3 +677,120 @@ class TestHandEditedLedger:
 
         v = run(batch_dir).verdict
         assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+
+
+class TestMoreHandEdits:
+    """A second round of human edits: a renamed header, a duplicated row, a zeroed
+    amount. Each probes a different structural assumption.
+
+    The zeroed amount found a real misclassification: a ledger amount of 0 was reported
+    as a REFUND, telling a merchant they had refunded a customer they never refunded.
+    """
+
+    @pytest.fixture
+    def batch_dir(self, tmp_path: Path) -> Path:
+        write_batch(Generator(load_config(), seed=4242, volume=200,
+                              defect_profile="demo").generate(), tmp_path)
+        return tmp_path
+
+    def test_a_renamed_header_changes_no_number(self, batch_dir: Path) -> None:
+        """ADR-015: mapping is by name, never positional. So a rename that resolves
+        through the alias table must be completely invisible in the output."""
+        before = run(batch_dir).verdict.gap_paise
+
+        p = batch_dir / "ledger.csv"
+        lines = p.read_text().splitlines()
+        lines[0] = lines[0].replace("payment_method", "Mode")
+        p.write_text("\n".join(lines) + "\n")
+
+        after = run(batch_dir)
+        assert after.verdict.gap_paise == before
+        # And the audit trail must record which column was actually read, so a merchant
+        # disputing a number can see it.
+        mapping = after.batch.manifest()["sources"]["ledger"]["column_mapping"]
+        assert "'Mode'->payment_method" in mapping
+
+    def test_an_unmappable_header_raises_rather_than_guessing(
+        self, batch_dir: Path
+    ) -> None:
+        """The other half of the same rule: a rename we cannot resolve must fail loudly."""
+        from finctl.normalize.normalizer import NormalizationError
+
+        p = batch_dir / "ledger.csv"
+        lines = p.read_text().splitlines()
+        lines[0] = lines[0].replace("order_id", "widget_code")
+        p.write_text("\n".join(lines) + "\n")
+
+        with pytest.raises(NormalizationError, match="Refusing to guess"):
+            run(batch_dir)
+
+    def test_a_duplicated_row_is_phantom_expectation(self, batch_dir: Path) -> None:
+        """The sale happened once; the books claim it twice. The extra copy widens the
+        gap and is named, rather than being netted away (ADR-025)."""
+        from finctl.classify.classifier import Classification
+
+        p = batch_dir / "ledger.csv"
+        lines = p.read_text().splitlines()
+        duplicated = lines[67]
+        order_id, amount = duplicated.split(",")[0], duplicated.split(",")[1]
+        lines.insert(68, duplicated)
+        p.write_text("\n".join(lines) + "\n")
+
+        v = run(batch_dir).verdict
+        line = next(
+            line for line in v.lines
+            if line.classification is Classification.DUPLICATE
+        )
+        assert line.amount_paise == round(float(amount) * 100)
+        assert line.amount_paise > 0
+        assert sum(x.amount_paise for x in v.lines) + v.unexplained_paise == v.gap_paise
+        assert order_id  # the duplicated order is identifiable
+
+    def test_a_zero_ledger_amount_is_not_called_a_refund(self, batch_dir: Path) -> None:
+        """THE bug this round found.
+
+        A ledger amount of 0 against a real settlement is a data-entry error, not a
+        partial refund. Reporting it as REFUND tells a merchant they refunded a customer
+        they never refunded — a false statement, which is worse than an unexplained one.
+
+        The generator never produces a zero-value order, so no synthetic case could
+        reach this branch.
+        """
+        from finctl.classify.classifier import Classification
+
+        p = batch_dir / "ledger.csv"
+        lines = p.read_text().splitlines()
+        parts = lines[69].split(",")
+        order_id = parts[0]
+        parts[1] = "0.00"
+        lines[69] = ",".join(parts)
+        p.write_text("\n".join(lines) + "\n")
+
+        result = run(batch_dir)
+        finding = next(f for f in result.correlated.findings if f.order_id == order_id)
+        assert finding.classification is Classification.UNEXPLAINED
+        assert "data-entry error" in finding.proof["interpretation"]
+
+    def test_a_genuine_partial_refund_is_still_a_refund(self, batch_dir: Path) -> None:
+        """Guard the fix from over-reaching: a normal one-sided refund must be unaffected."""
+        from finctl.classify.classifier import Classification
+
+        result = run(batch_dir)
+        refunds = [
+            f for f in result.correlated.findings
+            if f.classification is Classification.REFUND
+        ]
+        assert refunds, "the demo profile plants one-sided refunds"
+
+    def test_all_three_edits_together_still_balance(self, batch_dir: Path) -> None:
+        p = batch_dir / "ledger.csv"
+        lines = p.read_text().splitlines()
+        lines[0] = lines[0].replace("payment_method", "Mode")
+        parts = lines[69].split(",")
+        parts[1] = "0.00"
+        lines[69] = ",".join(parts)
+        lines.insert(68, lines[67])
+        p.write_text("\n".join(lines) + "\n")
+
+        v = run(batch_dir).verdict
+        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
