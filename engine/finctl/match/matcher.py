@@ -43,6 +43,12 @@ class OrderMatch:
     order_id: str
     ledger_row: dict[str, Any]
     recon_rows: list[dict[str, Any]] = field(default_factory=list)
+    # Refund rows are kept SEPARATE from recon_rows, not merged into them. Pass-1
+    # matching must not treat a refund as evidence a sale reached Razorpay, but the
+    # classifier does need to see that money went back out — those are different
+    # questions and were conflated until the "refund before the original settled"
+    # case was generated.
+    refund_rows: list[dict[str, Any]] = field(default_factory=list)
     payment_row: dict[str, Any] | None = None
     is_duplicate_order_id: bool = False
 
@@ -59,6 +65,11 @@ class OrderMatch:
     def settled_net_paise(self) -> int:
         """Net credited, after fees. Debits (refunds) subtract."""
         return sum(r["credit"] - r["debit"] for r in self.recon_rows)
+
+    @property
+    def refunded_paise(self) -> int:
+        """Money Razorpay debited from a settlement to return to a customer."""
+        return sum(r.get("debit", 0) for r in self.refund_rows)
 
     @property
     def fee_paise(self) -> int:
@@ -230,9 +241,14 @@ def match(batch: StagedBatch) -> MatchResult:
     # deliberately excluded here: a refund is not evidence that a sale reached Razorpay,
     # and treating it as one would let a refunded order look successfully matched.
     recon_by_order: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    refunds_by_order: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in recon:
-        if row.get("type") == ReconType.PAYMENT and row.get("order_id"):
+        if not row.get("order_id"):
+            continue
+        if row.get("type") == ReconType.PAYMENT:
             recon_by_order[row["order_id"]].append(row)
+        elif row.get("type") == ReconType.REFUND:
+            refunds_by_order[row["order_id"]].append(row)
 
     payments_by_order = {p["order_id"]: p for p in payments if p.get("order_id")}
 
@@ -249,6 +265,7 @@ def match(batch: StagedBatch) -> MatchResult:
             order_id=order_id,
             ledger_row=row,
             recon_rows=list(recon_by_order.get(order_id, ())),
+            refund_rows=list(refunds_by_order.get(order_id, ())),
             payment_row=payments_by_order.get(order_id),
             is_duplicate_order_id=seen_order_ids[order_id] > 1,
         )

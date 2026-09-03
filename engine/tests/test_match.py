@@ -73,8 +73,13 @@ class TestAgainstGroundTruth:
         """
         fees = sum(m.fee_paise for m in result.order_matches)
         missing = sum(m.ledger_amount_paise for m in result.order_matches if not m.matched)
-        refunds = sum(d.impact_paise for d in truth.by_type(DefectType.ONE_SIDED_REFUND))
-        assert result.gap_paise - fees - missing + refunds == 0
+        one_sided = sum(d.impact_paise for d in truth.by_type(DefectType.ONE_SIDED_REFUND))
+        # A refund Razorpay actually DEBITED is a separate term with the opposite sign:
+        # a one-sided refund means the bank got MORE than expected (narrows the gap),
+        # while a settled refund means money went back out (widens it). Conflating the
+        # two is the sign trap this test has now hit twice.
+        debited = sum(m.refunded_paise for m in result.order_matches)
+        assert result.gap_paise - fees - missing + one_sided - debited == 0
 
 
 class TestTwoPassesNameTheLeg:

@@ -561,3 +561,82 @@ def checkpoint(
             "\n[dim]'below tolerance' = planted, not flagged, because config says it is not\n"
             "a defect (e.g. a 1-day timing lag inside grace_days). Not a miss.[/dim]"
         )
+
+
+@app.command()
+def matrix(
+    out: str = typer.Option("data/matrix", "--out", "-o", help="Where to write batches."),
+    results: str = typer.Option("../docs/matrix-results.json", "--results"),
+    quick: bool = typer.Option(False, "--quick", help="Skip the 50k tier."),
+) -> None:
+    """Run the test-day matrix and emit the metrics table.
+
+    Every number in the submission's metrics section comes from here, so it is
+    reproducible by re-running one command rather than reconstructed from notes.
+    """
+    from pathlib import Path
+
+    from finctl.matrix import default_matrix, run_matrix, write_results
+    from finctl.money import format_rupees
+
+    cells = default_matrix()
+    if quick:
+        cells = [c for c in cells if c["volume"] < 50_000]
+
+    console.print(f"[bold]{len(cells)} runs[/bold]  [dim]volume × archetype × mix × cycle[/dim]\n")
+
+    def report(r) -> None:
+        if r.error:
+            console.print(f"  [yellow]skipped[/yellow] {r.archetype[:4]}/{r.payment_mix}/{r.volume}: {r.error[:60]}")
+            return
+        flag = "" if r.balances else " [red]DOES NOT BALANCE[/red]"
+        miss = f" [red]{r.defects_missed} missed[/red]" if r.defects_missed else ""
+        fp = f" [red]{r.false_positives} fp[/red]" if r.false_positives else ""
+        console.print(
+            f"  {r.archetype[:4]}/{r.payment_mix:<10}/{r.volume:>6}/T+{r.cycle_days} "
+            f"[dim]{r.defect_profile:<6}[/dim] "
+            f"match {r.match_rate_pass1 * 100:>5.1f}%  recall {r.recall * 100:>5.1f}%  "
+            f"{r.rows_per_second:>7,}/s{miss}{fp}{flag}"
+        )
+
+    rows = run_matrix(Path(out), cells, on_result=report)
+    path = write_results(rows, Path(results))
+
+    ok = [r for r in rows if not r.error]
+    console.print("\n[bold]Throughput[/bold]  [dim]engine only, excludes generation[/dim]")
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("volume", justify="right")
+    table.add_column("rows", justify="right")
+    table.add_column("seconds", justify="right")
+    table.add_column("rows/sec", justify="right")
+    for r in sorted({r.volume for r in ok}):
+        cell = max((x for x in ok if x.volume == r), key=lambda x: x.rows)
+        table.add_row(f"{r:,}", f"{cell.rows:,}", f"{cell.seconds:.3f}", f"{cell.rows_per_second:,}")
+    console.print(table)
+
+    console.print("\n[bold]Correlation gain by archetype[/bold]  [dim]the headline claim[/dim]")
+    for archetype in sorted({r.archetype for r in ok}):
+        cells_a = [r for r in ok if r.archetype == archetype and r.defect_profile == "demo"]
+        if not cells_a:
+            continue
+        before = sum(r.unexplained_before_paise for r in cells_a)
+        after = sum(r.unexplained_after_paise for r in cells_a)
+        gain = (before - after) / before if before else 0.0
+        console.print(
+            f"  {archetype:<20} {format_rupees(before):>14} → {format_rupees(after):>12}"
+            f"  ({gain * 100:.1f}% resolved)"
+        )
+
+    missed = sum(r.defects_missed for r in ok)
+    fps = sum(r.false_positives for r in ok)
+    unbalanced = [r for r in ok if not r.balances]
+
+    console.print(f"\n[bold]Across {len(ok)} runs[/bold]")
+    console.print(f"  defects missed:  {'[green]0[/green]' if not missed else f'[red]{missed}[/red]'}")
+    console.print(f"  false positives: {'[green]0[/green]' if not fps else f'[red]{fps}[/red]'}")
+    console.print(
+        "  balance identity: "
+        + ("[green]holds in every run[/green]" if not unbalanced
+           else f"[red]FAILS in {len(unbalanced)} runs[/red]")
+    )
+    console.print(f"\n[dim]results → {path}[/dim]")

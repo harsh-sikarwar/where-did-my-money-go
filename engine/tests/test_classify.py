@@ -274,8 +274,12 @@ class TestAgainstGroundTruth:
         gt = GroundTruth.read(tmp_path / "ground_truth.json")
         result = Classifier(load_config()).classify(match(stage_from_dir(tmp_path)))
 
-        # Refunds must be found exactly — this was 0/8 before the sign fix.
-        planted_refunds = len(gt.by_type("one_sided_refund"))
+        # Every REFUND finding comes from one of two mechanisms: a one-sided refund
+        # (ledger disagrees with settlement) or a refund Razorpay actually debited.
+        # Both are real and both must be found.
+        planted_refunds = (
+            len(gt.by_type("one_sided_refund")) + len(gt.by_type("early_refund"))
+        )
         assert len(result.by_class(Classification.REFUND)) == planted_refunds
 
         # Fee overcharges likewise.

@@ -3,24 +3,28 @@
     "bank": 29,
     "ledger": 100,
     "payments": 100,
-    "recon": 91,
+    "recon": 98,
     "subscriptions": 6
   },
   "defects": {
     "by_type": {
+      "early_refund": 3,
       "halted_subscription": 6,
       "missing_order": 3,
       "one_sided_refund": 8,
+      "split_settlement": 4,
       "timing_lag": 10,
       "wrong_fee_rate": 30
     },
-    "count": 57,
+    "count": 64,
     "impact_by_type": {
-      "halted_subscription": 1864100,
-      "missing_order": 1003800,
-      "one_sided_refund": 1103200,
-      "timing_lag": 2765842,
-      "wrong_fee_rate": 38803
+      "early_refund": 361000,
+      "halted_subscription": 2246000,
+      "missing_order": 718500,
+      "one_sided_refund": 1091100,
+      "split_settlement": 0,
+      "timing_lag": 3418782,
+      "wrong_fee_rate": 35866
     }
   },
   "first_ledger_row": {
@@ -53,23 +57,23 @@
     "posted_at": null,
     "settled": true,
     "settled_at": 1785952800,
-    "settlement_id": "setl_thL49vf1VDqXBI",
-    "settlement_utr": "1785924000ndminc",
+    "settlement_id": "setl_rUMiuXTT2a5ZuI",
+    "settlement_utr": "1785924000k0g6ls",
     "tax": 0,
     "type": "payment"
   },
   "method_mix": {
-    "card_credit": 7,
+    "card_credit": 4,
     "card_debit": 7,
-    "upi": 77
+    "upi": 87
   },
   "totals": {
-    "bank_credit_paise": 27419392,
-    "expected_fee_paise": 72305,
-    "expected_net_paise": 27458195,
-    "gross_paise": 29295200,
-    "recon_credit_paise": 27419392,
-    "recon_fee_paise": 111108,
-    "recon_tax_paise": 11030
+    "bank_credit_paise": 26176638,
+    "expected_fee_paise": 46296,
+    "expected_net_paise": 26573504,
+    "gross_paise": 28493200,
+    "recon_credit_paise": 26537638,
+    "recon_fee_paise": 82162,
+    "recon_tax_paise": 7062
   }
 }

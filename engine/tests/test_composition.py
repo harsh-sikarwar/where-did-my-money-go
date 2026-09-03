@@ -439,3 +439,105 @@ class TestAdversarialInputsStillBalance:
         (batch_dir / "bank.csv").unlink()
         v = run(batch_dir).verdict
         assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+
+
+class TestSplitSettlementsAndEarlyRefunds:
+    """The two adversarial cases from build-spec 6e that were unverified until now.
+
+    Generating them immediately found a real bug: refund rows DEBIT a settlement, so
+    they reduce what the bank received — but pass-1 matching deliberately ignores refund
+    rows, so no order-based component could see them. ₹5,421 left the bank unattributed
+    and the balance invariant caught it.
+    """
+
+    @pytest.fixture
+    def result(self, tmp_path: Path):
+        write_batch(Generator(load_config(), seed=20260902, volume=200,
+                              defect_profile="demo").generate(), tmp_path)
+        return run(tmp_path), tmp_path
+
+    def test_a_split_settlement_reports_no_discrepancy(self, result) -> None:
+        """Legitimate Razorpay behaviour. Reporting it would be a false positive.
+
+        Getting this right is harder than reporting a problem: the engine must see two
+        settlement rows for one order and conclude nothing is wrong.
+        """
+        pipeline, batch_dir = result
+        from finctl.generate.ground_truth import DefectType, GroundTruth
+
+        truth = GroundTruth.read(batch_dir / "ground_truth.json")
+        splits = {d.order_id for d in truth.by_type(DefectType.SPLIT_SETTLEMENT)}
+        assert splits, "the demo profile must plant split settlements"
+
+        by_order = {m.order_id: m for m in pipeline.matches.order_matches}
+        for order_id in splits:
+            m = by_order[order_id]
+            assert len(m.recon_rows) == 2, "both legs must be recorded"
+            assert m.is_split
+            assert m.gap_paise == 0, "the two legs must sum to the ledger amount"
+
+    def test_split_settlements_produce_no_false_positive(self, result) -> None:
+        pipeline, batch_dir = result
+        from finctl.classify.classifier import Classification
+        from finctl.generate.ground_truth import DefectType, GroundTruth
+
+        truth = GroundTruth.read(batch_dir / "ground_truth.json")
+        splits = {d.order_id for d in truth.by_type(DefectType.SPLIT_SETTLEMENT)}
+        for f in pipeline.correlated.findings:
+            if f.order_id in splits:
+                assert f.classification is Classification.RECONCILED
+
+    def test_a_refund_that_settled_early_is_still_reported(self, result) -> None:
+        """A refund dated BEFORE the payment it reverses.
+
+        The debit lands in an earlier settlement than the credit, so a naive
+        per-settlement view shows money leaving before it arrived. It must still be
+        classified REFUND rather than silently netted away.
+        """
+        pipeline, batch_dir = result
+        from finctl.classify.classifier import Classification
+        from finctl.generate.ground_truth import DefectType, GroundTruth
+
+        truth = GroundTruth.read(batch_dir / "ground_truth.json")
+        early = {d.order_id for d in truth.by_type(DefectType.EARLY_REFUND)}
+        assert early
+
+        found = {
+            f.order_id for f in pipeline.correlated.findings
+            if f.classification is Classification.REFUND
+        }
+        assert early <= found, f"early refunds not reported: {early - found}"
+
+    def test_the_early_refund_proof_names_the_inversion(self, result) -> None:
+        """The merchant should be told WHY this one looks strange."""
+        pipeline, batch_dir = result
+        from finctl.classify.classifier import Classification
+        from finctl.generate.ground_truth import DefectType, GroundTruth
+
+        truth = GroundTruth.read(batch_dir / "ground_truth.json")
+        early = {d.order_id for d in truth.by_type(DefectType.EARLY_REFUND)}
+        proofs = [
+            f.proof for f in pipeline.correlated.findings
+            if f.order_id in early and f.classification is Classification.REFUND
+        ]
+        assert proofs
+        assert any(p.get("settled_before_the_payment") for p in proofs)
+
+    def test_refund_debits_are_accounted_for_in_the_gap(self, result) -> None:
+        """The bug the invariant caught: money debited from a settlement is money that
+        left the bank, and something must account for it."""
+        pipeline, _ = result
+        v = pipeline.verdict
+        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+
+    def test_both_refund_mechanisms_merge_into_one_line(self, result) -> None:
+        """A one-sided refund (negative) and a settled refund (positive) are both
+        REFUND to a merchant. Two components with one classification would silently
+        drop one when the ranker looks them up by name."""
+        pipeline, _ = result
+        from finctl.classify.classifier import Classification
+        refund_lines = [
+            line for line in pipeline.verdict.lines
+            if line.classification is Classification.REFUND
+        ]
+        assert len(refund_lines) <= 1

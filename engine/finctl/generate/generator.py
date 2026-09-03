@@ -199,6 +199,8 @@ class Generator:
             DefectType.ONE_SIDED_REFUND,
             DefectType.HALTED_SUBSCRIPTION,
             DefectType.TIMING_LAG,
+            DefectType.SPLIT_SETTLEMENT,
+            DefectType.EARLY_REFUND,
         )}
         total_demanded = sum(demanded.values())
         if total_demanded > self.volume:
@@ -441,8 +443,95 @@ class Generator:
                 "card_type": method.replace("card_", "") if method.startswith("card") else None,
                 "dispute_id": None,
             }
+            # ---- DEFECT: split settlement ---------------------------------------
+            # One order paid across two settlements on different days. Legitimate
+            # Razorpay behaviour, not an error — the engine must record both legs and
+            # flag the split rather than treating either half as a shortfall.
+            if i in assigned[DefectType.SPLIT_SETTLEMENT]:
+                first_amount = amount // 2 // 100 * 100
+                second_amount = amount - first_amount
+                first_fee = round(fee_paise * first_amount / amount) if amount else 0
+                second_fee = fee_paise - first_fee
+                first_tax = round(tax_paise * first_amount / amount) if amount else 0
+                second_tax = tax_paise - first_tax
+                later_day = self.calendar.add_working_days(settled_day, 1)
+
+                halves = [
+                    (first_amount, first_fee, first_tax, settled_day, payment_id),
+                    (second_amount, second_fee, second_tax, later_day, self._rid("pay_")),
+                ]
+                for half_amount, half_fee, half_tax, half_day, half_id in halves:
+                    row = dict(recon_row)
+                    row["entity_id"] = half_id
+                    row["amount"] = half_amount
+                    # Mirror the convention used on the main path (ADR-007/ADR-014):
+                    # gst_inclusive -> `fee` contains the GST, credit = amount - fee
+                    # mdr_only      -> `fee` is MDR alone,     credit = amount - fee - tax
+                    # `half_fee` is the GST-inclusive total, so both branches subtract
+                    # the same money and differ only in how it is reported.
+                    if self.fee_convention == "gst_inclusive":
+                        row["fee"] = half_fee
+                    else:
+                        row["fee"] = half_fee - half_tax
+                    row["tax"] = half_tax
+                    row["credit"] = half_amount - half_fee
+                    row["settled_at"] = self._ts(half_day, 18)
+                    settlement_groups.setdefault(half_day, []).append(row)
+                    batch.recon.append(row)
+
+                gt.add(PlantedDefect(
+                    defect_id=f"split-{order_id}",
+                    defect_type=DefectType.SPLIT_SETTLEMENT,
+                    order_id=order_id,
+                    # No money is lost. The impact is zero by design: this defect tests
+                    # that the engine does NOT report a discrepancy, which is a harder
+                    # thing to get right than reporting one.
+                    impact_paise=0,
+                    expected_classification="RECONCILED",
+                    detail={"first_paise": first_amount, "second_paise": second_amount,
+                            "first_settled_on": settled_day.isoformat(),
+                            "second_settled_on": later_day.isoformat(),
+                            "note": "one order across two settlements; totals must still reconcile"},
+                ))
+                continue
+
             settlement_groups.setdefault(settled_day, []).append(recon_row)
             batch.recon.append(recon_row)
+
+            # ---- DEFECT: refund before the original settled ---------------------
+            # A refund row dated BEFORE its payment settled. Real, and awkward: the
+            # debit lands in an earlier settlement than the credit it reverses, so a
+            # naive per-settlement view shows money leaving before it arrived.
+            if i in assigned[DefectType.EARLY_REFUND]:
+                refund_amount = amount // 3 // 100 * 100
+                early_day = self.calendar.add_working_days(order_day, 1)
+                refund_row = {
+                    **recon_row,
+                    "entity_id": self._rid("rfnd_"),
+                    "type": "refund",
+                    "debit": refund_amount,
+                    "credit": 0,
+                    "amount": refund_amount,
+                    "fee": 0,
+                    "tax": 0,
+                    "payment_id": payment_id,   # refunds DO carry payment_id (ADR-008)
+                    "settled_at": self._ts(early_day, 18),
+                    "description": "Refund issued before the original settled",
+                }
+                settlement_groups.setdefault(early_day, []).append(refund_row)
+                batch.recon.append(refund_row)
+
+                gt.add(PlantedDefect(
+                    defect_id=f"early-refund-{order_id}",
+                    defect_type=DefectType.EARLY_REFUND,
+                    order_id=order_id,
+                    impact_paise=refund_amount,
+                    expected_classification="REFUND",
+                    detail={"refund_paise": refund_amount,
+                            "refund_settled_on": early_day.isoformat(),
+                            "payment_settled_on": settled_day.isoformat(),
+                            "note": "refund settled BEFORE the payment it reverses"},
+                ))
 
             # ---- DEFECT: one-sided refund --------------------------------------
             # A refund the merchant recorded but which never reached settlement.

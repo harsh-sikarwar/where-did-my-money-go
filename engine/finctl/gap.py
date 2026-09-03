@@ -32,6 +32,7 @@ from typing import Any
 
 from finctl.classify.classifier import Classification, Finding
 from finctl.match.matcher import MatchResult, OrderMatch
+from finctl.schema import ReconType
 
 
 @dataclass
@@ -229,6 +230,32 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             count=shortfall_count,
         ))
 
+    # --- refunds that Razorpay debited from a settlement ------------------------------
+    # A refund row is a DEBIT: money leaves the settlement to go back to a customer.
+    # It therefore reduces what the bank received and widens the gap.
+    #
+    # Pass-1 matching deliberately ignores refund rows (a refund is not evidence a sale
+    # reached Razorpay), so these debits are invisible to every order-based component.
+    # Without this, a refund settling against a matched order left its full value
+    # unattributed — found by generating the "refund before the original settled" case,
+    # which the invariant then caught as a ₹5,421 residual.
+    refund_debits = sum(
+        row.get("debit", 0)
+        for sm in matches.settlement_matches
+        for row in sm.recon_rows
+        if row.get("type") == ReconType.REFUND
+    )
+    if refund_debits:
+        d.components.append(GapComponent(
+            classification=Classification.REFUND,
+            amount_paise=refund_debits,
+            count=sum(
+                1 for sm in matches.settlement_matches
+                for row in sm.recon_rows
+                if row.get("type") == ReconType.REFUND
+            ),
+        ))
+
     # --- bank credits with no settlement behind them ---------------------------------
     # Already counted inside `received`, so they narrow the gap.
     orphan = sum(r["credit_paise"] for r in matches.unmatched_bank_rows)
@@ -238,5 +265,21 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             amount_paise=-orphan,
             count=len(matches.unmatched_bank_rows),
         ))
+
+    # Two different mechanisms can produce the same classification -- a one-sided refund
+    # (negative: the bank got more than the books expected) and a refund Razorpay
+    # actually debited (positive: money went back to a customer). They are both REFUND
+    # to a merchant, so they must appear as ONE line, and the ranker looks components up
+    # by classification. Leaving two would silently drop one.
+    merged: dict[Classification, GapComponent] = {}
+    for component in d.components:
+        existing = merged.get(component.classification)
+        if existing is None:
+            merged[component.classification] = component
+        else:
+            existing.amount_paise += component.amount_paise
+            existing.count += component.count
+            existing.order_ids.extend(component.order_ids)
+    d.components = list(merged.values())
 
     return d

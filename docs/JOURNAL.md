@@ -1184,3 +1184,125 @@ The adversarial block from Day 3 is now substantially pre-run, with two bugs fix
 than discovered on test day.
 
 Next: the Day 3 metrics matrix.
+
+---
+
+## 2026-09-03 — Test day: the matrix
+
+**Goal.** The metrics table. From the build plan: *"treat test day as a build day whose
+output is evidence."*
+
+### First, closed the two stated gaps
+
+`split_settlement` and `early_refund` were listed in `build-spec.md` §6e and were the two
+adversarial cases the composition audit explicitly recorded as **unverified rather than
+known-good**. Generating them immediately found a real bug — which is the argument for
+generating them rather than reasoning about them.
+
+**Refund debits were unaccounted for.** A refund row DEBITS a settlement, so it reduces
+what the bank received. But pass-1 matching deliberately ignores refund rows (a refund is
+not evidence a sale reached Razorpay), so no order-based component could see them.
+₹5,421 left the bank with nothing accounting for it, and the balance invariant caught it
+as a residual.
+
+Fixing it needed three changes, each a small design decision:
+
+- The matcher now attaches `refund_rows` **separately** from `recon_rows` — pass-1 must
+  not treat a refund as evidence of a sale, but the classifier does need to see money
+  leaving. Different questions, conflated until now.
+- A new `_check_settled_refund` rule, distinct from the one-sided refund in
+  `_check_amount_gap`. One is a *disagreement* between ledger and settlement; the other is
+  a refund both sides agree on. Both are REFUND to a merchant.
+- Components sharing a classification are merged, since the ranker looks them up by name
+  and would otherwise silently drop one. A one-sided refund (negative) and a settled
+  refund (positive) are both REFUND and must appear as one line.
+
+**Split settlements worked correctly** — both legs recorded, `is_split`, gap ₹0,
+`RECONCILED`. Getting that right is harder than reporting a problem: the engine must see
+two settlements for one order and conclude nothing is wrong.
+
+### The ₹0.02 that was the tolerance's fault, not the engine's
+
+Four split settlements were scored as misses. Diagnosing rather than assuming: a ₹4,008
+order split into two ₹2,004 legs came out **₹0.02** under contract, because the fee is
+rounded per leg and two roundings of a half differ from one rounding of the whole.
+
+The engine was arithmetically right that the numbers differed. The *tolerance* was wrong
+to assume a single rounding boundary. Fixed by scaling tolerance with the number of legs
+(ADR-028) — exactly one paise per boundary the counterparty actually crossed, not a
+blanket loosening. Verified a 3-paise error is still caught across two legs.
+
+### The matrix
+
+22 runs: volume × archetype × payment mix × settlement cycle, plus `clean` and `chaos`.
+
+```
+Across 22 runs
+  defects caught:   26,489
+  defects missed:        0
+  false positives:       0
+  balance identity: holds in every run
+```
+
+### The bottleneck, found by profiling rather than guessing (ADR-029)
+
+The first full run showed throughput collapsing at the top tier:
+
+```
+ 5,000 rows   64,068 rows/sec
+50,000 rows   24,620 rows/sec     <- 2.6x degradation
+```
+
+I profiled it instead of theorising. It was **not** the matcher, which is where I would
+have guessed. `_is_below_tolerance` in the **scorer** was scanning all 50,000 order
+matches once per planted timing defect — `O(defects × orders)`, 3.0s of a 7.7s run, and
+the only super-linear term anywhere in the pipeline.
+
+Two things worth stating precisely:
+
+**It was in the test harness, not the engine.** Scoring only runs when ground truth
+exists, so no merchant would ever have hit it. But it made our own published throughput
+number wrong *in our favour* — a benchmark that measures our scoring code and reports it
+as engine throughput is a misleading claim even when unintentional.
+
+**The fix was an index, not an optimisation.** A dict built once, replacing a scan per
+defect. 6.1s → 2.4s; 50k throughput went 24,620 → **63,369 rows/sec**.
+
+After the fix, throughput is flat from 50 to 50,000 rows (55k–79k/sec, 150,783 rows in
+2.4s). So the honest statement is not "here is our bottleneck" but **"we have not found
+the engine's breaking point at the scale this product targets"** — with memory named as
+the next candidate, since the whole batch is held in memory by design.
+
+`METRICS.md` records the *before* number as well as the after, so the improvement is
+visible rather than the slow version being quietly discarded.
+
+### Five bugs found by running the adversarial cases
+
+Across the composition audit and test day, all found by *executing* the scenarios rather
+than reasoning about the code, and four surfaced by the balance invariant turning a
+silent wrong number into a loud exception:
+
+1. duplicated ledger rows — ₹7,305.71 unattributed
+2. empty batch raised instead of answering
+3. refund debits unaccounted for — ₹5,421
+4. per-leg rounding on split settlements flagged as a fee error
+5. the O(n²) in the scorer
+
+### What METRICS.md says before it says anything else
+
+The 100% figures needed their caveats stated *first*, not in a footnote: we control
+ground truth, so the engine is scored against defects it was designed alongside; and
+every gap the generator plants has a correlatable payment record, because that is how
+the generator makes gaps. The honest reading of 100% correlation gain is *"correlation
+resolves what it can see"*, not *"correlation resolves everything"*.
+
+Our match rate also is not comparable to the published 51%/88% baseline, because ours is
+an exact-identifier rate with no fuzzy matching — a stricter measure that trades headline
+percentage for the guarantee that no match is a guess.
+
+### State
+
+**512 tests green**, ruff clean. `docs/METRICS.md` written from real runs, regenerable
+with one command.
+
+Remaining: the deliberate false-attribution case, and the submission writeup.

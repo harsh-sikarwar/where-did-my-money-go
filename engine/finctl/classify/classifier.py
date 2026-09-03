@@ -184,9 +184,23 @@ class Classifier:
             ),
         }
 
-        if abs(delta) <= self.tol.rounding_paise:
+        # Rounding tolerance scales with the number of settlement legs. Splitting an
+        # order across two settlements means the fee is computed and rounded on each
+        # HALF, and two roundings of a half can differ from one rounding of the whole by
+        # up to one paise per leg. Found on test day: a ₹4,008 order split into two
+        # ₹2,004 legs came out ₹0.02 under contract and was flagged as a fee
+        # discrepancy. The engine was right that the numbers differed; the tolerance was
+        # wrong to assume a single rounding boundary.
+        #
+        # This is NOT a blanket loosening. It is exactly one paise per rounding boundary
+        # the counterparty actually crossed, so a real fee error of even one paise more
+        # than that still surfaces.
+        allowed = self.tol.rounding_paise * max(len(m.recon_rows), 1)
+        if abs(delta) <= allowed:
             return None   # fee is correct; the fee itself is reported separately
 
+        proof["rounding_tolerance_paise"] = allowed
+        proof["settlement_legs"] = len(m.recon_rows)
         return Classification.FEE, proof
 
     def _check_timing(self, m: OrderMatch) -> tuple[Classification, dict[str, Any]] | None:
@@ -270,6 +284,51 @@ class Classifier:
         )
         return Classification.UNEXPLAINED, proof
 
+    def _check_settled_refund(
+        self, m: OrderMatch
+    ) -> tuple[Classification, dict[str, Any]] | None:
+        """Did Razorpay debit a settlement to return money to a customer?
+
+        Distinct from the one-sided refund in `_check_amount_gap`, which is a
+        DISAGREEMENT between the ledger and the settlement. This is a refund both sides
+        agree on: the money genuinely left, so it must be reported rather than netted
+        into silence.
+
+        The awkward case this exists for is a refund that settles BEFORE the payment it
+        reverses — the debit lands in an earlier settlement than the credit, so a naive
+        per-settlement view shows money leaving before it arrived.
+        """
+        if not m.refund_rows:
+            return None
+
+        refunded = m.refunded_paise
+        if refunded <= 0:
+            return None
+
+        settled_dates = [to_date(r["settled_at"]) for r in m.recon_rows if r.get("settled_at")]
+        refund_dates = [to_date(r["settled_at"]) for r in m.refund_rows if r.get("settled_at")]
+        settled_dates = [d for d in settled_dates if d]
+        refund_dates = [d for d in refund_dates if d]
+
+        early = bool(settled_dates and refund_dates and min(refund_dates) < min(settled_dates))
+
+        return Classification.REFUND, {
+            "refunded_paise": refunded,
+            "refund_count": len(m.refund_rows),
+            "refund_ids": [r.get("entity_id") for r in m.refund_rows],
+            "refund_settled_on": min(refund_dates).isoformat() if refund_dates else None,
+            "payment_settled_on": min(settled_dates).isoformat() if settled_dates else None,
+            "settled_before_the_payment": early,
+            "arithmetic": (
+                f"{refunded} returned to the customer across {len(m.refund_rows)} "
+                f"refund row(s)"
+                + (
+                    " — settled BEFORE the payment it reverses"
+                    if early else ""
+                )
+            ),
+        }
+
     def _check_rounding(self, m: OrderMatch) -> tuple[Classification, dict[str, Any]] | None:
         """Sub-tolerance arithmetic noise. Reported, not hidden.
 
@@ -321,6 +380,7 @@ class Classifier:
             # Collect every rule that fires. The count decides what happens next.
             hits: list[tuple[Classification, dict[str, Any]]] = []
             for rule in (self._check_fee, self._check_timing,
+                         self._check_settled_refund,
                          self._check_amount_gap, self._check_rounding):
                 hit = rule(m)
                 if hit:
@@ -348,6 +408,9 @@ class Classifier:
 
             # FEE and TIMING are orthogonal: a late settlement charged the wrong fee is
             # two independent facts, not an ambiguity. Emit both.
+            # FEE, TIMING and a settled REFUND are orthogonal facts, not competing
+            # explanations: an order can be charged the wrong fee, settle late AND have
+            # money refunded. Only rules claiming the SAME rupees compete.
             independent = {Classification.FEE, Classification.TIMING}
             money_rules = [h for h in hits if h[0] not in independent]
 

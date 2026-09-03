@@ -304,14 +304,15 @@ class TestAdversarialCases:
     def test_refuses_when_demanded_defects_exceed_the_batch(self, config: Config) -> None:
         """A real bug, found by a staging test at volume=40.
 
-        The demo profile demands 51 defects. Below that volume the index slices ran off
+        The demo profile demands more defects than a small batch has orders. Below that
+        volume the index slices ran off
         the end and the LAST defect types silently got nothing -- while ground truth
         still claimed they were planted. Zero halted subscriptions, ground truth
         insisting on six. A batch whose metrics are confidently wrong is the one failure
         this project cannot tolerate, so the generator now refuses and shows the
         arithmetic.
         """
-        with pytest.raises(ValueError, match="demands 51 defects"):
+        with pytest.raises(ValueError, match=r"demands \d+ defects"):
             Generator(config, volume=40, defect_profile="demo").generate()
 
     def test_the_error_names_the_offending_counts(self, config: Config) -> None:

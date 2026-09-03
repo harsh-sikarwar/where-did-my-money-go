@@ -43,6 +43,11 @@ EXPECTED: dict[str, frozenset[Classification]] = {
     DefectType.WRONG_FEE_RATE: frozenset({Classification.FEE, Classification.TAX_ON_FEE}),
     DefectType.ONE_SIDED_REFUND: frozenset({Classification.REFUND}),
     DefectType.TIMING_LAG: frozenset({Classification.TIMING}),
+    # A split settlement is legitimate Razorpay behaviour, not a defect. "Caught" here
+    # means the engine correctly reported NO discrepancy -- which is a harder property
+    # to get right than reporting one, and the reason this case is planted at all.
+    DefectType.SPLIT_SETTLEMENT: frozenset({Classification.RECONCILED}),
+    DefectType.EARLY_REFUND: frozenset({Classification.REFUND}),
 }
 
 
@@ -109,7 +114,10 @@ class ScoreReport:
 
 
 def _is_below_tolerance(
-    defect: PlantedDefect, config: Config, matches: MatchResult
+    defect: PlantedDefect,
+    config: Config,
+    matches: MatchResult,
+    index: dict[str, Any] | None = None,
 ) -> bool:
     """Is this planted defect one the config deliberately declines to flag?
 
@@ -121,7 +129,17 @@ def _is_below_tolerance(
 
     tol = config.tolerances
     cal = WorkingCalendar(tol.weekend_days, tol.holidays)
-    match = next((m for m in matches.order_matches if m.order_id == defect.order_id), None)
+
+    # Indexed lookup, not a scan. This was the engine's worst hot spot at 50k rows:
+    # a linear scan through every order match, once per planted timing defect, is
+    # O(defects × orders) — 3.0s of a 7.7s run, and the only super-linear term measured
+    # anywhere in the pipeline. Found by profiling the 50k tier rather than by guessing.
+    if index is not None:
+        match = index.get(defect.order_id or "")
+    else:
+        match = next(
+            (m for m in matches.order_matches if m.order_id == defect.order_id), None
+        )
     if match is None or not match.recon_rows:
         return False
 
@@ -155,6 +173,9 @@ def score(
 
     planted_orders: set[str] = set()
 
+    # Built once and reused, rather than rebuilt per defect.
+    order_index = {m.order_id: m for m in matches.order_matches}
+
     for defect in truth.real_defects:
         s = report.by_type.setdefault(defect.defect_type, DefectScore())
         if defect.order_id:
@@ -165,7 +186,7 @@ def score(
 
         if assigned & acceptable:
             s.caught.append(defect.defect_id)
-        elif _is_below_tolerance(defect, config, matches):
+        elif _is_below_tolerance(defect, config, matches, order_index):
             s.below_tolerance.append(defect.defect_id)
         else:
             s.missed.append(defect.defect_id)

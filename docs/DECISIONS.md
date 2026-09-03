@@ -984,3 +984,68 @@ something.
 - 127 composition tests across 6 configurations, each verified capable of failing.
 - The four mutations are documented here so the same checks can be re-run after any
   future change to the decomposition.
+
+---
+
+## ADR-028 — Rounding tolerance scales with the number of settlement legs
+
+**Date:** 2026-09-03 · **Phase:** test day
+
+**Context.** Generating the split-settlement case surfaced a fee "discrepancy" of
+**₹0.02** on a ₹4,008 order split into two ₹2,004 legs. The engine was arithmetically
+correct: fee is computed and rounded per leg, and two roundings of a half can differ from
+one rounding of the whole.
+
+**Choice.** `rounding_paise × number_of_settlement_legs`, not a flat tolerance.
+
+**Why.** The engine was right that the numbers differed; the *tolerance* was wrong to
+assume a single rounding boundary. Razorpay legitimately splits settlements, so a
+merchant on a split order genuinely crosses two boundaries.
+
+This is deliberately not a blanket loosening — it is exactly one paise per boundary the
+counterparty actually crossed. A 3-paise error across two legs is still caught, asserted
+by test. Widening the flat tolerance to 2 paise instead would have blinded the engine on
+single-leg orders too, where no second boundary exists.
+
+**Consequences.**
+- The proof carries `settlement_legs` and `rounding_tolerance_paise`, so a merchant can
+  see why a small difference was tolerated rather than having to trust it.
+- Found on test day by generating an adversarial case, not by reasoning about the code.
+
+---
+
+## ADR-029 — The 50k bottleneck was in the scorer, and it is named
+
+**Date:** 2026-09-03 · **Phase:** test day
+
+**Context.** The first full matrix run showed throughput falling from ~64,000 rows/sec at
+5,000 rows to **24,620 rows/sec at 50,000** — a 2.6× degradation. The build plan asks for
+the bottleneck to be named honestly rather than hidden.
+
+**What it actually was.** Profiling — rather than guessing — found `_is_below_tolerance`
+in `finctl/score.py` doing a linear scan through all 50,000 order matches once per
+planted timing defect: `O(defects × orders)`, 3.0s of a 7.7s run. The only super-linear
+term measured anywhere in the pipeline.
+
+**Choice.** Build the order index once and pass it in. 6.1s → 2.4s; 50k throughput went
+from 24,620 to **63,369 rows/sec**, flat with every smaller tier.
+
+**Two things worth stating precisely.**
+
+1. **It was in the test harness, not the engine.** Scoring runs only when
+   `ground_truth.json` exists, so no merchant would ever have executed that code. It
+   nonetheless made our own published throughput number wrong — *in our favour*, which is
+   the direction that matters. A benchmark that measures our scoring code and reports it
+   as engine throughput is a misleading claim even when unintentional.
+2. **The fix was an index, not an optimisation pass.** No algorithm changed, nothing was
+   made cleverer. A dict replaced a scan.
+
+**Consequences.**
+- Throughput is now essentially flat from 50 to 50,000 rows (55k–79k rows/sec). **We have
+  not found the engine's breaking point at the scale this product targets**, which is a
+  more honest statement than naming a bottleneck we no longer have.
+- The next candidate if pushed further is memory: the whole batch is held in memory by
+  design (flat files, no database). That is a stated architectural choice, not an
+  oversight.
+- The profiling result is recorded in `METRICS.md` including the *before* number, so the
+  improvement is visible rather than the slow version being quietly discarded.

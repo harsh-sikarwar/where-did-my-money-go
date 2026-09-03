@@ -34,7 +34,16 @@ class DefectType:
     TIMING_LAG = "timing_lag"
     HALTED_SUBSCRIPTION = "halted_subscription"
 
-    ALL = (MISSING_ORDER, WRONG_FEE_RATE, ONE_SIDED_REFUND, TIMING_LAG, HALTED_SUBSCRIPTION)
+    # Added during the composition audit: both are listed in build-spec.md 6e as
+    # adversarial cases, and neither was generated, so engine behaviour on them was
+    # unverified rather than known-good.
+    SPLIT_SETTLEMENT = "split_settlement"
+    EARLY_REFUND = "early_refund"
+
+    ALL = (
+        MISSING_ORDER, WRONG_FEE_RATE, ONE_SIDED_REFUND, TIMING_LAG,
+        HALTED_SUBSCRIPTION, SPLIT_SETTLEMENT, EARLY_REFUND,
+    )
 
 
 @dataclass
