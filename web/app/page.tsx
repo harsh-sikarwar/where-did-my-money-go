@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Actions } from "@/components/Actions";
 import { Audit } from "@/components/Audit";
 import { BatchPicker } from "@/components/BatchPicker";
 import { Correlation } from "@/components/Correlation";
@@ -76,6 +77,9 @@ export default function Home() {
       {verdict && correlation && (
         <>
           <Verdict data={verdict} />
+          {/* Immediately after the verdict, because the verdict is what raises the
+              question this answers: it says "those 6 customers" and this names them. */}
+          <Actions batch={batch} />
           <Correlation data={correlation} />
           <Audit batch={batch} />
         </>

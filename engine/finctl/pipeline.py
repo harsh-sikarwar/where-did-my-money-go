@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from finctl.actions import ActionGroup
+from finctl.actions import build as build_actions
 from finctl.audit.log import AuditLog
 from finctl.classify.classifier import Classification, ClassificationResult, Classifier
 from finctl.config.loader import Config, load_config
@@ -21,6 +23,7 @@ from finctl.cycle import CycleObservation
 from finctl.generate.ground_truth import GroundTruth
 from finctl.match.matcher import MatchResult, match
 from finctl.rank.ranker import Ranker, Verdict
+from finctl.schema import Source
 from finctl.score import ScoreReport, score
 from finctl.stage.staging import StagedBatch, stage_from_dir
 
@@ -47,6 +50,16 @@ class PipelineResult:
     @property
     def throughput(self) -> float:
         return self.rows_processed / self.elapsed_seconds if self.elapsed_seconds else 0.0
+
+    @property
+    def actions(self) -> list[ActionGroup]:
+        """Who to chase, for how much, and why.
+
+        A property rather than a stored field because it is a pure projection of
+        `correlated.findings` — computing it at run time and storing it would create a
+        second copy that could disagree with the verdict it accompanies. See ADR-048.
+        """
+        return build_actions(self.correlated.findings, list(self.batch.get(Source.LEDGER)))
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {

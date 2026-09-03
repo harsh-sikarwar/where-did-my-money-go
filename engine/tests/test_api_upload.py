@@ -12,6 +12,7 @@ tests, that is the signal it has become a second implementation of the engine.
 from __future__ import annotations
 
 import csv
+import io
 import sys
 from pathlib import Path
 
@@ -467,4 +468,49 @@ class TestARemappedBatchSurvivesACacheMiss:
         r = client.get(f"/api/detail/{remapped_batch}/FEE")
         assert r.status_code == 200, r.json()
         assert r.json()["count"] > 0
+
+
+class TestActionsEndpoint:
+    """The verdict says "those 6 customers"; these name them. ADR-048."""
+
+    @pytest.fixture
+    def uploaded(self, client, source_batch) -> str:
+        assert client.post("/api/upload", data={"batch": "acts"},
+                           files=files_for(source_batch, *ALL_SLOTS)).status_code == 200
+        return "acts"
+
+    def test_it_lists_the_customers_behind_the_headline(self, client, uploaded) -> None:
+        body = client.get(f"/api/actions/{uploaded}").json()
+        assert body["count"] > 0
+        halted = [g for g in body["groups"]
+                  if g["classification"] == "HALTED_SUBSCRIPTION"]
+        assert halted, "the demo batch must produce halted subscriptions"
+        assert halted[0]["count"] == 6
+        assert all(i["customer_id"] for i in halted[0]["items"])
+
+    def test_every_group_carries_an_instruction(self, client, uploaded) -> None:
+        body = client.get(f"/api/actions/{uploaded}").json()
+        assert all(g["next_step"] for g in body["groups"])
+
+    def test_the_csv_downloads_as_a_file(self, client, uploaded) -> None:
+        """The work leaving the screen is the point."""
+        r = client.get(f"/api/actions/{uploaded}/csv")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/csv")
+        assert "attachment" in r.headers["content-disposition"]
+        assert f"{uploaded}-actions.csv" in r.headers["content-disposition"]
+
+        rows = list(csv.DictReader(io.StringIO(r.text)))
+        assert rows
+        assert rows[0]["next_step"]
+        assert rows[0]["amount_rupees"]
+
+    def test_it_agrees_with_the_verdict(self, client, uploaded) -> None:
+        """A projection that disagrees with its source is worse than no projection."""
+        actions = client.get(f"/api/actions/{uploaded}").json()
+        verdict = client.get(f"/api/verdict/{uploaded}").json()
+        assert actions["headline"] == verdict["headline"]
+
+    def test_an_unknown_batch_is_a_404(self, client) -> None:
+        assert client.get("/api/actions/nope").status_code == 404
 

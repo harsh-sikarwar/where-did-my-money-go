@@ -226,6 +226,35 @@ export interface RateCard {
   methods: RateCardMethod[];
 }
 
+export interface ActionItem {
+  order_id: string | null;
+  classification: string;
+  amount: Money;
+  customer_id: string | null;
+  email: string | null;
+  contact: string | null;
+  subscription_id: string | null;
+  payment_id: string | null;
+  reason: string | null;
+  detail: string | null;
+}
+
+export interface ActionGroup {
+  classification: string;
+  next_step: string;
+  count: number;
+  total: Money;
+  items: ActionItem[];
+}
+
+export interface Actions {
+  batch: string;
+  headline: string;
+  total: Money;
+  count: number;
+  groups: ActionGroup[];
+}
+
 export interface Inspected {
   source: string;
   headers: string[];
@@ -281,6 +310,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source, headers, mapping }),
     }),
+
+  actions: (batch: string) => get<Actions>(`/api/actions/${batch}`),
+
+  /** The CSV lives at a URL so the browser downloads it rather than us building a blob. */
+  actionsCsvUrl: (batch: string) => `${BASE}/api/actions/${batch}/csv`,
 
   rateCard: () => get<RateCard>("/api/rate-card"),
 

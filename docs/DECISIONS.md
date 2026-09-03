@@ -2161,3 +2161,72 @@ appears in the batch picker as *yours* → contracted 1.75% turns 89 fee finding
 
 **Still not built.** The action list (named customers, amounts, failure reasons, CSV
 export) has no screen either, and correlation still has one mechanism.
+
+---
+
+## ADR-048 — The action list: naming the customers the verdict counts
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** The verdict has always ended with *"One thing needs you this week: those 6
+customers"* — and could not name them. A merchant reading that had no next step except
+to go looking in the Razorpay dashboard for six people the engine had already identified.
+
+That is the gap between an insight and a tool, and it is the one the README's argument
+against dashboards implies most directly: if the case against a dashboard is that a
+merchant should be handed the work rather than a chart of it, then not handing over the
+work is the sharpest possible inconsistency.
+
+**Decision.** `finctl/actions.py`, a **projection** rather than an analysis.
+
+Nothing in it is computed. Every field is lifted from a finding's proof — correlation
+already resolved `customer_id`, `subscription_id` and `error_reason` on the way to
+labelling the gap. That is deliberate: a projection cannot disagree with the verdict it
+accompanies, and a second computation of the same numbers could. Tests assert the totals
+and the item count match the findings exactly.
+
+`PipelineResult.actions` is a **property**, not a stored field, for the same reason.
+Computing and storing it would create a second copy that could drift.
+
+**Three design points.**
+
+1. **Each group carries an imperative next step, not a category name.** *"Email these
+   customers a new payment link. Razorpay stopped attempting charges and will not restart
+   on its own"* is an instruction; *"review halted subscriptions"* is a label wearing a
+   verb. A parametrised test asserts every actionable classification has one — a cause
+   the engine can report and cannot advise on is a dead end.
+2. **Largest first, within groups as well as across them.** If a merchant only gets
+   through some of the list, they should get through the expensive part.
+3. **Benign lines are absent.** A merchant asking "what needs me?" is not asking to be
+   shown the fee they agreed to pay. Including them would rebuild the dashboard.
+
+**A gap the ledger closed.** Only the subscription join was writing `customer_id` into a
+proof, so the first version could name the customer behind a halted subscription and
+**not** the one behind a failed payment — precisely backwards, since the failed payment is
+the one you email today. `build()` now takes the ledger rows, which name the buyer on
+every order. Correlation's answer still wins where it exists: it resolved the customer
+through the subscription, which is the more specific claim.
+
+Not every row has one, and that is correct rather than a hole: `UNRECORDED_REFUND` has no
+`order_id` by definition (ADR-039), so there is no buyer to name and inventing one would
+be exactly the guess this engine refuses. Those rows lead with their `rfnd_…` id.
+
+**The CSV is the feature, not a nicety.** The difference between a dashboard and a tool
+is whether the work leaves the screen — a merchant sorts it, forwards it, or hands it to
+whoever does the chasing. Amounts are written in **rupees**, not paise: `87600` under a
+column headed "amount" invites a very expensive misread by a human or a spreadsheet.
+Every row carries its own `next_step`, so the file is useful to someone who never saw the
+screen.
+
+**Available in three places.** `finctl actions --data <dir>` (with `--csv <path>`),
+`GET /api/actions/{batch}`, and the UI. Per ADR-001 the CLI came first: anything the UI
+can do, the CLI must be able to do, or it is not testable.
+
+**Consequences.** 35 tests. On the demo batch: 17 items worth ₹68,317 across three
+groups, every order-backed row naming a customer, and the six headline customers listed
+by name with their amounts and `subscription_halted` as the reason.
+
+**What it exposes.** Two groups — `REFUND` and `UNRECORDED_REFUND` — have no `reason`,
+because nothing upstream attaches one. The instruction covers it, but the per-row "why"
+column is empty where the other groups have `subscription_halted` or `incorrect_otp`.
+Worth stating rather than papering over with a generic string.

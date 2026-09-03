@@ -2168,3 +2168,64 @@ Upload an export with `txn_ref,sale_value,when` → picker → remember → 597 
 
 The gap that matters now is the action list: the verdict says *"those 6 customers"* and
 still cannot name them.
+
+---
+
+## 2026-09-03 — Naming the six customers
+
+The verdict has always ended with *"One thing needs you this week: those 6 customers"*
+and could not name them. A merchant reading that had no next step except to go hunting in
+the Razorpay dashboard for six people the engine had already identified.
+
+If the argument against dashboards is that a merchant should be handed the work rather
+than a chart of it, then not handing over the work is the sharpest possible
+inconsistency.
+
+### A projection, deliberately
+
+Nothing in `actions.py` is computed. Every field is lifted from a finding's proof —
+correlation already resolved `customer_id`, `subscription_id` and `error_reason` on its
+way to labelling the gap. A projection *cannot* disagree with the verdict it accompanies;
+a second computation of the same numbers could. `PipelineResult.actions` is a property
+rather than a stored field for exactly that reason, and tests assert the totals and item
+count match the findings.
+
+### The gap I nearly shipped
+
+The first version named the customer behind a halted subscription and **not** the one
+behind a failed payment — because only the subscription join was writing `customer_id`
+into a proof. Precisely backwards: the failed payment is the one you email today.
+
+The merchant's own ledger names the buyer on every order. `build()` now takes the ledger
+rows, with correlation's answer still winning where it exists, since resolving a customer
+through the subscription is the more specific claim.
+
+Not every row has one, and that is right rather than a hole. `UNRECORDED_REFUND` has no
+`order_id` by definition, so there is no buyer to name — inventing one would be exactly
+the guess this engine refuses. Those rows lead with their `rfnd_…` id. Two of my tests
+asserted "every row names a customer" and failed on precisely that case; the tests were
+wrong, not the code.
+
+### The CSV is the feature
+
+Amounts in **rupees**, not paise — `87600` under a column headed "amount" invites a very
+expensive misread by a human or a spreadsheet. Every row carries its own `next_step`, so
+the file works for someone who never saw the screen.
+
+CLI first, per ADR-001: `finctl actions --data data/demo --csv out.csv`. Anything the UI
+can do the CLI must do, or it is not testable.
+
+### What it exposed
+
+`REFUND` and `UNRECORDED_REFUND` rows have an empty "why" column — nothing upstream
+attaches a reason to them, where the other groups carry `subscription_halted` or
+`incorrect_otp`. Written into LIMITATIONS rather than filled with a generic string.
+
+And the customer column shows `cust_Hg3Q874maj` rather than an email, because our
+generator has no contact fields. Razorpay's real payments export has `email` and
+`contact`; the code reads them when present, but that path is unexercised by our data.
+
+### State
+
+**702 tests green**, ruff clean, tsc clean. Demo batch: 17 items worth ₹68,317 across
+three groups, with the six headline customers named.

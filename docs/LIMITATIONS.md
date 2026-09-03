@@ -376,11 +376,13 @@ unit error the API refuses.
 
 ### What still has no screen
 
-The **action list** is the gap that matters now. The verdict ends with *"One thing needs
-you this week: those 6 customers"* and cannot name them. The data is all there — findings
-carry `order_id`, amount, and the failure reason correlation attached — but nothing
-renders it and there is no CSV export. That is the difference between an insight and
-something a merchant acts on, and it is the strongest remaining item on the list.
+~~The **action list** is the gap that matters now.~~ **Built 2026-09-03 (ADR-048).** The
+verdict's "those 6 customers" now resolves to six named rows with amounts, reasons and a
+next step, available in the CLI, the API and the UI, with a CSV export. Two residual
+gaps: `REFUND` and `UNRECORDED_REFUND` rows have an empty "why" column, because nothing
+upstream attaches a reason to them; and the customer column shows an id rather than an
+email, because our generator has no contact fields — Razorpay's real payments export
+does, and the code reads them when present, but that path is unexercised by our data.
 
 **Correlation still has one mechanism.** Halted subscriptions, plus failed payments.
 Disputes and on-hold settlements are now *classified* (ADR-036, ADR-041) but are not

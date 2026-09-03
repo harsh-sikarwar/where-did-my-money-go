@@ -21,9 +21,17 @@ ENGINE_DIR = Path(__file__).parent.parent / "engine"
 if str(ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(ENGINE_DIR))
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
+from fastapi import (  # noqa: E402
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
+from finctl.actions import to_csv  # noqa: E402
 from finctl.classify.classifier import Classification  # noqa: E402
 from finctl.config.loader import ConfigError, load_config  # noqa: E402
 from finctl.money import format_rupees  # noqa: E402
@@ -521,6 +529,41 @@ def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
             "rows_per_second": round(result.throughput),
         },
     }
+
+
+@app.get("/api/actions/{batch}")
+def actions(batch: str) -> dict[str, Any]:
+    """Who to chase, for how much, and why.
+
+    The verdict says "those 6 customers"; this names them. Every field is lifted from a
+    finding's proof — nothing here is computed, so it cannot disagree with the verdict
+    it accompanies. See ADR-048.
+    """
+    result = _load(batch)
+    groups = result.actions
+    return {
+        "batch": batch,
+        "headline": result.verdict.headline(),
+        "total": _money(sum(g.total_paise for g in groups)),
+        "count": sum(len(g.items) for g in groups),
+        "groups": [g.as_dict() for g in groups],
+    }
+
+
+@app.get("/api/actions/{batch}/csv")
+def actions_csv(batch: str) -> Response:
+    """The same list as a file a merchant can open, sort, or hand to someone else.
+
+    The difference between a dashboard and a tool is whether the work leaves the screen.
+    """
+    body = to_csv(_load(batch).actions)
+    return Response(
+        content=body,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{batch}-actions.csv"',
+        },
+    )
 
 
 @app.get("/api/detail/{batch}/{classification}")
