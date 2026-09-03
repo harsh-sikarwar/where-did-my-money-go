@@ -1873,3 +1873,44 @@ rather than quiet.
 ### State
 
 **583 tests green**, ruff clean. Matrix: 0 missed, 0 false positives, 0 decoys claimed.
+
+---
+
+## 2026-09-03 — "Real CSV upload" was the wrong name for the feature
+
+Razorpay's *Download Report* button produces `.xlsx`. All twelve sample exports are
+`.xlsx`. The normalizer was `csv.DictReader` only.
+
+So the feature as specified would have shipped a door a real merchant cannot walk
+through: export your settlement report, get an Excel file, tool rejects it on step one.
+
+### One function, not two paths
+
+`_read_tabular(path, source_name)` returns `(headers, rows)` and dispatches on suffix.
+Column resolution, money parsing, timestamp parsing, the refusal to guess — all shared,
+all untouched.
+
+That constraint mattered more than the feature. A separate xlsx path would be a second
+implementation of the engine rather than a second door into it, and the two could drift
+into giving different answers for the same data. A test now asserts an `.xlsx` batch
+produces the same gap, headline, score *and decoy result* as the identical `.csv` batch.
+
+### Four things the real files forced
+
+- `data_only=True`, or a `SUM` in a settlement report yields `"=SUM(A1:A9)"`.
+- Blank leading columns dropped — the settlements export opens with an empty spacer
+  column, which otherwise becomes a field named `"None"` and turns 7 headers into 27.
+- Blank rows skipped, or a perfectly valid file fails money parsing on its spacing.
+- **Cell values passed through untouched.** This is the one worth remembering. openpyxl
+  returns real `datetime` objects for date cells. Stringifying them to re-parse would
+  throw away the type and re-create the Excel-serial ambiguity of ADR-037 — the exact bug
+  I fixed this morning, one layer up. The fix there (a passthrough branch for `datetime`)
+  turned out to be what made this work.
+
+### State
+
+**598 tests green**, ruff clean. A pure-`.xlsx` batch runs the full pipeline: 639 rows,
+0 missed, 0 false positives, 0 decoys claimed, same headline.
+
+Next: the HTTP upload endpoint, interactive column mapping, and the merchant's own rate
+card. The engine can now read the file; a merchant still cannot hand it one.

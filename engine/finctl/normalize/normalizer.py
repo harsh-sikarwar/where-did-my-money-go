@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import json
+import warnings
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -254,6 +255,97 @@ def normalize_bank(path: Path) -> tuple[list[dict[str, Any]], ColumnMapping]:
     return rows, mapping
 
 
+# File formats we can read. Razorpay's dashboard exports .xlsx; a merchant's own
+# bookkeeping is usually .csv. Both must work, because "export your settlement report"
+# hands a merchant an Excel file and an upload path that rejects it stops them on step
+# one. See ADR-043.
+TABULAR_SUFFIXES = frozenset({".csv", ".xlsx", ".xlsm"})
+
+
+def _read_tabular(path: Path, source_name: str) -> tuple[list[str], list[dict[str, Any]]]:
+    """Read a CSV or Excel file into (headers, row dicts).
+
+    Returns raw cell values. Every mapping, money and timestamp decision happens
+    downstream, so the two formats cannot diverge in how a value is interpreted — the
+    only difference this function is allowed to introduce is where the bytes came from.
+    """
+    suffix = path.suffix.lower()
+
+    if suffix in (".xlsx", ".xlsm"):
+        return _read_excel(path, source_name)
+
+    if suffix and suffix not in TABULAR_SUFFIXES:
+        raise NormalizationError(
+            f"{source_name}: cannot read {path.name} — unsupported format {suffix!r}. "
+            f"Accepted: {', '.join(sorted(TABULAR_SUFFIXES))}."
+        )
+
+    with path.open(newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        headers = list(reader.fieldnames or [])
+        return headers, list(reader)
+
+
+def _read_excel(path: Path, source_name: str) -> tuple[list[str], list[dict[str, Any]]]:
+    """Read the first worksheet of an .xlsx/.xlsm file.
+
+    `data_only=True` returns the cached value of a formula rather than the formula
+    text. A settlement report with a SUM in it must yield the number, not "=SUM(A1:A9)".
+
+    Cells are handed on as-is: openpyxl returns real `datetime` objects for
+    date-formatted cells and floats for numbers, and `_parse_timestamp` and
+    `parse_money` both accept those. Stringifying here would throw away type
+    information and re-create the Excel-serial ambiguity of ADR-037.
+    """
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:   # pragma: no cover - dependency is declared
+        raise NormalizationError(
+            f"{source_name}: reading {path.name} needs openpyxl. "
+            "Install the engine's dependencies."
+        ) from exc
+
+    try:
+        # Razorpay's exports carry no default style block, which openpyxl warns about on
+        # every single file. The warning is about cosmetics we never read — we take cell
+        # VALUES — so it is noise that would train a user to ignore warnings.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*no default style.*")
+            wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception as exc:
+        raise NormalizationError(
+            f"{source_name}: cannot open {path.name} as an Excel workbook: {exc}"
+        ) from exc
+
+    try:
+        ws = wb.worksheets[0]
+        grid = ws.iter_rows(values_only=True)
+
+        try:
+            header_row = next(grid)
+        except StopIteration:
+            return [], []
+
+        # Razorpay's settlements export opens with a blank spacer column, so trailing
+        # and empty headers are dropped rather than becoming a column named "None".
+        headers = [
+            str(h).strip() for h in header_row if h is not None and str(h).strip()
+        ]
+        width = len(headers)
+
+        rows: list[dict[str, Any]] = []
+        for values in grid:
+            # A wholly empty row is spacing, not data. Excel files are full of them, and
+            # one would otherwise become a row of empty strings that fails money parsing.
+            if all(v is None or (isinstance(v, str) and not v.strip()) for v in values):
+                continue
+            rows.append(dict(zip(headers, values[:width], strict=False)))
+
+        return headers, rows
+    finally:
+        wb.close()
+
+
 def _normalize_csv(
     path: Path,
     *,
@@ -266,39 +358,37 @@ def _normalize_csv(
     if not path.exists():
         raise NormalizationError(f"{source_name}: file not found: {path}")
 
-    with path.open(newline="", encoding="utf-8-sig") as fh:
-        reader = csv.DictReader(fh)
-        headers = reader.fieldnames or []
-        if not headers:
-            raise NormalizationError(
-                f"{source_name}: {path} has no header row. Refusing to read positionally."
-            )
+    headers, raw_rows = _read_tabular(path, source_name)
+    if not headers:
+        raise NormalizationError(
+            f"{source_name}: {path} has no header row. Refusing to read positionally."
+        )
 
-        mapping = resolve_columns(headers, aliases, required, source_name)
-        rows: list[dict[str, Any]] = []
+    mapping = resolve_columns(headers, aliases, required, source_name)
+    rows: list[dict[str, Any]] = []
 
-        for row_num, raw in enumerate(reader, start=2):
-            out: dict[str, Any] = {}
-            for canonical, input_col in mapping.resolved.items():
-                value = raw.get(input_col)
+    for row_num, raw in enumerate(raw_rows, start=2):
+        out: dict[str, Any] = {}
+        for canonical, input_col in mapping.resolved.items():
+            value = raw.get(input_col)
 
-                if canonical in money_fields:
-                    try:
-                        out[canonical] = parse_money(
-                            value if value not in (None, "") else 0,
-                            allow_negative=money_fields[canonical],
-                        )
-                    except MoneyError as exc:
-                        raise NormalizationError(
-                            f"{source_name} row {row_num}, column {input_col!r}: {exc}"
-                        ) from exc
-                elif canonical in timestamp_fields:
-                    out[canonical] = _parse_timestamp(value, source_name, row_num)
-                else:
-                    out[canonical] = value.strip() if isinstance(value, str) else value
+            if canonical in money_fields:
+                try:
+                    out[canonical] = parse_money(
+                        value if value not in (None, "") else 0,
+                        allow_negative=money_fields[canonical],
+                    )
+                except MoneyError as exc:
+                    raise NormalizationError(
+                        f"{source_name} row {row_num}, column {input_col!r}: {exc}"
+                    ) from exc
+            elif canonical in timestamp_fields:
+                out[canonical] = _parse_timestamp(value, source_name, row_num)
+            else:
+                out[canonical] = value.strip() if isinstance(value, str) else value
 
-            out["_row"] = row_num
-            rows.append(out)
+        out["_row"] = row_num
+        rows.append(out)
 
     return rows, mapping
 

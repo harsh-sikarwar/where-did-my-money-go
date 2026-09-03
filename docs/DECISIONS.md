@@ -1812,3 +1812,59 @@ here so it is visible rather than quiet.
 does not prove the engine resists a confusion we did not think of — the same structural
 limit as every other number in `METRICS.md`, and the reason the hand-edited blind rounds
 (ADR-031/033) and the real sample files (ADR-037/038) exist alongside it.
+
+---
+
+## ADR-043 — The upload path reads `.xlsx`, because that is what Razorpay hands a merchant
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** The planned feature was "real CSV upload". Razorpay's sample exports are all
+`.xlsx`, and so is what the dashboard's *Download Report* button produces. The normalizer
+was `csv.DictReader` only.
+
+So the feature as specified would have shipped a door a real merchant cannot walk through:
+they export their settlement report, get an Excel file, and the tool rejects it on step
+one. "Real CSV upload" was the wrong name for the requirement.
+
+**Decision.** Read both formats behind one function.
+
+`_read_tabular(path, source_name)` returns `(headers, rows)` and dispatches on suffix.
+Everything downstream — column resolution, money parsing, timestamp parsing, the refusal
+to guess — is untouched and shared. The only difference the function may introduce is
+where the bytes came from.
+
+That constraint is the point. A separate xlsx path would be a **second implementation of
+the engine** rather than a second door into it, and the two could drift into giving
+different answers for the same data. A test asserts a batch supplied as `.xlsx`
+reconciles to the same gap, the same headline, the same score and the same decoy result
+as the identical batch as `.csv`.
+
+**Four things the real files forced.**
+
+1. **`data_only=True`.** Returns the cached value of a formula rather than its text. A
+   settlement report containing a `SUM` must yield the number, not `"=SUM(A1:A9)"`.
+2. **Blank leading columns are dropped.** `sample-settlements-report.xlsx` opens with an
+   empty spacer column; without this it becomes a field named `"None"` and the header
+   count reads 27 instead of 7.
+3. **Wholly blank rows are skipped.** Excel files are full of them, and one would become
+   a row of empty strings that fails money parsing on a file that is perfectly valid.
+4. **Cell values are passed on untouched.** openpyxl returns real `datetime` objects for
+   date-formatted cells and floats for numbers. Stringifying them to re-parse would
+   discard type information and *re-create the Excel-serial ambiguity of ADR-037* — the
+   exact bug, one layer up. Verified: the recon export's `entity_created_at` arrives as
+   `datetime(2022, 4, 7, 10, 43, 32)`, and `_parse_timestamp` now has a passthrough
+   branch for it.
+
+**A dependency, deliberately in the core.** `openpyxl` is a hard dependency, not an
+extra. The API and LLM deps are optional because the engine must run without them; being
+unable to read the format the PSP actually exports is not an optional gap. (`pandas` has
+been declared since Phase 0 and is imported nowhere — worth removing separately.)
+
+**`stage_from_dir` finds either.** `ledger.csv` or `ledger.xlsx`, same for `bank`. CSV
+wins if both exist — a tie-break for determinism, not a judgement about which is better.
+
+**What this does not do.** It reads the format. It does not yet accept an HTTP upload,
+map unfamiliar column names interactively, or take a merchant's own rate card — those are
+the next three pieces. And these sample files remain tiny and synthetic: authoritative
+for schema and format, not a substitute for one real merchant's data.

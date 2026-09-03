@@ -307,9 +307,12 @@ the benign bucket — while also corrupting the observed settlement cycle for th
 batch. Fixed in ADR-037. That this survived 547 tests is the point: the generator emits
 epoch seconds, so no batch it produced could reach the branch.
 
-**The exports are `.xlsx`, not CSV.** The normalizer is `csv.DictReader` only. "Real CSV
-upload" was the wrong framing of the feature — Razorpay's dashboard hands a merchant an
-Excel file, so an upload path that accepts only CSV stops a real merchant on step one.
+**The exports are `.xlsx`, not CSV.** ~~The normalizer is `csv.DictReader` only.~~
+**Closed 2026-09-03 (ADR-043).** Both formats now read through one function, and a test
+asserts an `.xlsx` batch produces the same gap, headline and score as the identical
+`.csv` batch — a separate xlsx path would be a second implementation of the engine
+rather than a second door into it. "Real CSV upload" was the wrong framing of the
+feature: Razorpay's dashboard hands a merchant an Excel file.
 
 **Our recon type discriminator had the wrong name.** `matcher.py` branched on
 `row["type"]`; the real column is `transaction_entity`. The *values* match (`payment`,

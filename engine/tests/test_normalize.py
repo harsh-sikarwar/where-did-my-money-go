@@ -306,3 +306,115 @@ class TestReconTypeSpelling:
         from finctl.schema import recon_type
 
         assert recon_type({"entity_id": "pay_x"}) is None
+
+
+SAMPLES = Path(__file__).resolve().parents[2] / "razorpay-sample-files"
+
+
+class TestExcelIngest:
+    """Razorpay's dashboard exports .xlsx, not CSV. ADR-043.
+
+    "Export your settlement report" hands a merchant an Excel file. An upload path that
+    accepts only CSV stops a real merchant on step one.
+    """
+
+    @staticmethod
+    def _write(path: Path, rows: list[list]) -> Path:
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        for row in rows:
+            wb.active.append(row)
+        wb.save(path)
+        return path
+
+    def test_an_xlsx_ledger_reads_like_a_csv_one(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path / "l.xlsx", [
+            ["order_id", "amount", "timestamp"],
+            ["order_A", "1234.50", "2022-06-29"],
+        ])
+        rows, _ = normalize_ledger(p)
+        assert rows[0]["amount_paise"] == 123450
+        assert rows[0]["captured_at"].date() == date(2022, 6, 29)
+
+    def test_numeric_cells_parse_as_money(self, tmp_path: Path) -> None:
+        """Excel stores 1234.50 as a float, not the string "1234.50"."""
+        p = self._write(tmp_path / "l.xlsx", [
+            ["order_id", "amount"], ["order_A", 1234.50],
+        ])
+        rows, _ = normalize_ledger(p)
+        assert rows[0]["amount_paise"] == 123450
+
+    def test_a_real_datetime_cell_is_not_restringified(self, tmp_path: Path) -> None:
+        """openpyxl returns datetime objects; re-parsing them would risk ADR-037 again."""
+        p = self._write(tmp_path / "l.xlsx", [
+            ["order_id", "amount", "timestamp"],
+            ["order_A", 100, datetime(2022, 6, 29, 7, 34, 39)],
+        ])
+        rows, _ = normalize_ledger(p)
+        assert rows[0]["captured_at"].date() == date(2022, 6, 29)
+        assert rows[0]["captured_at"].tzinfo is not None
+
+    def test_blank_spacer_rows_are_skipped(self, tmp_path: Path) -> None:
+        """Excel files are full of them; one would fail money parsing as a row of ''."""
+        p = self._write(tmp_path / "l.xlsx", [
+            ["order_id", "amount"],
+            ["order_A", 100],
+            [None, None],
+            ["order_B", 200],
+        ])
+        rows, _ = normalize_ledger(p)
+        assert [r["order_id"] for r in rows] == ["order_A", "order_B"]
+
+    def test_an_unmappable_xlsx_still_refuses_to_guess(self, tmp_path: Path) -> None:
+        """The refusal is format-independent — it is the whole point of the stage."""
+        p = self._write(tmp_path / "l.xlsx", [["foo", "bar"], ["a", "b"]])
+        with pytest.raises(NormalizationError, match="could not map required column"):
+            normalize_ledger(p)
+
+    def test_an_unsupported_format_is_named(self, tmp_path: Path) -> None:
+        p = tmp_path / "l.pdf"
+        p.write_bytes(b"%PDF-1.4")
+        with pytest.raises(NormalizationError, match="unsupported format"):
+            normalize_ledger(p)
+
+
+@pytest.mark.skipif(not SAMPLES.is_dir(), reason="sample files not present")
+class TestRazorpaysOwnExports:
+    """Read Razorpay's actual published sample reports. ADR-043.
+
+    Not a substitute for real merchant data — these are tiny and synthetic — but they
+    are authoritative for SCHEMA and FORMAT, which is what the upload path needs.
+    """
+
+    @pytest.mark.parametrize("name", [
+        "sample-settlements-recon-report",
+        "sample-payments-report",
+        "sample-settlements-report",
+        "sample-orders-report",
+        "sample-refunds-report",
+    ])
+    def test_every_sample_export_is_readable(self, name: str) -> None:
+        from finctl.normalize.normalizer import _read_tabular
+
+        headers, rows = _read_tabular(SAMPLES / f"{name}.xlsx", name)
+        assert headers, f"{name}: no headers"
+        assert rows, f"{name}: no rows"
+        assert all(h.strip() for h in headers), f"{name}: blank header survived"
+
+    def test_the_settlements_reports_blank_leading_column_is_dropped(self) -> None:
+        """That file opens with an empty spacer column. It must not become a field."""
+        from finctl.normalize.normalizer import _read_tabular
+
+        headers, _ = _read_tabular(SAMPLES / "sample-settlements-report.xlsx", "s")
+        assert headers == ["id", "amount", "status", "fees", "tax", "utr", "created_at"]
+
+    def test_the_recon_export_dates_are_not_1970(self) -> None:
+        """The ADR-037 regression, read from the file that revealed it."""
+        from finctl.normalize.normalizer import _parse_timestamp, _read_tabular
+
+        _, rows = _read_tabular(SAMPLES / "sample-settlements-recon-report.xlsx", "r")
+        for i, row in enumerate(rows, start=2):
+            parsed = _parse_timestamp(row["entity_created_at"], "recon", i)
+            assert parsed is None or parsed.year != 1970
+

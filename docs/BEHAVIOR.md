@@ -71,7 +71,9 @@ cluster of ~6 halted subscriptions.
 
 ## Stage: `normalize`
 
-**Promises.** Maps arbitrary input columns to the canonical schema. Converts all money to
+**Promises.** Reads `.csv` and `.xlsx`/`.xlsm` through one code path — Razorpay's
+dashboard exports Excel, so a merchant's own settlement report arrives as `.xlsx`
+(ADR-043). Maps arbitrary input columns to the canonical schema. Converts all money to
 integer paise and all timestamps to UTC. This is the **only** place rupee strings such as
 `"1,234.50"` are parsed.
 

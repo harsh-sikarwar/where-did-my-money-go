@@ -5,6 +5,10 @@ description = "Where did my money go? — settlement reconciliation with payment
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    # Razorpay's dashboard exports are .xlsx, not CSV — a merchant downloading their
+    # own settlement report gets an Excel file. Reading it is table stakes for the
+    # upload path, so this is a core dependency, not an extra. See ADR-043.
+    "openpyxl>=3.1",
     "pandas>=2.2",
     "pydantic>=2.9",
     "pyyaml>=6.0",
