@@ -331,3 +331,20 @@ populated disputes. So they close the "am I reading the right columns" question 
 leave the "are my accuracy numbers self-graded" question open. The accuracy figures in
 METRICS.md are still measured against generator-produced ground truth, and obtaining
 these files does not change that.
+
+### The actionable list is at its cap
+
+The verdict's actionable list is now **5 lines** — `UNRECORDED_REFUND`, `DISPUTED`,
+`HALTED_SUBSCRIPTION`, `PAYMENT_FAILED`, `ON_HOLD` — and `test_rank.py` caps it at 5.
+
+That cap has been raised twice, each time because the engine learned to name a cause it
+previously left in UNEXPLAINED (ON_HOLD in ADR-036, UNRECORDED_REFUND in ADR-039,
+DISPUTED in ADR-041). Each raise was the right call in isolation: money moved out of a
+silent bucket onto a line with an owner.
+
+It is not repeatable. The product promise is that a merchant reads this list in one
+glance on a Monday morning, and a sixth line starts making it a dashboard — the thing
+this project argues against from the README down. The next classification added forces a
+real decision (grouping related causes, or a "more" affordance), not another cap raise.
+Stated here so that decision is made deliberately rather than by a test edit.
+

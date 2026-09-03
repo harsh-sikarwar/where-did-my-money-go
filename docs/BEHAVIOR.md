@@ -131,7 +131,11 @@ An amount-based near-match is a guess wearing a confidence score.
 
 **Promises.** Assigns exactly one label per discrepancy, with the arithmetic attached:
 `FEE · TAX_ON_FEE · TIMING · REFUND · ROUNDING · DUPLICATE · MISSING · ON_HOLD ·
-UNRECORDED_REFUND · UNEXPECTED_SETTLEMENT · UNEXPLAINED`.
+DISPUTED · UNRECORDED_REFUND · UNEXPECTED_SETTLEMENT · UNEXPLAINED`.
+
+**Withheld money is never also reported as late.** `ON_HOLD` and `DISPUTED` suppress
+`TIMING`. "It arrives on its own" is false for money the PSP is holding, and for a
+chargeback it is actively harmful — waiting is how a merchant loses one (ADR-041).
 
 Two of these are **settlement-level**, not order-level, and carry no `order_id`:
 `UNRECORDED_REFUND` (money Razorpay returned that the merchant never recorded, keyed by

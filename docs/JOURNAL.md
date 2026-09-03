@@ -1739,3 +1739,70 @@ directly instead of leaving it implied by three parametrised cases.
 
 **566 tests green**, ruff clean. Demo batch: 0 missed, 0 false positives, gap residual
 ₹0.00, actionable list 5 lines.
+
+---
+
+## 2026-09-03 — Disputes, and a guarantee that was only ever in the docstring
+
+`dispute_id`, `dispute_created_at`, `dispute_reason` — three real columns in Razorpay's
+recon export, and our generator had `dispute_id: None` as a placeholder. Razorpay's own
+settlement formula names chargebacks explicitly. So this was money the documentation told
+us to expect, with no rule to catch it.
+
+Without a rule a disputed order lands in UNEXPLAINED, or once the cycle elapses, TIMING.
+TIMING is benign, and its copy reads *"It arrives on its own."* For a chargeback with a
+response deadline, that is the worst sentence this engine can produce.
+
+### The test I wrote to prove the ordering worked, didn't
+
+`_check_dispute` goes before `_check_timing`, the same way ADR-036 put `_check_on_hold`
+before it and called the ordering "load-bearing". I wrote `test_it_beats_timing` expecting
+it to pass on the first run. It failed:
+
+```
+ON_HOLD  -> ['TIMING', 'ON_HOLD']
+DISPUTED -> ['TIMING', 'DISPUTED']
+```
+
+The ordering never protected anything. TIMING is emitted from the `independent` set — the
+branch that deliberately bypasses the money-rule contest so that a wrong fee and a late
+settlement can both be reported — so it was never *in* the contest that rule order
+governs.
+
+Which means every held payment since ADR-036 was reported as both "held by Razorpay — not
+on its way" and "on its way, it arrives on its own". Two lines, on the same order,
+contradicting each other. The guarantee existed in the docstring, in the ADR, and in the
+rule order. It did not exist in the behaviour.
+
+I only found it because I wrote the assertion for the *new* rule. Nobody had written it
+for the old one — ADR-036 asserted the ordering in prose and moved on.
+
+### Two sign errors in one component
+
+The hand-edited composition test earned its keep again. Its deleted ledger row happened to
+be a disputed order, which surfaced two bugs in sequence:
+
+First, I booked `amount − fee − tax`, but the FEE component books the `fee` column alone.
+Short by exactly the tax. Then, booking from `primary_rows`, a disputed order with a
+deleted ledger row was skipped entirely — short by its full net. Then the over-eager fix
+claimed it and produced a *surplus* of exactly the same amount.
+
+The right answer is that it belongs to neither component: with no ledger row it is not in
+`expected`, and with the money withheld it is not in `received`. It nets to zero on both
+sides. But the orphan component still has to exclude it explicitly, because that one books
+`credit − debit` and a disputed row carries a credit it never paid out.
+
+Three attempts, and the balance invariant caught every wrong one. That invariant has now
+found more bugs than any test I have deliberately written.
+
+### The cap is a real constraint now
+
+The actionable list is 5 lines and the test caps it at 5. I have raised that cap twice,
+each time for a good reason — money moving out of UNEXPLAINED onto a line with an owner.
+It is not repeatable. A sixth line makes this a dashboard, which is the thing the README
+argues against. Written into LIMITATIONS so the next person hits a decision rather than a
+test edit.
+
+### State
+
+**575 tests green**, ruff clean. Demo batch: 0 missed, 0 false positives, residual ₹0.00.

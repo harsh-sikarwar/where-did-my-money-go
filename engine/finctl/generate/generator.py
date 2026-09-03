@@ -429,6 +429,21 @@ class Generator:
                     detail={"hold_reason": "risk_review", "settled": False},
                 ))
 
+            # ---- DEFECT: disputed payment --------------------------------------
+            # A customer charged back. Razorpay withholds the money pending the
+            # outcome and the merchant has a deadline to submit evidence, so this is
+            # neither late nor missing. See ADR-041.
+            disputed = i in assigned[DefectType.DISPUTED]
+            if disputed:
+                gt.add(PlantedDefect(
+                    defect_id=f"dispute-{order_id}",
+                    defect_type=DefectType.DISPUTED,
+                    order_id=order_id,
+                    impact_paise=amount - fee_paise,
+                    expected_classification="DISPUTED",
+                    detail={"dispute_reason": "chargeback", "settled": False},
+                ))
+
             recon_row = {
                 "entity_id": payment_id,
                 "type": "payment",
@@ -455,7 +470,9 @@ class Generator:
                 "card_network": "Visa" if method.startswith("card") else None,
                 "card_issuer": "HDFC" if method.startswith("card") else None,
                 "card_type": method.replace("card_", "") if method.startswith("card") else None,
-                "dispute_id": None,
+                "dispute_id": self._rid("disp_") if disputed else None,
+                "dispute_created_at": self._ts(order_day, 12) if disputed else None,
+                "dispute_reason": "chargeback" if disputed else None,
             }
             # ---- DEFECT: split settlement ---------------------------------------
             # One order paid across two settlements on different days. Legitimate
@@ -513,11 +530,16 @@ class Generator:
             # bank: that is what being held means. The recon row exists and carries
             # on_hold=true, so the engine can explain the gap from the row itself
             # rather than reporting UNEXPLAINED. See ADR-036.
-            if not on_hold:
+            # A disputed payment is withheld for the same reason a held one is: the
+            # money does not reach the bank while the dispute is open. Grouping it into
+            # a settlement would mean the bank shows money the merchant does not have.
+            if not on_hold and not disputed:
                 settlement_groups.setdefault(settled_day, []).append(recon_row)
-            else:
+            elif on_hold:
                 recon_row["settled_at"] = None
                 recon_row["hold_reason"] = "risk_review"
+            else:
+                recon_row["settled_at"] = None
             batch.recon.append(recon_row)
 
             # ---- DEFECT: refund before the original settled ---------------------

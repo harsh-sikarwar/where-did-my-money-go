@@ -52,6 +52,11 @@ class DefectType:
     # shape a real merchant is more likely to have. See ADR-039.
     UNRECORDED_REFUND = "unrecorded_refund"
 
+    # Razorpay's recon export carries dispute_id / dispute_created_at / dispute_reason.
+    # A chargeback is money the PSP is withholding or has clawed back, with a response
+    # deadline attached. See ADR-041.
+    DISPUTED = "disputed"
+
     # ORDER IS LOAD-BEARING. The generator slices a shuffled index range across these
     # in sequence, so changing the order changes WHICH orders receive WHICH defect —
     # every golden file shifts, for no real reason. This tuple therefore preserves the
@@ -60,7 +65,7 @@ class DefectType:
     ALL = (
         MISSING_ORDER, WRONG_FEE_RATE, ONE_SIDED_REFUND, HALTED_SUBSCRIPTION,
         TIMING_LAG, SPLIT_SETTLEMENT, EARLY_REFUND, PAYMENT_ON_HOLD,
-        UNRECORDED_REFUND,
+        UNRECORDED_REFUND, DISPUTED,
     )
 
 

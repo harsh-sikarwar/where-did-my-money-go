@@ -91,6 +91,13 @@ LINE_COPY: dict[Classification, tuple[str, str]] = {
         "money in for an order you don't have",
         "Razorpay settled an order that is not in your ledger.",
     ),
+    Classification.DISPUTED: (
+        "disputed by the customer — you have a deadline",
+        "A customer has formally contested these payments with their bank. Razorpay is "
+        "holding the money, or has already taken it back. Unlike a delay, this does not "
+        "resolve on its own: you have a limited window to submit evidence through the "
+        "Razorpay dashboard, and missing it forfeits the money.",
+    ),
     Classification.UNRECORDED_REFUND: (
         "refunds Razorpay paid out that you never recorded",
         "Razorpay returned this money to customers, but there is no refund in your "
@@ -111,6 +118,7 @@ _DISPLAY_ORDER = (
     Classification.DUPLICATE,
     Classification.UNEXPECTED_SETTLEMENT,
     Classification.UNRECORDED_REFUND,
+    Classification.DISPUTED,
     Classification.HALTED_SUBSCRIPTION,
     Classification.PAYMENT_FAILED,
     Classification.MISSING,

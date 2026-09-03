@@ -82,7 +82,11 @@ class TestAgainstGroundTruth:
         # A payment the PSP is HOLDING is matched (a recon row exists) but never
         # reaches the bank, so it widens the gap with the same sign as `missing`.
         # Booked net of fee, since `fees` already accounts for that part. ADR-036.
+        # A disputed payment is withheld for the same reason and with the same sign:
+        # Razorpay holds the money pending the outcome, so it never reaches the bank.
+        # ADR-041.
         held_ids = {d.order_id for d in truth.by_type(DefectType.PAYMENT_ON_HOLD)}
+        held_ids |= {d.order_id for d in truth.by_type(DefectType.DISPUTED)}
         held = sum(m.ledger_amount_paise - m.fee_paise
                    for m in result.order_matches if m.order_id in held_ids)
         # A refund the merchant never recorded is a debit like any other refund, but it

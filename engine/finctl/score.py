@@ -50,6 +50,7 @@ EXPECTED: dict[str, frozenset[Classification]] = {
     DefectType.EARLY_REFUND: frozenset({Classification.REFUND}),
     DefectType.PAYMENT_ON_HOLD: frozenset({Classification.ON_HOLD}),
     DefectType.UNRECORDED_REFUND: frozenset({Classification.UNRECORDED_REFUND}),
+    DefectType.DISPUTED: frozenset({Classification.DISPUTED}),
 }
 
 

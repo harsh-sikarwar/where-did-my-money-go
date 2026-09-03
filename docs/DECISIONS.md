@@ -1641,3 +1641,92 @@ The false-positive check still keys on `order_id`, which is correct: a false pos
 an order the engine flagged that was never planted, and order-less findings cannot be
 false positives in that sense. Worth revisiting if a future defect type can be
 *wrongly* attributed to an entity.
+
+---
+
+## ADR-041 — A chargeback is not a delay, and "it arrives on its own" is the worst answer
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** Razorpay's settlement recon export carries three columns we were reading
+past: `dispute_id`, `dispute_created_at` and `dispute_reason` (confirmed against
+`sample-settlements-recon-report.xlsx`; the generator had `dispute_id: None` as a
+placeholder and nothing else). Razorpay's own settlement formula names them —
+`Net = Gross − MDR − GST on MDR − refunds − chargebacks` (ADR-007) — so a disputed
+payment was money the documentation told us to expect and the engine had no rule for.
+
+Without a rule, a disputed order falls through every money check to UNEXPLAINED, or —
+once the settlement cycle elapses — to TIMING. TIMING is `BENIGN`. Its merchant-facing
+copy reads *"Razorpay has released this money but it has not landed in your account yet.
+It arrives on its own."*
+
+For a chargeback that is not merely wrong, it is the single most damaging sentence this
+engine can produce. A dispute carries a response deadline. Waiting is exactly how a
+merchant loses one.
+
+**Decision.** Add `DISPUTED` as a first-class classification, modelled on ON_HOLD.
+
+1. `_check_dispute` reads `dispute_id` from the recon row, carrying `dispute_reason` and
+   `dispute_created_at` into the proof — a merchant needs both to find the case in their
+   dashboard.
+2. **Not `BENIGN`.** There is a deadline, and doing nothing forfeits the money.
+3. Its own gap component, booked at `amount − fee` (net of fee, since the FEE component
+   already counts that part).
+4. Generated: 2 in `demo`, rate-based in `scale`, with the recon row deliberately
+   excluded from settlement grouping — no `settlement_id`, no UTR, no `settled_at` —
+   because withheld money must not appear in the bank.
+
+**The bug this exposed, which was older than this work.**
+
+ADR-036 stated that `_check_on_hold` runs before `_check_timing` and called the ordering
+"load-bearing". **The ordering never protected anything.** TIMING is emitted from the
+`independent` set — the branch that deliberately bypasses the money-rule contest so a
+wrong fee and a late settlement can both be reported — so it was never in the contest
+that ordering governs. Verified directly:
+
+```
+ON_HOLD  -> ['TIMING', 'ON_HOLD']
+DISPUTED -> ['TIMING', 'DISPUTED']
+```
+
+Every held payment since ADR-036 was reported as *both* withheld *and* "on its way, it
+arrives on its own". The guarantee was in the docstring, in the ADR, and in the rule
+order — and in none of the behaviour.
+
+**Fix.** TIMING is suppressed when any withholding rule fires:
+
+```python
+withheld = {Classification.ON_HOLD, Classification.DISPUTED}
+if any(h[0] in withheld for h in hits):
+    hits = [h for h in hits if h[0] is not Classification.TIMING]
+```
+
+"Late" and "withheld" are not orthogonal facts about the same money the way a wrong fee
+and a late settlement are. Withheld money is not late; it is not coming at all until a
+human acts. A parametrised test now asserts this for both, plus the inverse — a
+genuinely late payment must still be TIMING.
+
+**Two decomposition bugs, both found by the hand-edited composition test.**
+
+The deleted ledger row in that test happened to be a disputed order, which is the only
+reason either surfaced:
+
+1. **Tax double-counted.** The component booked `amount − fee − tax`, but the FEE
+   component books `m.fee_paise`, which is the `fee` column alone. The decomposition
+   came up short by exactly the tax on the disputed rows.
+2. **A disputed orphan must be claimed by neither component.** First attempt booked from
+   `primary_rows`, so a disputed order whose ledger row was deleted was skipped and the
+   decomposition fell short by its net. The over-eager fix then claimed it in the
+   DISPUTED component and produced a *surplus* of the same amount. The correct answer:
+   with no ledger row it contributes nothing to `expected`, and with the money withheld
+   it contributes nothing to `received` — it nets to zero on both sides. The
+   orphan-settlement component must still exclude it explicitly, because that one books
+   `credit − debit` and a disputed row carries a credit it never paid out.
+
+**Consequences.** 10 tests added. Demo batch: 2 caught, 0 missed, 0 false positives,
+residual ₹0.00. `UNEXPECTED_SETTLEMENT` is now correctly smaller in the hand-edited
+case, since a disputed orphan's credit is no longer counted as money that arrived.
+
+**Cost.** The actionable list is now 5 lines and at its cap. The next classification
+added will force a real product decision — grouping, or a "more" affordance — rather
+than another cap raise. Recorded in LIMITATIONS.

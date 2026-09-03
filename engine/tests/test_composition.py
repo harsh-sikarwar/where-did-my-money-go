@@ -609,7 +609,14 @@ class TestHandEditedLedger:
     def test_the_orphan_amount_equals_what_was_actually_settled(
         self, batch_dir: Path
     ) -> None:
-        """Exact, not approximate: the net credit of the orphaned settlement rows."""
+        """Exact, not approximate: the net credit of the orphaned settlement rows.
+
+        Disputed rows are excluded from the expectation, because their credit never
+        reached the bank — Razorpay withholds it pending the outcome. Counting it as
+        money that arrived would narrow the gap by an amount the merchant never got.
+        One of the deleted rows here happens to be a disputed order, which is how that
+        distinction was found. See ADR-041.
+        """
         from finctl.classify.classifier import Classification
 
         self._delete_ledger_rows(batch_dir, [10, 19])
@@ -617,6 +624,7 @@ class TestHandEditedLedger:
         expected = sum(
             row.get("credit", 0) - row.get("debit", 0)
             for row in result.matches.unmatched_recon_orders
+            if not row.get("dispute_id")
         )
         line = next(
             line for line in result.verdict.lines

@@ -206,6 +206,52 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             order_ids=[m.order_id for m in held],
         ))
 
+    # --- payments under dispute -------------------------------------------------------
+    # Same shape as the held-payment component above, and for the same reason: a
+    # disputed payment has a recon row (so it is `matched`) but Razorpay withholds the
+    # money pending the outcome, so it never reaches the bank. Without its own component
+    # that money lands in the residual.
+    #
+    # Booked at net of fee, like ON_HOLD, since the FEE component already counts that
+    # part. See ADR-041.
+    # Booked from the RECON rows, not from the ledger rows. A disputed order whose
+    # ledger row is absent still has its money withheld — the dispute is a fact about
+    # the settlement, not about the merchant's bookkeeping. Summing `primary_rows`
+    # instead silently skipped exactly that case, and the hand-edited composition test
+    # caught it: deleting a ledger row that happened to be disputed left the decomposition
+    # short by precisely that order's net. See ADR-041.
+    disputed_rows = [
+        row
+        for m in matches.order_matches
+        for row in m.recon_rows
+        if row.get("dispute_id")
+    ]
+    # A disputed order the ledger never mentioned is claimed by NEITHER component, and
+    # that is correct rather than an omission. The gap is `expected - received`: with no
+    # ledger row the order contributes nothing to `expected`, and with the money withheld
+    # pending the dispute it contributes nothing to `received` either. It nets to zero
+    # on both sides, so any component claiming it would unbalance the decomposition.
+    #
+    # The orphan-settlement component below still has to exclude it explicitly, because
+    # that one books `credit - debit` and a disputed row carries a credit it never paid
+    # out. Both halves of this were found by the hand-edited composition test, where a
+    # deleted ledger row happened to be a disputed order — first as a shortfall of
+    # exactly its net, then, after an over-eager fix, as a surplus of the same amount.
+    if disputed_rows:
+        d.components.append(GapComponent(
+            classification=Classification.DISPUTED,
+            # `amount - fee`, NOT `amount - fee - tax`. The FEE component books
+            # `m.fee_paise`, which is the `fee` column alone, so subtracting `tax` here
+            # as well double-counts it — the decomposition then comes up short by
+            # exactly the tax on the disputed rows. Same convention as ON_HOLD.
+            amount_paise=sum(
+                (row.get("amount", 0) or 0) - (row.get("fee", 0) or 0)
+                for row in disputed_rows
+            ),
+            count=len(disputed_rows),
+            order_ids=[row["order_id"] for row in disputed_rows if row.get("order_id")],
+        ))
+
     # --- settled but not yet in the bank ---------------------------------------------
     # Genuinely still in flight: Razorpay has it, the bank does not. This is the only
     # TIMING that belongs in the gap. An order that settled late but HAS arrived is
@@ -301,21 +347,24 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
     # matcher had detected them all along (`unmatched_recon_orders`); the decomposition
     # simply never consumed them. Every generated defect removes money or moves it, so
     # no synthetic case had ever produced settled money with no ledger row behind it.
+    # Disputed rows are excluded: their credit never reached the bank, so counting it
+    # as money that arrived would narrow the gap by an amount the merchant never got.
+    # The DISPUTED component above claims them instead.
+    orphan_rows = [
+        row for row in matches.unmatched_recon_orders if not row.get("dispute_id")
+    ]
     orphan_settlements = sum(
-        row.get("credit", 0) - row.get("debit", 0)
-        for row in matches.unmatched_recon_orders
+        row.get("credit", 0) - row.get("debit", 0) for row in orphan_rows
     )
     if orphan_settlements:
         d.components.append(GapComponent(
             classification=Classification.UNEXPECTED_SETTLEMENT,
             amount_paise=-orphan_settlements,
             count=len({
-                row.get("order_id") for row in matches.unmatched_recon_orders
-                if row.get("order_id")
-            }) or len(matches.unmatched_recon_orders),
+                row.get("order_id") for row in orphan_rows if row.get("order_id")
+            }) or len(orphan_rows),
             order_ids=sorted({
-                row["order_id"] for row in matches.unmatched_recon_orders
-                if row.get("order_id")
+                row["order_id"] for row in orphan_rows if row.get("order_id")
             }),
         ))
 

@@ -53,6 +53,14 @@ demo:
            an earlier settlement than the credit, so a naive per-settlement view
            shows money leaving before it arrived."
 
+  disputed:
+    count: 2
+    note: "A customer charged back. Razorpay's recon export carries dispute_id,
+      dispute_created_at and dispute_reason on the row — three real columns. The money
+      is withheld pending the outcome and the merchant has a response deadline, so
+      calling it TIMING ('it arrives on its own') is the most damaging answer available.
+      See ADR-041."
+
   unrecorded_refund:
     count: 3
     note: "The MIRROR of one_sided_refund: Razorpay settled a refund the merchant
@@ -104,4 +112,6 @@ scale:
   early_refund:
     rate: 0.015
   unrecorded_refund:
+    rate: 0.01
+  disputed:
     rate: 0.01

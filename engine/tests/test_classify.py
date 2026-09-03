@@ -413,3 +413,107 @@ class TestUnrecordedRefund:
         # And it must NOT also be counted under REFUND.
         assert Classification.REFUND not in by_class
 
+
+class TestDisputed:
+    """A chargeback is neither late nor missing. ADR-041.
+
+    `dispute_id`, `dispute_created_at` and `dispute_reason` are three real columns in
+    `sample-settlements-recon-report.xlsx` — the schema is Razorpay's, not invented.
+    """
+
+    @staticmethod
+    def _classify(recon_extra: dict):
+        b = StagedBatch(batch_id="disp")
+        b.add(Source.LEDGER, [{"order_id": "order_A", "amount_paise": 100000,
+                               "captured_at": "2022-07-01", "_row": 2}], "t")
+        b.add(Source.RECON, [{
+            "transaction_entity": "payment", "order_id": "order_A", "amount": 100000,
+            "credit": 97640, "debit": 0, "fee": 2360, "tax": 0,
+            "payment_method": "card_credit", **recon_extra,
+        }], "t")
+        b.seal()
+        return Classifier(load_config()).classify(match(b))
+
+    def test_a_dispute_is_classified_as_disputed(self) -> None:
+        c = self._classify({"dispute_id": "disp_X", "dispute_reason": "chargeback",
+                            "settled_at": None})
+        found = c.by_class(Classification.DISPUTED)
+        assert len(found) == 1
+        assert found[0].proof["dispute_ids"] == ["disp_X"]
+        assert found[0].proof["dispute_reasons"] == ["chargeback"]
+
+    def test_it_beats_timing(self) -> None:
+        """THE ordering guarantee.
+
+        A disputed payment also looks late once the cycle elapses. Reporting TIMING —
+        'it arrives on its own' — is the most damaging thing the engine could say about
+        a chargeback, because waiting is exactly how a merchant loses one.
+        """
+        c = self._classify({
+            "dispute_id": "disp_X", "dispute_reason": "chargeback",
+            "settled_at": "2023-01-01",   # long past any cycle
+        })
+        assert c.by_class(Classification.DISPUTED)
+        assert not c.by_class(Classification.TIMING)
+
+    def test_it_is_not_benign(self) -> None:
+        """There is a response deadline. Doing nothing forfeits the money."""
+        assert Classification.DISPUTED not in BENIGN
+
+    def test_an_undisputed_row_is_not_disputed(self) -> None:
+        c = self._classify({"settled_at": "2022-07-04"})
+        assert not c.by_class(Classification.DISPUTED)
+
+    def test_the_merchant_gets_the_reason_and_the_date(self) -> None:
+        """Both are in the row. A merchant needs them to find it in the dashboard."""
+        c = self._classify({"dispute_id": "disp_X", "dispute_reason": "fraud",
+                            "dispute_created_at": "2022-07-05", "settled_at": None})
+        proof = c.by_class(Classification.DISPUTED)[0].proof
+        assert proof["dispute_reasons"] == ["fraud"]
+        assert proof["dispute_raised_at"] == ["2022-07-05"]
+
+
+class TestWithheldMoneyIsNeverAlsoLate:
+    """ADR-036 claimed this for ON_HOLD and never enforced it. ADR-041 found that out.
+
+    Rule ORDER was supposed to protect it, but TIMING is emitted from the `independent`
+    set, which bypasses the money-rule contest entirely — so a withheld payment came out
+    as BOTH withheld and "on its way, it arrives on its own". The second is false, and
+    for a chargeback it is actively harmful: waiting is how a merchant loses one.
+    """
+
+    @staticmethod
+    def _classify(extra: dict):
+        b = StagedBatch(batch_id="w")
+        b.add(Source.LEDGER, [{"order_id": "order_A", "amount_paise": 100000,
+                               "captured_at": "2022-07-01", "_row": 2}], "t")
+        b.add(Source.RECON, [{
+            "transaction_entity": "payment", "order_id": "order_A", "amount": 100000,
+            "credit": 97640, "debit": 0, "fee": 2360, "tax": 0,
+            "payment_method": "card_credit", **extra,
+        }], "t")
+        b.seal()
+        return Classifier(load_config()).classify(match(b))
+
+    @pytest.mark.parametrize(
+        ("label", "extra"),
+        [
+            ("on_hold", {"on_hold": True, "hold_reason": "risk_review"}),
+            ("disputed", {"dispute_id": "disp_X", "dispute_reason": "chargeback"}),
+        ],
+    )
+    def test_withheld_money_is_never_reported_as_timing(
+        self, label: str, extra: dict
+    ) -> None:
+        # settled_at far past any cycle, so _check_timing would certainly fire.
+        c = self._classify({**extra, "settled_at": "2023-01-01"})
+        assert not c.by_class(Classification.TIMING), (
+            f"{label} was also reported as TIMING — 'it arrives on its own' is false "
+            "for money the PSP is withholding"
+        )
+
+    def test_a_genuinely_late_payment_is_still_timing(self) -> None:
+        """The suppression must not swallow real timing findings."""
+        c = self._classify({"settled_at": "2023-01-01"})
+        assert c.by_class(Classification.TIMING)
+

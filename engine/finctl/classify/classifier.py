@@ -47,6 +47,7 @@ class Classification(StrEnum):
     DUPLICATE = "DUPLICATE"                      # the same order recorded twice
     MISSING = "MISSING"                          # no PSP record at all
     ON_HOLD = "ON_HOLD"                          # Razorpay is deliberately withholding it
+    DISPUTED = "DISPUTED"                        # a customer charged back
     UNEXPLAINED = "UNEXPLAINED"                  # honest residual
     NEEDS_REVIEW = "NEEDS_REVIEW"                # more than one rule fits
     # Assigned by correlate:
@@ -247,6 +248,44 @@ class Classifier:
             ),
         }
 
+    def _check_dispute(self, m: OrderMatch) -> tuple[Classification, dict[str, Any]] | None:
+        """Has a customer disputed this payment?
+
+        Razorpay's settlement recon export carries `dispute_id`, `dispute_created_at`
+        and `dispute_reason` on the row itself — three real columns, confirmed against
+        `sample-settlements-recon-report.xlsx`. A disputed payment is money Razorpay is
+        holding back or has already clawed back, and the merchant has a deadline to
+        respond with evidence.
+
+        Ordered before `_check_timing` for the same reason ON_HOLD is: a disputed
+        payment also looks late once the cycle elapses, and "it arrives on its own" is
+        the most damaging thing this engine could say about a chargeback. Waiting is
+        precisely how a merchant loses one. See ADR-041.
+        """
+        disputed = [r for r in m.recon_rows if r.get("dispute_id")]
+        if not disputed:
+            return None
+
+        amount = sum(r.get("credit", 0) or 0 for r in disputed) or sum(
+            r.get("amount", 0) or 0 for r in disputed
+        )
+        reasons = sorted({r["dispute_reason"] for r in disputed if r.get("dispute_reason")})
+        raised = sorted({
+            str(r["dispute_created_at"]) for r in disputed if r.get("dispute_created_at")
+        })
+        return Classification.DISPUTED, {
+            "dispute_ids": [r.get("dispute_id") for r in disputed],
+            "rows_disputed": len(disputed),
+            "amount_disputed_paise": amount,
+            "dispute_reasons": reasons,
+            "dispute_raised_at": raised,
+            "arithmetic": (
+                f"{len(disputed)} recon row(s) carry a dispute_id"
+                + (f" — {', '.join(reasons)}" if reasons else "")
+                + "; contested by the customer, not late and not missing"
+            ),
+        }
+
     def _check_timing(self, m: OrderMatch) -> tuple[Classification, dict[str, Any]] | None:
         """Did it settle later than the cycle allows?
 
@@ -444,7 +483,8 @@ class Classifier:
 
             # Collect every rule that fires. The count decides what happens next.
             hits: list[tuple[Classification, dict[str, Any]]] = []
-            for rule in (self._check_fee, self._check_on_hold, self._check_timing,
+            for rule in (self._check_fee, self._check_on_hold, self._check_dispute,
+                         self._check_timing,
                          self._check_settled_refund,
                          self._check_amount_gap, self._check_rounding):
                 hit = rule(m)
@@ -477,6 +517,26 @@ class Classifier:
             # explanations: an order can be charged the wrong fee, settle late AND have
             # money refunded. Only rules claiming the SAME rupees compete.
             independent = {Classification.FEE, Classification.TIMING}
+
+            # TIMING is suppressed when the money is being WITHHELD. Both rules run in
+            # an order that puts ON_HOLD and DISPUTED first, but ordering alone never
+            # actually protected anything: TIMING is emitted from the `independent` set
+            # below, which bypasses the money-rule contest entirely. So a held or
+            # disputed payment was reported as BOTH "withheld" and "on its way, arrives
+            # on its own" — the second of which is false and is the single most damaging
+            # thing this engine can say about a chargeback, because waiting is precisely
+            # how a merchant loses one.
+            #
+            # ADR-036 claimed this guarantee for ON_HOLD and never enforced it. The
+            # dispute work (ADR-041) is what exposed it, in ON_HOLD as well.
+            #
+            # "Late" and "withheld" are not orthogonal facts about the same money the
+            # way a wrong fee and a late settlement are. Withheld money is not late; it
+            # is not coming at all until a human acts.
+            withheld = {Classification.ON_HOLD, Classification.DISPUTED}
+            if any(h[0] in withheld for h in hits):
+                hits = [h for h in hits if h[0] is not Classification.TIMING]
+
             money_rules = [h for h in hits if h[0] not in independent]
 
             for classification, proof in [h for h in hits if h[0] in independent]:

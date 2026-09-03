@@ -272,12 +272,31 @@ class TestInternalConsistency:
             assert bank_row["credit_amount"] == by_utr[bank_row["utr"]]
 
     def test_every_settled_recon_row_belongs_to_a_settlement_with_a_utr(self, batch) -> None:
-        """Every row EXCEPT a held one, which by definition has no settlement yet."""
+        """Every row EXCEPT one being withheld, which by definition has no settlement.
+
+        Two ways a payment is withheld: `on_hold` (ADR-036) and an open dispute
+        (ADR-041). Both mean Razorpay is keeping the money, so neither has a settlement
+        or a UTR.
+        """
         for row in batch.recon:
-            if row.get("on_hold"):
+            if row.get("on_hold") or row.get("dispute_id"):
                 continue
             assert row["settlement_id"] and row["settlement_id"].startswith("setl_")
             assert row["settlement_utr"]
+
+    def test_a_disputed_recon_row_has_no_settlement(self, batch) -> None:
+        """The inverse invariant for disputes, mirroring the held case.
+
+        If a disputed row acquired a UTR the money would appear in the bank while the
+        engine reported it withheld pending the dispute. See ADR-041.
+        """
+        disputed = [r for r in batch.recon if r.get("dispute_id")]
+        assert disputed, "the demo profile must plant disputes"
+        for row in disputed:
+            assert row["settlement_id"] is None
+            assert row["settlement_utr"] is None
+            assert row["settled_at"] is None
+            assert row["dispute_reason"]
 
     def test_a_held_recon_row_has_no_settlement(self, batch) -> None:
         """The inverse invariant: being held means no settlement, no UTR, no settled_at.

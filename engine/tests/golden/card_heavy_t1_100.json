@@ -8,6 +8,7 @@
   },
   "defects": {
     "by_type": {
+      "disputed": 2,
       "early_refund": 3,
       "halted_subscription": 6,
       "missing_order": 3,
@@ -18,17 +19,18 @@
       "unrecorded_refund": 3,
       "wrong_fee_rate": 30
     },
-    "count": 69,
+    "count": 71,
     "impact_by_type": {
-      "early_refund": 678300,
-      "halted_subscription": 3694400,
-      "missing_order": 1768400,
-      "one_sided_refund": 2495500,
+      "disputed": 236875,
+      "early_refund": 742300,
+      "halted_subscription": 3886200,
+      "missing_order": 2381000,
+      "one_sided_refund": 2693000,
       "payment_on_hold": 756417,
       "split_settlement": 0,
-      "timing_lag": 6356950,
+      "timing_lag": 5608832,
       "unrecorded_refund": 301900,
-      "wrong_fee_rate": 61146
+      "wrong_fee_rate": 64418
     }
   },
   "first_ledger_row": {
@@ -49,7 +51,9 @@
     "currency": "INR",
     "debit": 0,
     "description": "Recurring Payment via Subscription",
+    "dispute_created_at": null,
     "dispute_id": null,
+    "dispute_reason": null,
     "entity_id": "pay_mLrgerQ0gSbusC",
     "fee": 2544,
     "method": "card_credit",
@@ -72,12 +76,12 @@
     "upi": 15
   },
   "totals": {
-    "bank_credit_paise": 45625304,
-    "expected_fee_paise": 1146233,
-    "expected_net_paise": 47423067,
-    "gross_paise": 51536600,
-    "recon_credit_paise": 47361921,
-    "recon_fee_paise": 1207379,
-    "recon_tax_paise": 174847
+    "bank_credit_paise": 46751291,
+    "expected_fee_paise": 1180799,
+    "expected_net_paise": 48853201,
+    "gross_paise": 53608200,
+    "recon_credit_paise": 48788783,
+    "recon_fee_paise": 1245217,
+    "recon_tax_paise": 180119
   }
 }
