@@ -77,7 +77,12 @@ def _load(batch: str, *, refresh: bool = False) -> PipelineResult:
         raise HTTPException(404, f"no batch {batch!r}. Available: {available}")
 
     try:
-        result = run(path, _config())
+        # Remembered mappings are needed HERE too, not only on upload. Any cache miss
+        # re-runs the pipeline — a fresh process, a rate-card change clearing the cache,
+        # a `refresh=true` — and without the store an uploaded batch whose columns a
+        # human mapped would fail on every read after the first. Found by changing the
+        # rate card and then opening the fee drill-down. See ADR-047.
+        result = run(path, _config(), mappings=_mapping_store())
     except Exception as exc:
         # Surface the engine's own message. Its errors are written to be read by a
         # human and name the offending column, row or key — flattening them into

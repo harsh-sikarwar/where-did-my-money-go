@@ -421,3 +421,50 @@ class TestMerchantRateCard:
     def test_an_empty_payload_is_refused(self, client) -> None:
         assert client.put("/api/rate-card", json={}).status_code == 400
 
+
+class TestARemappedBatchSurvivesACacheMiss:
+    """ADR-047. Found by driving the UI, not by a unit test.
+
+    `_load` re-runs the pipeline on any cache miss — a fresh process, a rate-card change
+    clearing the cache, `refresh=true`. It was not passing the mapping store, so an
+    uploaded batch whose columns a human mapped failed on every read after the first.
+    The upload succeeded; opening the fee drill-down afterwards raised.
+    """
+
+    @pytest.fixture
+    def remapped_batch(self, client, source_batch, tmp_path) -> str:
+        rows = list(csv.reader((source_batch / "ledger.csv").open()))
+        headers = ["txn_ref", "sale_value", "when", "buyer", "rail"]
+        rows[0] = headers
+        weird = tmp_path / "weird.csv"
+        with weird.open("w", newline="") as fh:
+            csv.writer(fh).writerows(rows)
+
+        client.post("/api/mappings", json={
+            "source": "ledger", "headers": headers,
+            "mapping": {"order_id": "txn_ref", "amount_paise": "sale_value",
+                        "captured_at": "when"},
+        })
+        assert client.post("/api/upload", data={"batch": "remapped"}, files={
+            "ledger": ("weird.csv", weird.read_bytes(), "text/csv"),
+            "recon": ("settlement_recon.json",
+                      (source_batch / "settlement_recon.json").read_bytes(),
+                      "application/json"),
+        }).status_code == 200
+        return "remapped"
+
+    def test_a_forced_refresh_still_resolves_the_columns(
+        self, client, remapped_batch
+    ) -> None:
+        """The cache was hiding the bug: the first read was served from it."""
+        assert client.get(f"/api/verdict/{remapped_batch}?refresh=true").status_code == 200
+
+    def test_the_drilldown_survives_a_rate_card_change(
+        self, client, remapped_batch
+    ) -> None:
+        """The exact sequence that failed: change rates, then open the fee detail."""
+        client.put("/api/rate-card", json={"methods": {"card_credit": 100}})
+        r = client.get(f"/api/detail/{remapped_batch}/FEE")
+        assert r.status_code == 200, r.json()
+        assert r.json()["count"] > 0
+

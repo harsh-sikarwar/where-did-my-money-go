@@ -361,14 +361,28 @@ things it does not yet do:
 column available to choose from — `POST /api/inspect` returns headers plus three real
 sample rows, and `POST /api/mappings` records the choice against a fingerprint of the
 file's shape. Asked once, then never again for that shape, including next month's export
-with the columns reordered. **What is still missing is the UI itself**: the endpoints are
-built and tested, the picker screen is not, so today this loop is driveable by API but
-not by a merchant in a browser.
+with the columns reordered. **The picker screen now exists** (ADR-047): the 422
+becomes a set of buttons, one per unclaimed column, offered in file order and unranked so
+the UI does not reintroduce the guess the engine refuses to make.
 
 **~~The rate card is still ours, not theirs.~~ Closed 2026-09-03 (ADR-046).** A merchant
 can now supply their contracted rates, layered over the shipped card so they state only
 what they negotiated. On the demo batch a contracted 1.75% turns 30 fee findings worth
 ₹595 into 189 worth ₹3,552 — same data, different contract, and the proof quotes their
-number. **What is still missing is the screen**: `GET/PUT/DELETE /api/rate-card` are
-built and tested, the form is not.
+number. **The form now exists** (ADR-047), taking
+percentages rather than basis points — the API takes bps because integers keep money
+arithmetic exact, but no merchant thinks in bps and asking them to would invite the exact
+unit error the API refuses.
+
+### What still has no screen
+
+The **action list** is the gap that matters now. The verdict ends with *"One thing needs
+you this week: those 6 customers"* and cannot name them. The data is all there — findings
+carry `order_id`, amount, and the failure reason correlation attached — but nothing
+renders it and there is no CSV export. That is the difference between an insight and
+something a merchant acts on, and it is the strongest remaining item on the list.
+
+**Correlation still has one mechanism.** Halted subscriptions, plus failed payments.
+Disputes and on-hold settlements are now *classified* (ADR-036, ADR-041) but are not
+correlator inputs, so the "correlation layer" claim rests on one join.
 

@@ -121,13 +121,39 @@ export interface Audit {
   events: AuditEvent[];
 }
 
+/** What a merchant is asked when the engine cannot map a column. ADR-045. */
+export interface UnmappedColumns {
+  error: "unmapped_columns";
+  source: string;
+  message: string;
+  unmapped: {
+    canonical: string;
+    accepted_spellings: string[];
+    candidates: string[];
+  }[];
+  already_mapped: Record<string, string>;
+  headers: string[];
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /**
+     * The structured body, when the API sent one. `detail` is usually a string, but
+     * an unmappable upload returns an object a picker can render — the engine's
+     * refusal to guess is only useful if the UI can act on it.
+     */
+    readonly detail?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
+  }
+
+  /** The mapping question, if that is what this error is. */
+  get unmappedColumns(): UnmappedColumns | null {
+    const d = this.detail as UnmappedColumns | undefined;
+    return d && typeof d === "object" && d.error === "unmapped_columns" ? d : null;
   }
 }
 
@@ -144,19 +170,79 @@ async function get<T>(path: string): Promise<T> {
     );
   }
 
+  return unwrap<T>(response);
+}
+
+async function unwrap<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    let detail = response.statusText;
+    let detail: unknown = response.statusText;
     try {
       const body = await response.json();
-      // The engine's errors name the offending column, row or key. Keep them.
+      // The engine's errors name the offending column, row or key. Keep them —
+      // including when `detail` is an object rather than a string (ADR-045).
       detail = body.detail ?? detail;
     } catch {
       /* non-JSON error body; the status text will do */
     }
-    throw new ApiError(detail, response.status);
+    const message =
+      typeof detail === "string"
+        ? detail
+        : ((detail as { message?: string })?.message ?? response.statusText);
+    throw new ApiError(message, response.status, detail);
   }
 
   return response.json() as Promise<T>;
+}
+
+async function send<T>(
+  path: string,
+  init: RequestInit,
+): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${BASE}${path}`, { cache: "no-store", ...init });
+  } catch {
+    throw new ApiError(
+      `Cannot reach the engine at ${BASE}. Start it with: npm run api`,
+      0,
+    );
+  }
+  return unwrap<T>(response);
+}
+
+export interface RateCardMethod {
+  method: string;
+  mdr_bps: number;
+  percent: number;
+  source: "merchant" | "standard";
+  note: string;
+}
+
+export interface RateCard {
+  name: string;
+  is_merchant_supplied: boolean;
+  gst_rate_bps: number;
+  fixed_fee_paise: number;
+  methods: RateCardMethod[];
+}
+
+export interface Inspected {
+  source: string;
+  headers: string[];
+  row_count: number;
+  fingerprint: string;
+  remembered_mapping: Record<string, string> | null;
+  sample_rows: Record<string, string>[];
+}
+
+export interface UploadResult {
+  batch: string;
+  files: Record<string, { filename: string; bytes: number }>;
+  rows_processed: number;
+  missing_sources: string[];
+  note: string | null;
+  headline: string;
+  manifest: Audit["manifest"];
 }
 
 export const api = {
@@ -165,9 +251,45 @@ export const api = {
     get<Detail>(`/api/detail/${batch}/${classification}`),
   correlation: (batch: string) => get<Correlation>(`/api/correlation/${batch}`),
   batches: () =>
-    get<{ batches: { name: string; has_ground_truth: boolean }[] }>(
-      "/api/batches",
-    ),
+    get<{
+      batches: { name: string; has_ground_truth: boolean; uploaded: boolean }[];
+    }>("/api/batches"),
   audit: (batch: string, stage?: string) =>
     get<Audit>(`/api/audit/${batch}${stage ? `?stage=${stage}` : ""}`),
+
+  upload: (batch: string, files: Record<string, File>) => {
+    const form = new FormData();
+    form.append("batch", batch);
+    for (const [slot, file] of Object.entries(files)) form.append(slot, file);
+    return send<UploadResult>("/api/upload", { method: "POST", body: form });
+  },
+
+  inspect: (source: string, file: File) => {
+    const form = new FormData();
+    form.append("source", source);
+    form.append("file", file);
+    return send<Inspected>("/api/inspect", { method: "POST", body: form });
+  },
+
+  rememberMapping: (
+    source: string,
+    headers: string[],
+    mapping: Record<string, string>,
+  ) =>
+    send<{ remembered: unknown }>("/api/mappings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source, headers, mapping }),
+    }),
+
+  rateCard: () => get<RateCard>("/api/rate-card"),
+
+  setRateCard: (card: Record<string, unknown>) =>
+    send<RateCard>("/api/rate-card", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(card),
+    }),
+
+  clearRateCard: () => send<RateCard>("/api/rate-card", { method: "DELETE" }),
 };

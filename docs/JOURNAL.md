@@ -2104,3 +2104,67 @@ change that breaks a decomposition.
 Three flows now exist end to end by API — upload, column mapping, rate card — and none of
 them has a screen. That is written into LIMITATIONS in those words, because "the endpoints
 are built and tested" is not "a merchant can do this."
+
+---
+
+## 2026-09-03 — Screens, and the bug that only driving them found
+
+Upload, column mapping and the rate card were built, tested, and unreachable. `page.tsx`
+opened with `const BATCH = "demo"`. A merchant could upload files through the API and
+never see the result.
+
+### The trade I made knowingly
+
+The page was a server component so numbers arrive in the initial HTML instead of flashing
+in after hydration — a good choice, and I gave it up. *Which batch is on screen* is now
+state a merchant changes, and a page that can only render one hardcoded batch makes the
+entire upload path invisible. Reachability beats first paint.
+
+### Two decisions inside the screens
+
+**The picker offers every unclaimed column, in file order, unranked.** Sorting by
+similarity would reintroduce through visual ordering exactly the guess the engine refuses
+to make — and the person is being asked *because* the engine cannot tell.
+
+**The rate card form takes percentages.** The API takes basis points because integers
+keep money arithmetic exact. No merchant thinks in bps, and asking them to would invite
+the precise unit error ADR-046 refuses (typing "2" for 2% is 0.02%). The UI converts.
+
+### The bug
+
+Driving the flows against a live server found what 665 tests had not:
+
+```
+PUT /api/rate-card                    -> 200
+GET /api/detail/{uploaded}/FEE        -> 500 UnmappedColumnsError
+```
+
+`_load` re-runs the pipeline on any cache miss and was not passing the mapping store. The
+*upload* path passed it, so uploading worked. Every subsequent read of that batch failed:
+after a fresh process, after `refresh=true`, or — as here — after a rate-card change
+cleared the cache.
+
+The cache is what hid it. The first read came from memory, so the shortest path that
+exposes it is **upload → change something → drill down**. Three steps, in a browser, in
+that order. I only hit it because the rate-card form made me change rates and then look
+at fees.
+
+I reverted the fix to confirm the two new tests actually fail without it. They do.
+
+Same species as ADR-040: a code path that is correct on the route it was written for and
+was never exercised on the route that shares it. That is now three bugs of this shape,
+and the pattern is always the same — the second caller was added later and nobody re-ran
+the first caller's assumptions.
+
+### Verified end to end, live
+
+Upload an export with `txn_ref,sale_value,when` → picker → remember → 597 rows reconciled
+→ shows in the batch picker as *yours* → contracted 1.75% turns 89 fee findings into 191
+→ reverting restores 89.
+
+### State
+
+**667 tests green**, ruff clean, tsc clean, frontend builds.
+
+The gap that matters now is the action list: the verdict says *"those 6 customers"* and
+still cannot name them.

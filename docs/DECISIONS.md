@@ -2095,3 +2095,69 @@ decomposition.
 Razorpay kept — a fact from the data, unchanged by any rate card. The rate card drives
 the *drill-down*: whether that fee matched the contract. Conflating them would make the
 headline gap move when a merchant edits a config file, which would be alarming and wrong.
+
+---
+
+## ADR-047 — Screens for the three flows, and the bug that only driving them found
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** Upload (ADR-044), column mapping (ADR-045) and the merchant rate card
+(ADR-046) were built, tested and unreachable. `page.tsx` opened with `const BATCH =
+"demo"` — one hardcoded batch — so a merchant could upload files through the API and
+never see the result. `LIMITATIONS.md` said so in those words: *"the endpoints are built
+and tested" is not "a merchant can do this."*
+
+**Decision.** Four components, and `page.tsx` becomes a client component.
+
+That last part is a real trade. The page was a server component so the numbers arrive in
+the initial HTML rather than flashing in after hydration — a deliberate choice worth
+keeping where it can be. But *which batch is on screen* is now state a merchant changes,
+and a page that can only ever render one hardcoded batch makes the entire upload path
+invisible. Reachability wins over first-paint.
+
+**`Upload`** carries the loop that matters. A 422 with `error: unmapped_columns` becomes
+a picker rather than an error message; the merchant's answer is remembered against the
+file's shape; the upload is retried automatically. Every unclaimed column is offered **in
+file order, unranked** — the UI must not reintroduce by visual ordering the guess the
+engine refuses to make. Only the ledger is marked required, and the response's `note`
+("no bank statement, so this is a two-way reconciliation…") is rendered rather than
+swallowed, because what an answer does *not* cover is part of the answer.
+
+**`RateCard`** takes **percentages**, not basis points. The API takes bps because
+integers keep money arithmetic exact, but no merchant thinks in bps, and asking them to
+would invite exactly the unit error ADR-046 refuses. The UI converts. Each row is
+labelled `yours` or `standard`, so a merchant reading "you were overcharged" can see
+whose number produced it.
+
+**`BatchPicker`** hides itself when there is only one batch — a control offering a single
+choice is furniture, not a control.
+
+**The bug.** Driving the flows against a live server found something 665 tests had not:
+
+```
+PUT /api/rate-card   → 200
+GET /api/detail/{uploaded-batch}/FEE → 500 UnmappedColumnsError
+```
+
+`_load` re-runs the pipeline on any cache miss and **was not passing the mapping store**.
+Uploading worked, because that path passed it. Every subsequent read of an uploaded batch
+whose columns a human had mapped failed — after a fresh process, after `refresh=true`,
+or, as here, after a rate-card change cleared the cache.
+
+The cache is what hid it. The first read was served from memory, so the shortest path
+that reveals the bug is *upload → change something → drill down*: three steps, in the
+browser, in that order. No unit test I wrote covered it, and I only saw it because the
+rate-card form made me change rates and then look at fees.
+
+Fixed, and guarded by two tests that fail without the fix (verified by reverting it).
+Same species as ADR-040: a code path correct on the route it was written for and never
+exercised on the route that shares it.
+
+**Consequences.** 665 → 667 tests. Verified end to end against a live server: upload an
+export with `txn_ref`/`sale_value`/`when` → picker → remember → 597 rows reconciled →
+appears in the batch picker as *yours* → contracted 1.75% turns 89 fee findings into 191
+→ reverting restores 89.
+
+**Still not built.** The action list (named customers, amounts, failure reasons, CSV
+export) has no screen either, and correlation still has one mechanism.
