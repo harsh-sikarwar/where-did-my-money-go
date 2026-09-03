@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { ChevronDownIcon } from "@/components/ui";
 import { api, ApiError, type RateCard as RateCardData } from "@/lib/api";
 
 /**
@@ -71,18 +72,24 @@ export function RateCard() {
     <section className="mb-14">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-baseline justify-between border-b border-[var(--color-line)] pb-2 text-left"
+        className="flex w-full items-baseline justify-between border-b border-[var(--color-line-strong)] pb-3 text-left"
       >
-        <span className="text-sm font-medium">Your rates</span>
-        <span className="text-xs text-[var(--color-ink-faint)]">
+        <span className="text-title">Your rates</span>
+        <span className="text-xs font-medium text-[var(--color-ink-faint)]">
           {card.is_merchant_supplied ? "your contract" : "standard pricing"}
           {" · "}
-          {open ? "hide" : "edit"}
+          <span className="inline-flex items-center gap-1 text-[var(--color-accent)]">
+            {open ? "hide" : "edit"}
+            <ChevronDownIcon
+              size={12}
+              className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+            />
+          </span>
         </span>
       </button>
 
       {!open && !card.is_merchant_supplied && (
-        <p className="mt-3 text-sm text-[var(--color-ink-faint)]">
+        <p className="text-body mt-4 max-w-md text-[var(--color-ink-soft)]">
           Fees are being checked against Razorpay&rsquo;s standard rates. If you
           negotiated different ones, say so — otherwise an overcharge against{" "}
           <em>your</em> contract is invisible.
@@ -91,7 +98,7 @@ export function RateCard() {
 
       {open && (
         <div className="mt-5">
-          <p className="mb-5 text-sm text-[var(--color-ink-faint)]">
+          <p className="text-body mb-5 max-w-md text-[var(--color-ink-soft)]">
             Enter only what you negotiated. Anything left blank keeps the standard rate.
           </p>
 
@@ -99,16 +106,16 @@ export function RateCard() {
             {card.methods.map((m) => (
               <div
                 key={m.method}
-                className="flex items-baseline gap-4 border-b border-[var(--color-line)] py-2.5"
+                className="flex items-baseline gap-4 border-b border-[var(--color-line)] py-3"
               >
                 <span className="w-44 shrink-0 font-mono text-xs text-[var(--color-ink-soft)]">
                   {m.method}
                 </span>
-                <span className="tnum w-20 shrink-0 text-right text-sm">
+                <span className="tnum w-20 shrink-0 text-right text-sm font-medium">
                   {m.percent.toFixed(2)}%
                 </span>
                 <span
-                  className={`w-20 shrink-0 text-xs ${
+                  className={`w-20 shrink-0 text-xs font-medium ${
                     m.source === "merchant"
                       ? "text-[var(--color-benign)]"
                       : "text-[var(--color-ink-faint)]"
@@ -123,7 +130,7 @@ export function RateCard() {
                     setEdits((c) => ({ ...c, [m.method]: e.target.value }))
                   }
                   placeholder="e.g. 1.75"
-                  className="w-24 rounded border border-[var(--color-line)] bg-white px-2 py-1 text-right text-sm outline-none focus:border-[var(--color-ink-faint)]"
+                  className="w-24 rounded-lg border border-[var(--color-line-strong)] bg-[var(--color-raised)] px-2.5 py-1.5 text-right text-sm text-[var(--color-ink)] outline-none transition-colors focus:border-[var(--color-accent)]"
                 />
                 <span className="text-xs text-[var(--color-ink-faint)]">%</span>
               </div>
@@ -131,14 +138,16 @@ export function RateCard() {
           </div>
 
           {error && (
-            <p className="mt-5 text-sm text-[var(--color-attention)]">{error}</p>
+            <p className="mt-5 text-sm font-medium text-[var(--color-urgent)]">
+              {error}
+            </p>
           )}
 
-          <div className="mt-6 flex items-center gap-4">
+          <div className="mt-7 flex items-center gap-4">
             <button
               onClick={save}
               disabled={busy}
-              className="rounded bg-[var(--color-ink)] px-4 py-2 text-sm text-white disabled:opacity-30"
+              className="pressable rounded-lg bg-[var(--color-ink)] px-5 py-2.5 text-sm font-medium text-[var(--color-ground)] disabled:cursor-not-allowed disabled:opacity-30"
             >
               {busy ? "Saving…" : "Save my rates"}
             </button>
@@ -146,7 +155,7 @@ export function RateCard() {
               <button
                 onClick={reset}
                 disabled={busy}
-                className="text-sm text-[var(--color-ink-faint)] underline underline-offset-4"
+                className="text-sm text-[var(--color-ink-faint)] underline underline-offset-4 hover:text-[var(--color-ink)]"
               >
                 Use standard pricing
               </button>

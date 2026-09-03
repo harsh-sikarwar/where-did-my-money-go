@@ -4,28 +4,71 @@
  * A merchant opens this for two minutes on Monday. The visual hierarchy has one job:
  * the gap, then what explains it, then the one thing that needs them.
  *
- * Restrained on purpose. Colour carries meaning here — amber means "this needs you" —
- * so it cannot also be decoration.
+ * This design commits to a single dark surface — it is not a flipped light theme.
+ * The ground is a near-black with a cool navy bias; the text greys are warm-biased
+ * against it, which is what keeps a dark screen from reading as grey-on-grey.
+ *
+ * Colour carries meaning and cannot also be decoration:
+ *   benign / action / urgent  say something about MONEY and nothing else
+ *   violet                    is structural (the demo path, decoys, chart series)
+ * A violet value never means "this is fine"; an amber one never means "step two".
  */
 
 @theme {
-  --color-ink: #0f1115;
-  --color-ink-soft: #3d4450;
-  --color-ink-faint: #7b8494;
-  --color-paper: #fbfbfa;
-  --color-line: #e6e6e3;
-  --color-benign: #4a7c59;
-  --color-attention: #b45309;
-  --color-attention-bg: #fef6ec;
+  /* Surfaces. `ground` is the page, `raised` sits on it, `well` recedes into it. */
+  --color-ground: oklch(0.15 0.012 260);
+  --color-raised: oklch(0.19 0.013 260);
+  --color-well: oklch(0.175 0.012 260);
+  --color-skeleton: oklch(0.25 0.013 260);
+
+  /* Ink. Warm-biased greys on the cool ground. `faint` is metadata only — it never
+     carries the only copy of a sentence a merchant needs to read. */
+  --color-ink: oklch(0.95 0.01 90);
+  --color-ink-soft: oklch(0.68 0.015 90);
+  /* Lifted from the mockup's 0.50/0.45 to clear 4.5:1 on BOTH `ground` and `raised`.
+     These carry counts, ids and timestamps — small text a merchant has to actually
+     read, so they hold the contrast floor rather than the mockup's exact value. */
+  --color-ink-faint: oklch(0.595 0.015 90);
+  --color-ink-dim: oklch(0.56 0.015 90);
+
+  /* Hairlines, as alpha over the ground rather than fixed greys, so a rule reads the
+     same weight on `raised` and on `well`. */
+  --color-line: oklch(1 0 0 / 0.08);
+  --color-line-strong: oklch(1 0 0 / 0.16);
+
+  /* Status. Reserved: these four say something about money. */
+  --color-benign: oklch(0.74 0.13 150);
+  --color-action: oklch(0.78 0.14 75);
+  --color-urgent: oklch(0.64 0.17 35);
+  --color-neutral: oklch(0.5 0.02 265);
+
+  /* Structure. The demo path, decoy chips, the expected-line in charts. Never money. */
+  --color-accent: oklch(0.68 0.11 290);
+
+  /* Chart series — categorical, used ONLY inside charts. Walked through hue starting
+     at the structural violet and deliberately routed around the status hues (amber 75,
+     green 150, red 35) so a series colour can never be read as a severity. */
+  --color-series-1: oklch(0.68 0.11 290);
+  --color-series-2: oklch(0.72 0.10 230);
+  --color-series-3: oklch(0.70 0.09 190);
+  --color-series-4: oklch(0.66 0.12 320);
+  --color-series-5: oklch(0.74 0.08 260);
+  --color-series-6: oklch(0.62 0.10 210);
+
+  --font-sans: var(--font-manrope), system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
 }
 
 html {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  color-scheme: dark;
 }
 
 body {
-  background: var(--color-paper);
+  /* Explicit: the artifact host paints its own ground behind the page, so a
+     transparent body would borrow the wrong one. */
+  background: var(--color-ground);
   color: var(--color-ink);
   font-feature-settings: "tnum" 1; /* tabular figures: money must align in columns */
 }
@@ -33,4 +76,151 @@ body {
 /* Money is always tabular, everywhere, so columns line up without manual spacing. */
 .tnum {
   font-variant-numeric: tabular-nums;
+}
+.money {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Type scale. Weight, size, leading and tracking move together as one decision per
+ * role — never size alone. Large text gets negative tracking and tight leading; small
+ * uppercase labels get positive tracking and room to breathe.
+ */
+.text-hero {
+  font-size: clamp(2.25rem, 1.6rem + 2.6vw, 3.75rem);
+  font-weight: 700;
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+  overflow-wrap: break-word;
+}
+
+.text-headline {
+  font-size: clamp(1.75rem, 1.5rem + 1vw, 2.125rem);
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+.text-title {
+  font-size: 1.375rem;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+.text-body {
+  font-size: 0.90625rem;
+  line-height: 1.6;
+}
+
+.text-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* The figure pair: a calm 300-weight for context, 700 for the number being explained.
+   The hierarchy here is weight, not size alone. */
+.figure-quiet {
+  font-size: clamp(1.5rem, 1.2rem + 1.2vw, 2rem);
+  font-weight: 300;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.figure-loud {
+  font-size: clamp(2.25rem, 1.6rem + 2.6vw, 3.5rem);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+
+/* ------------------------------------------------------------------ motion */
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes growX {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+@keyframes growY {
+  from { transform: scaleY(0); }
+  to   { transform: scaleY(1); }
+}
+@keyframes drawLine {
+  from { stroke-dashoffset: 1600; }
+  to   { stroke-dashoffset: 0; }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 0.7; }
+}
+/* The one repeating animation in the product, on the single highest-priority action.
+   It repeats because it is a standing request for a decision, not a state change. */
+@keyframes ring {
+  0%   { box-shadow: 0 0 0 0 oklch(0.64 0.17 35 / 0.5); }
+  70%  { box-shadow: 0 0 0 8px oklch(0.64 0.17 35 / 0); }
+  100% { box-shadow: 0 0 0 0 oklch(0.64 0.17 35 / 0); }
+}
+
+.rise {
+  animation: fadeUp 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.fade {
+  animation: fadeIn 0.3s ease both;
+}
+/* Apply to a container; each child takes its own `--i` index for the delay. */
+.stagger > * {
+  animation: fadeUp 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 80ms);
+}
+
+/* A finance tool that keeps animating at someone who asked it not to is being rude
+   with their attention. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Pressable — instant feedback on the down-stroke, never waiting for release. */
+.pressable {
+  transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.pressable:active {
+  transform: scale(0.97);
+}
+@media (prefers-reduced-motion: reduce) {
+  .pressable:active { transform: none; }
+}
+
+/* Focus is never removed, only styled — this is a tool people tab through. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Native controls need to be told about the dark ground explicitly. */
+input,
+select,
+textarea {
+  font-family: inherit;
+  color-scheme: dark;
 }

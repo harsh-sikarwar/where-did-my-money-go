@@ -1,89 +1,279 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Actions } from "@/components/Actions";
-import { Audit } from "@/components/Audit";
-import { BatchPicker } from "@/components/BatchPicker";
-import { Correlation } from "@/components/Correlation";
-import { RateCard } from "@/components/RateCard";
-import { Upload } from "@/components/Upload";
-import { Verdict } from "@/components/Verdict";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { GapComposition, type GapSegment } from "@/components/GapComposition";
 import {
-  api,
-  ApiError,
-  type Correlation as CorrelationData,
-  type Verdict as VerdictData,
-} from "@/lib/api";
+  ArrowRightIcon,
+  Card,
+  Dot,
+  Eyebrow,
+  severityOf,
+  toneAlpha,
+} from "@/components/ui";
+import { api, type Verdict } from "@/lib/api";
 
 /**
- * One page, three depths — the layering the brief asks for:
+ * The front door. One decision: bring your own numbers, or dial a scenario and watch
+ * the engine work on data whose answer key you already hold.
  *
- *   verdict      what a merchant reads on Monday, in two minutes
- *   correlation  the measured claim: how much of the unexplained we eliminate
- *   audit        how anyone can check it
- *
- * Not three routes, because the demo is a story told by scrolling, not a feature tour
- * navigated by clicking. Depth is available; nobody is made to go looking for it.
- *
- * This became a client component when uploads arrived: which batch is on screen is now
- * state a merchant changes, not a constant. The cost is that the first paint fetches
- * rather than arriving in the HTML — worth it, because a page that can only ever show
- * one hardcoded batch makes the entire upload path invisible.
+ * Two routes, not two panels on one screen — each mode has its own multi-step flow
+ * (upload has a mapping question; demo has a whole control panel), and cramming both
+ * into one screen would mean explaining the toggle before either path has said
+ * anything.
  */
 
-const FALLBACK_BATCH = "demo";
+const RECENT_LIMIT = 4;
 
-export default function Home() {
-  const [batch, setBatch] = useState(FALLBACK_BATCH);
-  const [verdict, setVerdict] = useState<VerdictData | null>(null);
-  const [correlation, setCorrelation] = useState<CorrelationData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
+type Batch = {
+  name: string;
+  uploaded: boolean;
+  generated: boolean;
+  has_ground_truth: boolean;
+};
 
-  const load = useCallback(async (name: string) => {
-    setError(null);
-    try {
-      const [v, c] = await Promise.all([api.verdict(name), api.correlation(name)]);
-      setVerdict(v);
-      setCorrelation(c);
-    } catch (e) {
-      setVerdict(null);
-      setCorrelation(null);
-      setError(e instanceof ApiError ? e.message : "Something went wrong.");
-    }
-  }, []);
+export default function Landing() {
+  const [runs, setRuns] = useState<Batch[]>([]);
+  const [latest, setLatest] = useState<Verdict | null>(null);
 
   useEffect(() => {
-    load(batch);
-  }, [batch, load, refreshKey]);
+    let cancelled = false;
+
+    api
+      .batches()
+      .then(async (r) => {
+        if (cancelled) return;
+        const done = r.batches.filter((b) => b.uploaded || b.generated);
+        setRuns(done.slice(0, RECENT_LIMIT));
+
+        // The glance card is only worth showing with real figures behind it. If the
+        // most recent run cannot be read, the card is omitted rather than filled in.
+        if (done.length > 0) {
+          try {
+            const v = await api.verdict(done[0].name);
+            if (!cancelled) setLatest(v);
+          } catch {
+            /* no glance card this time */
+          }
+        }
+      })
+      .catch(() => setRuns([]));
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
-    <main className="mx-auto max-w-2xl px-6 py-16 sm:py-24">
-      <BatchPicker batch={batch} onPick={setBatch} refreshKey={refreshKey} />
+    <main className="mx-auto max-w-[920px] px-6 pt-16 pb-32 sm:pt-[88px]">
+      <header className="rise text-center">
+        <Eyebrow className="text-[var(--color-ink-soft)]">Reconciliation</Eyebrow>
+        <h1 className="text-hero mt-[18px]">Where did my money go?</h1>
+        <p className="mx-auto mt-5 max-w-[540px] text-lg leading-relaxed text-pretty text-[var(--color-ink-soft)]">
+          Upload your ledger and settlement files — or generate a scenario — and see
+          exactly where the numbers diverge, in one glance.
+        </p>
+      </header>
 
-      <Upload
-        onDone={(name) => {
-          setBatch(name);
-          setRefreshKey((k) => k + 1);
-        }}
-      />
+      <div className="mt-16 grid gap-5 sm:grid-cols-2">
+        <ModeCard
+          href="/upload"
+          eyebrow="Upload"
+          title="Reconcile your own files"
+          description="Bring your ledger and settlement exports — we'll match them line by line."
+          bullets={[
+            "Works with any CSV export",
+            "Auto-detects common column formats",
+            "Nothing leaves your run",
+          ]}
+          cta="Upload files"
+          delay={0.08}
+        />
+        <ModeCard
+          href="/generate"
+          eyebrow="Generate · try this first"
+          title="Generate a scenario"
+          description="No files handy? Spin up a realistic dataset with defects planted in — then see if we catch them."
+          bullets={[
+            "Pick an archetype and payment mix",
+            "Plant specific defects to test",
+            "See the answer key instantly",
+          ]}
+          cta="Try a demo"
+          accent
+          delay={0.16}
+        />
+      </div>
 
-      <RateCard />
+      {latest && <LastCycle verdict={latest} />}
 
-      {error && (
-        <p className="text-sm text-[var(--color-attention)]">{error}</p>
-      )}
-
-      {verdict && correlation && (
-        <>
-          <Verdict data={verdict} />
-          {/* Immediately after the verdict, because the verdict is what raises the
-              question this answers: it says "those 6 customers" and this names them. */}
-          <Actions batch={batch} />
-          <Correlation data={correlation} />
-          <Audit batch={batch} />
-        </>
+      {runs.length > 0 && (
+        <section
+          className="mt-11"
+          style={{ animation: "fadeUp 0.5s cubic-bezier(0.2,0.7,0.2,1) 0.3s both" }}
+        >
+          <Eyebrow className="mb-3.5">Recent runs</Eyebrow>
+          <div className="flex flex-wrap gap-2.5">
+            {runs.map((b) => (
+              <Link
+                key={b.name}
+                href={`/analysis/${encodeURIComponent(b.name)}`}
+                className="pressable flex items-center gap-2.5 rounded-full border border-[var(--color-line)] bg-[var(--color-raised)] px-4 py-2.5 text-[13.5px] text-[var(--color-ink-soft)] transition-[border-color,transform,color] duration-200 hover:-translate-y-0.5 hover:border-[oklch(1_0_0/0.2)] hover:text-[var(--color-ink)]"
+              >
+                <Dot severity={b.generated ? "benign" : "action"} />
+                {b.name}
+                <span className="text-xs text-[var(--color-ink-faint)]">
+                  {b.generated ? "generated" : "yours"}
+                </span>
+              </Link>
+            ))}
+          </div>
+        </section>
       )}
     </main>
+  );
+}
+
+/**
+ * Last cycle at a glance. Every figure here is the engine's, including the composition
+ * bar — this card is a preview of the analysis screen, not a summary written beside it.
+ */
+function LastCycle({ verdict }: { verdict: Verdict }) {
+  const segments: GapSegment[] = [
+    ...verdict.lines.map((line) => ({
+      id: line.classification,
+      label: line.label,
+      amount: line.amount.display,
+      paise: line.amount.paise,
+      severity: severityOf(line),
+    })),
+    {
+      id: "__unexplained",
+      label: "Unexplained",
+      amount: verdict.unexplained.display,
+      paise: verdict.unexplained.paise,
+      severity: "neutral" as const,
+    },
+  ];
+
+  const pct =
+    verdict.expected.paise > 0
+      ? (verdict.gap.paise / verdict.expected.paise) * 100
+      : null;
+
+  return (
+    <section
+      className="mt-14 overflow-hidden rounded-2xl border border-[var(--color-line)] bg-[var(--color-raised)]"
+      style={{ animation: "fadeUp 0.5s cubic-bezier(0.2,0.7,0.2,1) 0.24s both" }}
+    >
+      <div className="flex items-baseline justify-between gap-4 px-7 pt-6">
+        <Eyebrow>Last cycle at a glance</Eyebrow>
+        <Link
+          href={`/analysis/${encodeURIComponent(verdict.batch)}`}
+          className="inline-flex items-center gap-1.5 text-[13px] font-semibold whitespace-nowrap text-[var(--color-ink-soft)] transition-colors hover:text-[var(--color-ink)]"
+        >
+          Open analysis <ArrowRightIcon size={13} />
+        </Link>
+      </div>
+
+      <div className="px-7 pt-5 pb-7">
+        <Eyebrow className="mb-1.5">Gap found</Eyebrow>
+        <div className="money text-[34px] leading-none font-bold tracking-tight">
+          {verdict.gap.display}
+        </div>
+        {pct !== null && (
+          <div
+            className="mt-2 inline-flex items-center rounded-full px-2.5 py-1 text-[11.5px] font-bold"
+            style={{
+              background: toneAlpha("action", 0.12),
+              color: "var(--color-action)",
+            }}
+          >
+            {pct < 0.01 ? "<0.01" : pct.toFixed(2)}% of expected
+          </div>
+        )}
+
+        <div className="mt-6">
+          <GapComposition segments={segments} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ModeCard({
+  href,
+  eyebrow,
+  title,
+  description,
+  bullets,
+  cta,
+  accent,
+  delay,
+}: {
+  href: string;
+  eyebrow: string;
+  title: string;
+  description: string;
+  bullets: string[];
+  cta: string;
+  accent?: boolean;
+  delay: number;
+}) {
+  return (
+    <Link href={href} className="group block h-full">
+      <Card
+        interactive={!accent}
+        className={`flex h-full flex-col gap-4.5 p-9 ${
+          accent
+            ? "transition-[transform,box-shadow] duration-200 group-hover:-translate-y-1"
+            : ""
+        }`}
+        style={
+          accent
+            ? {
+                borderColor: "color-mix(in oklch, var(--color-accent) 35%, transparent)",
+                boxShadow:
+                  "0 0 60px -20px color-mix(in oklch, var(--color-accent) 35%, transparent)",
+                animation: `fadeUp 0.5s cubic-bezier(0.2,0.7,0.2,1) ${delay}s both`,
+              }
+            : { animation: `fadeUp 0.5s cubic-bezier(0.2,0.7,0.2,1) ${delay}s both` }
+        }
+      >
+        <div
+          className="text-label"
+          style={{
+            color: accent ? "var(--color-accent)" : "var(--color-ink-faint)",
+          }}
+        >
+          {eyebrow}
+        </div>
+
+        <div>
+          <h2 className="text-title">{title}</h2>
+          <p className="mt-2.5 text-[14.5px] leading-relaxed text-[var(--color-ink-soft)]">
+            {description}
+          </p>
+        </div>
+
+        <ul className="flex flex-col gap-2.5">
+          {bullets.map((b) => (
+            <li
+              key={b}
+              className="flex gap-2 text-[13.5px] text-[var(--color-ink-soft)]"
+            >
+              <span className="text-[var(--color-ink-faint)]" aria-hidden>
+                —
+              </span>
+              {b}
+            </li>
+          ))}
+        </ul>
+
+        <span className="mt-auto inline-flex items-center gap-2 pt-2 text-[14.5px] font-semibold transition-[gap] duration-200 group-hover:gap-3.5">
+          {cta} <ArrowRightIcon size={15} />
+        </span>
+      </Card>
+    </Link>
   );
 }

@@ -1,12 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import {
-  api,
-  ApiError,
-  type UnmappedColumns,
-  type UploadResult,
-} from "@/lib/api";
+import { useRef, useState } from "react";
+import { Button, Dot, ErrorNote, Field, TextInput } from "@/components/ui";
+import { api, ApiError, type UnmappedColumns, type UploadResult } from "@/lib/api";
 
 /**
  * Upload a merchant's own files and reconcile them.
@@ -23,16 +19,41 @@ import {
  */
 
 const SLOTS = [
-  { key: "ledger", label: "Your ledger", accept: ".csv,.xlsx,.xlsm", required: true,
-    hint: "What you recorded. CSV or Excel." },
-  { key: "recon", label: "Settlement recon", accept: ".json", required: false,
-    hint: "Razorpay's settlement report (JSON)." },
-  { key: "bank", label: "Bank statement", accept: ".csv,.xlsx,.xlsm", required: false,
-    hint: "What actually arrived. Optional." },
-  { key: "payments", label: "Payments", accept: ".json", required: false,
-    hint: "Needed to explain failed payments." },
-  { key: "subscriptions", label: "Subscriptions", accept: ".json", required: false,
-    hint: "Needed to find halted subscriptions." },
+  {
+    key: "ledger",
+    label: "Your ledger",
+    accept: ".csv,.xlsx,.xlsm",
+    required: true,
+    hint: "Full order-level export from your system",
+  },
+  {
+    key: "recon",
+    label: "Settlement recon",
+    accept: ".json",
+    required: false,
+    hint: "Razorpay's settlement report (JSON)",
+  },
+  {
+    key: "bank",
+    label: "Bank statement",
+    accept: ".csv,.xlsx,.xlsm",
+    required: false,
+    hint: "Optional — for final bank-credit matching",
+  },
+  {
+    key: "payments",
+    label: "Payments",
+    accept: ".json",
+    required: false,
+    hint: "Needed to explain failed payments",
+  },
+  {
+    key: "subscriptions",
+    label: "Subscriptions",
+    accept: ".json",
+    required: false,
+    hint: "Needed to find halted subscriptions",
+  },
 ] as const;
 
 /** Human names for the canonical fields a merchant is asked to identify. */
@@ -94,7 +115,16 @@ export function Upload({ onDone }: { onDone: (batch: string) => void }) {
   }
 
   if (result) {
-    return <Done result={result} onAgain={() => { setResult(null); setFiles({}); setBatch(""); }} />;
+    return (
+      <Done
+        result={result}
+        onAgain={() => {
+          setResult(null);
+          setFiles({});
+          setBatch("");
+        }}
+      />
+    );
   }
 
   if (question) {
@@ -104,7 +134,10 @@ export function Upload({ onDone }: { onDone: (batch: string) => void }) {
         choice={choice}
         onChoose={(field, column) => setChoice((c) => ({ ...c, [field]: column }))}
         onConfirm={confirmMapping}
-        onCancel={() => { setQuestion(null); setChoice({}); }}
+        onCancel={() => {
+          setQuestion(null);
+          setChoice({});
+        }}
         busy={busy}
         error={error}
       />
@@ -114,40 +147,30 @@ export function Upload({ onDone }: { onDone: (batch: string) => void }) {
   const ready = batch.trim().length > 0 && Boolean(files.ledger);
 
   return (
-    <section className="mb-14">
-      <h2 className="mb-1 text-sm font-medium">Reconcile your own files</h2>
-      <p className="mb-6 text-sm text-[var(--color-ink-faint)]">
-        Upload what you have. Only your ledger is required — the engine says what it
-        could not answer rather than refusing what it can.
-      </p>
+    <section>
+      <div className="mb-8">
+        <Field label="Name this run">
+          <TextInput
+            value={batch}
+            onChange={setBatch}
+            placeholder="Sept settlement check"
+          />
+        </Field>
+      </div>
 
-      <label className="mb-6 block">
-        <span className="mb-1 block text-xs text-[var(--color-ink-faint)]">
-          Name this run
-        </span>
-        <input
-          value={batch}
-          onChange={(e) => setBatch(e.target.value)}
-          placeholder="september-week-1"
-          className="w-full max-w-sm rounded border border-[var(--color-line)] bg-white px-3 py-2 text-sm outline-none focus:border-[var(--color-ink-faint)]"
-        />
-        <span className="mt-1 block text-xs text-[var(--color-ink-faint)]">
-          Letters, digits, hyphens. Each run is kept, so names cannot be reused.
-        </span>
-      </label>
-
-      <div className="space-y-px">
+      <div className="border-t border-[var(--color-line)]">
         {SLOTS.map((slot) => (
           <FileRow
             key={slot.key}
             slot={slot}
             file={files[slot.key]}
-            onPick={(f) =>
-              setFiles((current) => {
-                const next = { ...current };
-                if (f) next[slot.key] = f;
-                else delete next[slot.key];
-                return next;
+            onPick={(file) =>
+              setFiles((f) => {
+                if (!file) {
+                  const { [slot.key]: _removed, ...rest } = f;
+                  return rest;
+                }
+                return { ...f, [slot.key]: file };
               })
             }
           />
@@ -155,22 +178,29 @@ export function Upload({ onDone }: { onDone: (batch: string) => void }) {
       </div>
 
       {error && (
-        <p className="mt-5 whitespace-pre-wrap text-sm text-[var(--color-attention)]">
-          {error}
-        </p>
+        <div className="mt-6">
+          <ErrorNote>{error}</ErrorNote>
+        </div>
       )}
 
-      <button
+      <Button
         onClick={submit}
         disabled={!ready || busy}
-        className="mt-6 rounded bg-[var(--color-ink)] px-4 py-2 text-sm text-white disabled:opacity-30"
+        size="lg"
+        full
+        className="mt-10"
       >
         {busy ? "Reconciling…" : "Reconcile"}
-      </button>
+      </Button>
     </section>
   );
 }
 
+/**
+ * One file slot. The chosen filename replaces the empty state in place and turns
+ * green — the row itself reports its status, so there is no separate checklist to
+ * cross-reference.
+ */
 function FileRow({
   slot,
   file,
@@ -178,36 +208,52 @@ function FileRow({
 }: {
   slot: (typeof SLOTS)[number];
   file?: File;
-  onPick: (f: File | null) => void;
+  onPick: (file: File | null) => void;
 }) {
+  const input = useRef<HTMLInputElement>(null);
+
   return (
-    <div className="flex items-baseline gap-4 border-b border-[var(--color-line)] py-3">
-      <div className="w-40 shrink-0">
-        <span className="text-sm">{slot.label}</span>
-        {slot.required && (
-          <span className="ml-1 text-xs text-[var(--color-attention)]">required</span>
+    <div className="flex items-start justify-between gap-5 border-b border-[var(--color-line)] py-6">
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="text-[15px] leading-snug font-semibold">
+          {slot.label}
+          {slot.required && (
+            <span className="ml-1 font-semibold text-[var(--color-action)]">*</span>
+          )}
+        </div>
+        <div className="text-[13px] leading-snug text-[var(--color-ink-faint)]">
+          {slot.hint}
+        </div>
+        {file ? (
+          <div className="tnum flex min-w-0 items-center gap-2 text-[12.5px] text-[var(--color-benign)]">
+            <Dot severity="benign" />
+            <span className="truncate">{file.name}</span>
+          </div>
+        ) : (
+          <div className="text-[12.5px] text-[var(--color-ink-faint)]">
+            No file selected
+          </div>
         )}
       </div>
-      <div className="min-w-0 flex-1">
-        <input
-          type="file"
-          accept={slot.accept}
-          onChange={(e) => onPick(e.target.files?.[0] ?? null)}
-          className="block w-full text-xs text-[var(--color-ink-soft)] file:mr-3 file:rounded file:border file:border-[var(--color-line)] file:bg-white file:px-3 file:py-1 file:text-xs"
-        />
-        <span className="mt-1 block text-xs text-[var(--color-ink-faint)]">
-          {file ? `${file.name} · ${Math.max(1, Math.round(file.size / 1024))} KB` : slot.hint}
-        </span>
-      </div>
+
+      <input
+        ref={input}
+        type="file"
+        accept={slot.accept}
+        className="sr-only"
+        onChange={(e) => onPick(e.target.files?.[0] ?? null)}
+      />
+      <Button variant="secondary" size="sm" onClick={() => input.current?.click()}>
+        {file ? "Replace" : "Choose file"}
+      </Button>
     </div>
   );
 }
 
 /**
- * The mapping question. Every unclaimed column is offered, in file order — deliberately
- * not a ranked guess, because a plausible wrong suggestion accepted without thought is
- * worse than no suggestion, and the person is being asked precisely because the engine
- * cannot tell (ADR-045).
+ * The refusal, made answerable. Each unmapped field offers the columns the engine
+ * actually saw — picking one is a chip, not a dropdown, because the whole set is
+ * short and comparing them side by side is the task.
  */
 function MappingPicker({
   question,
@@ -226,113 +272,97 @@ function MappingPicker({
   busy: boolean;
   error: string | null;
 }) {
-  const complete = question.unmapped.every((u) => choice[u.canonical]);
+  const answered = question.unmapped.every((f) => choice[f.canonical]);
 
   return (
-    <section className="mb-14">
-      <h2 className="mb-1 text-sm font-medium">
-        Which column is which?
-      </h2>
-      <p className="mb-6 text-sm text-[var(--color-ink-faint)]">
-        The engine will not guess at a column it does not recognise — a wrong guess
-        produces a confident wrong answer you could not tell from a right one. Tell it
-        once and it will remember this file&rsquo;s shape.
+    <section>
+      <h2 className="text-headline mb-3">Which column is which?</h2>
+      <p className="mb-10 text-[15px] leading-relaxed text-pretty text-[var(--color-ink-soft)]">
+        {question.message}
       </p>
 
-      <div className="space-y-5">
-        {question.unmapped.map((field) => (
-          <div key={field.canonical}>
-            <div className="mb-2 flex items-baseline gap-2">
-              <span className="text-sm">
-                {FIELD_LABELS[field.canonical] ?? field.canonical}
-              </span>
-              <span className="font-mono text-xs text-[var(--color-ink-faint)]">
-                {field.canonical}
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {field.candidates.map((column) => {
-                const picked = choice[field.canonical] === column;
-                return (
-                  <button
-                    key={column}
-                    onClick={() => onChoose(field.canonical, column)}
-                    className={`rounded border px-3 py-1.5 font-mono text-xs ${
-                      picked
-                        ? "border-[var(--color-ink)] bg-[var(--color-ink)] text-white"
-                        : "border-[var(--color-line)] bg-white text-[var(--color-ink-soft)]"
-                    }`}
-                  >
-                    {column}
-                  </button>
-                );
-              })}
-            </div>
+      {question.unmapped.map((field) => (
+        <div key={field.canonical} className="mb-8">
+          <div className="mb-3 flex flex-wrap items-baseline gap-2">
+            <span className="text-[14.5px] font-semibold">
+              {FIELD_LABELS[field.canonical] ?? field.canonical}
+            </span>
+            <span className="money text-xs text-[var(--color-ink-faint)]">
+              {field.canonical}
+            </span>
           </div>
-        ))}
-      </div>
+          <div className="flex flex-wrap gap-2">
+            {field.candidates.map((column) => {
+              const picked = choice[field.canonical] === column;
+              return (
+                <button
+                  key={column}
+                  type="button"
+                  aria-pressed={picked}
+                  onClick={() => onChoose(field.canonical, column)}
+                  className={`pressable rounded-full px-4 py-2.5 text-[13.5px] transition-[filter,background-color,color] duration-200 hover:brightness-125 ${
+                    picked
+                      ? "bg-[var(--color-ink)] font-bold text-[var(--color-ground)]"
+                      : "border border-[var(--color-line)] bg-[var(--color-raised)] text-[var(--color-ink)]"
+                  }`}
+                >
+                  {column}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
 
-      {Object.keys(question.already_mapped).length > 0 && (
-        <p className="mt-6 text-xs text-[var(--color-ink-faint)]">
-          Already recognised:{" "}
-          {Object.entries(question.already_mapped)
-            .map(([field, column]) => `${column} → ${field}`)
-            .join(", ")}
-        </p>
-      )}
+      <p className="mt-6 text-[12.5px] text-[var(--color-ink-faint)]">
+        We&rsquo;ll remember this for files shaped like this one, so you are asked once.
+      </p>
 
       {error && (
-        <p className="mt-5 text-sm text-[var(--color-attention)]">{error}</p>
+        <div className="mt-6">
+          <ErrorNote>{error}</ErrorNote>
+        </div>
       )}
 
-      <div className="mt-7 flex items-center gap-3">
-        <button
-          onClick={onConfirm}
-          disabled={!complete || busy}
-          className="rounded bg-[var(--color-ink)] px-4 py-2 text-sm text-white disabled:opacity-30"
-        >
-          {busy ? "Saving…" : "Remember and reconcile"}
-        </button>
-        <button
-          onClick={onCancel}
-          className="text-sm text-[var(--color-ink-faint)] underline underline-offset-4"
-        >
+      <Button
+        onClick={onConfirm}
+        disabled={!answered || busy}
+        size="lg"
+        full
+        className="mt-8"
+      >
+        {busy ? "Reconciling…" : "Remember and reconcile"}
+      </Button>
+      <div className="mt-4 text-center">
+        <Button variant="ghost" size="sm" onClick={onCancel}>
           Back
-        </button>
+        </Button>
       </div>
     </section>
   );
 }
 
-function Done({
-  result,
-  onAgain,
-}: {
-  result: UploadResult;
-  onAgain: () => void;
-}) {
+function Done({ result, onAgain }: { result: UploadResult; onAgain: () => void }) {
+  const fileCount = Object.keys(result.files).length;
+
   return (
-    <section className="mb-14">
-      <h2 className="mb-1 text-sm font-medium">{result.headline}</h2>
-      <p className="mb-4 text-sm text-[var(--color-ink-faint)]">
-        {result.rows_processed.toLocaleString()} rows read from{" "}
-        {Object.keys(result.files).length} file
-        {Object.keys(result.files).length === 1 ? "" : "s"}.
+    <section>
+      <h2 className="text-title mb-2">{result.headline}</h2>
+      <p className="tnum mb-4 text-[15px] text-[var(--color-ink-soft)]">
+        {result.rows_processed.toLocaleString("en-IN")} rows read from {fileCount} file
+        {fileCount === 1 ? "" : "s"}.
       </p>
 
       {/* What the answer does NOT cover. Named, never left to be assumed. */}
       {result.note && (
-        <p className="mb-4 border-l-2 border-[var(--color-line)] pl-3 text-sm text-[var(--color-ink-soft)]">
+        <p className="mb-5 border-l-2 border-[var(--color-line-strong)] pl-3 text-[15px] leading-relaxed text-[var(--color-ink-soft)]">
           {result.note}
         </p>
       )}
 
-      <button
-        onClick={onAgain}
-        className="text-sm text-[var(--color-ink-faint)] underline underline-offset-4"
-      >
+      <Button variant="ghost" size="sm" onClick={onAgain}>
         Upload another
-      </button>
+      </Button>
     </section>
   );
 }
