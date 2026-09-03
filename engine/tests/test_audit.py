@@ -120,8 +120,11 @@ class TestTraceability:
         assert c["invoice_id"]
 
     def test_every_classified_finding_carries_its_arithmetic(self, batch_dir: Path) -> None:
+        # The classify stage emits stage-level events too (the reconciled summary, the
+        # observed settlement cycle). Those are context, not findings, and carry no
+        # proof — a finding is identifiable by having an order attached to it.
         for e in run(batch_dir).audit.events:
-            if e["stage"] != "classify" or e["event"] == "reconciled_summary":
+            if e["stage"] != "classify" or "order_id" not in e:
                 continue
             proof = e["detail"]["proof"]
             assert "arithmetic" in proof or "reason" in proof, e["event"]

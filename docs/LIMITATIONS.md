@@ -107,6 +107,31 @@ the problem does not have.
 works, but there is no picker. The demo-data button and CSV upload path are Phase 2
 items not yet built.
 
+### Blind testing — what it establishes, and what it does not
+
+`finctl blind` runs the engine against a batch whose configuration and answers it has
+never seen. The first run **passed** (0 missed, 0 false positives) and **found a real
+bug**: the classifier judged every batch against the configured T+2 rather than the cycle
+the batch was actually settled on (ADR-030).
+
+**What this establishes.** The engine is not tuned to one specific batch. It handles
+unseen volumes, mixes, archetypes and cycles.
+
+**What it does not establish.** The generator still produces Razorpay-shaped data with
+defect types we designed. A blind test rules out *"tuned to one batch"*; it does not rule
+out *"tuned to the failure modes we imagined"*. Closing that gap needs data we did not
+generate — either hand-edited CSVs, or a real merchant export. The strongest available
+version is hand-editing, and it is documented in `docs/BLIND-TEST.md`.
+
+**On public benchmarks.** We examined BenchRec, the ICAIF 2023 reconciliation benchmark
+(real Tier 1 bank data, held-out solution file). It is a *fuzzy matching* task — predict
+which GL allocation a bank line belongs to — with no order ids, no settlement layer, no
+fees, and no subscriptions. Our engine matches on exact identifiers and explicitly refuses
+fuzzy matching (ADR-015), so running it there would score near zero and prove nothing
+about correctness. Worth citing for one number though: **34% of that bank's
+reconciliation was done manually**, which is a far better baseline for "this is hard" than
+the VLOOKUP comparison.
+
 ### Composition audit — what it found, and what it did not cover
 
 Two further bugs, both found by *running* adversarial cases rather than reasoning about

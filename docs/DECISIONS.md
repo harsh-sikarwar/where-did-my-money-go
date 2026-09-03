@@ -1049,3 +1049,66 @@ from 24,620 to **63,369 rows/sec**, flat with every smaller tier.
   oversight.
 - The profiling result is recorded in `METRICS.md` including the *before* number, so the
   improvement is visible rather than the slow version being quietly discarded.
+
+---
+
+## ADR-030 — The settlement cycle is observed from the batch, not read from config
+
+**Date:** 2026-09-03 · **Phase:** blind testing
+
+**Context.** A blind test on a T+1 batch caught every defect except timing: **0 caught,
+84 "below tolerance"**. The engine reported 100% recall and PASSED, because the scorer
+correctly classified unflagged lags as within tolerance.
+
+**The actual bug.** `_check_timing` computed the due date as
+`add_working_days(captured, self.tol.cycle_days)` — the cycle from **config**, always 2,
+regardless of what the batch in front of it had done. Measured across cycles on batches
+with an *identical* lag distribution:
+
+```
+batch settled at T+1  ->    0 orders flagged late
+batch settled at T+2  ->   15 orders flagged late
+batch settled at T+7  ->  291 orders flagged late   (nearly every settled order)
+```
+
+Two opposite failures from one cause. A T+1 merchant is told nothing about late money; a
+T+7 merchant would be told almost every order is late — technically true against a
+contracted T+2, useless as advice, and indistinguishable from a broken engine.
+
+My first diagnosis was wrong: I attributed it to `grace_days` swallowing short lags at
+T+1. Measuring the lag distribution disproved that — it was identical at every cycle
+(47 rows one day late, 37 rows two days late). The difference was entirely in the
+*baseline*, not the lag.
+
+**Choice.** `finctl/cycle.py` infers the cycle from the batch — the **mode** of
+capture-to-settlement working days — and the classifier judges against that. Config
+remains the contracted value, and a disagreement is reported rather than resolved
+silently.
+
+**Why the mode and not the mean.** The distribution is deliberately skewed: planted lags
+and genuinely late settlements sit in the right tail. A mean drifts toward them, which is
+backwards — the baseline should be *what normally happens*, so abnormal settlements stand
+out against it.
+
+**Why observed wins over configured.** "Late" is only meaningful relative to what actually
+happens. A merchant moved from T+2 to T+1 without the config being updated should still
+get correct timing analysis. The disagreement is logged (`settlement_cycle_disagrees_with_config`)
+so it is never silent, and every TIMING proof carries `cycle_days` and `cycle_source`, so
+a merchant disputing a call can see the baseline used.
+
+**Guard against over-inference.** Fewer than 20 settled orders falls back to config. A
+wrong inference from three orders would silently rebase every timing judgement, which is
+worse than using a possibly-stale contract value.
+
+**Why the matrix missed it.** The matrix ran T+1 twenty-two times at 100% recall. Recall
+counts only planted defects, and the scorer correctly bucketed the unflagged ones as
+"below tolerance" — a whole axis catching zero was invisible to it. **The blind test found
+it because it forced attention onto a single unfamiliar configuration rather than an
+aggregate.** A green aggregate can hide a systematically dead axis.
+
+**Consequences.**
+- T+1 and T+2 now detect identically on matching data (63/11 vs 63/11), where T+1
+  previously caught 54 with 20 below tolerance.
+- Fixing this exposed a latent bug in the audit scrubber: it called `k.lower()` on every
+  dict key, so any integer-keyed dict — like the cycle distribution — crashed the audit
+  log. Only string keys can name a credential, so only those are now checked.

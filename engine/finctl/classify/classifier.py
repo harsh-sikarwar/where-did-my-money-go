@@ -24,6 +24,7 @@ from typing import Any
 
 from finctl.calendar import WorkingCalendar
 from finctl.config.loader import Config
+from finctl.cycle import CycleObservation, observe_cycle
 from finctl.fees import expected_fee
 from finctl.match.matcher import MatchResult, OrderMatch
 from finctl.normalize.normalizer import to_date
@@ -141,6 +142,15 @@ class Classifier:
         self.config = config
         self.tol = config.tolerances
         self.calendar = WorkingCalendar(self.tol.weekend_days, self.tol.holidays)
+        # Set by classify() from the batch itself. Until then, fall back to config.
+        # This exists because the classifier used to judge EVERY batch against the
+        # configured T+2 regardless of what the batch actually did — see finctl/cycle.py.
+        self.cycle: CycleObservation | None = None
+
+    @property
+    def cycle_days(self) -> int:
+        """The cycle to judge against: observed where available, configured otherwise."""
+        return self.cycle.effective_days if self.cycle else self.tol.cycle_days
 
     # ------------------------------------------------------------------ rules
 
@@ -219,7 +229,7 @@ class Classifier:
             return None
 
         actual = max(settled_dates)
-        expected: date = self.calendar.add_working_days(captured, self.tol.cycle_days)
+        expected: date = self.calendar.add_working_days(captured, self.cycle_days)
         days_late = self.calendar.working_days_between(expected, actual)
 
         if days_late <= self.tol.grace_days:
@@ -231,9 +241,10 @@ class Classifier:
             "actual_settled_on": actual.isoformat(),
             "working_days_late": days_late,
             "grace_days": self.tol.grace_days,
-            "cycle_days": self.tol.cycle_days,
+            "cycle_days": self.cycle_days,
+            "cycle_source": "observed" if self.cycle and self.cycle.observed_days is not None else "configured",
             "arithmetic": (
-                f"captured {captured}, T+{self.tol.cycle_days} due {expected}, "
+                f"captured {captured}, T+{self.cycle_days} due {expected}, "
                 f"settled {actual} — {days_late} working days late"
             ),
         }
@@ -347,6 +358,10 @@ class Classifier:
     # ------------------------------------------------------------------ driver
 
     def classify(self, result: MatchResult) -> ClassificationResult:
+        # Establish the settlement cycle from the batch BEFORE judging anything against
+        # it. Doing this per-batch rather than from config is the whole point.
+        self.cycle = observe_cycle(result, self.calendar, self.tol.cycle_days)
+
         out = ClassificationResult()
 
         for m in result.order_matches:

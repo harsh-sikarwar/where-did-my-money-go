@@ -1306,3 +1306,109 @@ percentage for the guarantee that no match is a guess.
 with one command.
 
 Remaining: the deliberate false-attribution case, and the submission writeup.
+
+---
+
+## 2026-09-03 — Blind test, and the bug it found
+
+**The user did not trust internally generated results, and was right not to.** Every
+accuracy number so far was measured against data the engine was designed alongside.
+
+### Setup
+
+`finctl blind new / run / score`. The generator picks a random configuration, the answer
+key goes to `~/finctl-answers/` outside the project, and `blind new` prints nothing about
+what it planted. A SHA-256 receipt of every file is stored with both the batch and the
+answers and verified at scoring — a blind test whose data could have been adjusted
+between generation and scoring proves nothing, and "we didn't change it" is not evidence.
+
+`blind run` also refuses to run if `ground_truth.json` is present, so a non-blind run
+cannot be mistaken for a blind one.
+
+### The run
+
+Before scoring, I analysed only the batch files and committed to predictions in writing:
+archetype `d2c_ecommerce`, mix `even`, volume 840, profile `demo`, and per-defect counts
+of 6/3/8/3/4/30.
+
+All correct. **The cycle I got wrong** — predicted T+2, actual T+1. I had inferred it from
+the bank date span, which reflects the order window, not the cycle. Sloppy reasoning that
+happened not to matter for the counts.
+
+Result: **PASSED, 0 missed, 0 false positives, ₹0 residual** on a configuration nobody
+had tuned for.
+
+### Except one row
+
+```
+timing_lag    0 caught   0 missed   84 below tol.   100%
+```
+
+84 timing defects planted, none flagged. The score was *honest* about it — 0 missed, not
+84 — but zero detection on a whole defect type is worth understanding rather than
+accepting.
+
+### My first diagnosis was wrong
+
+I said `grace_days: 1` was swallowing short lags at T+1. Measuring the lag distribution
+disproved it — identical at every cycle: 47 rows one day late, 37 rows two days late.
+
+The real bug was in `_check_timing`:
+
+```python
+expected = self.calendar.add_working_days(captured, self.tol.cycle_days)
+```
+
+`self.tol.cycle_days` is the cycle from **config** — always 2 — regardless of what the
+batch actually did. Measured on batches with an identical lag distribution:
+
+```
+settled at T+1  ->    0 flagged late
+settled at T+2  ->   15 flagged late
+settled at T+7  ->  291 flagged late    (nearly every settled order)
+```
+
+Two opposite failures from one cause. A T+1 merchant is told nothing about late money. A
+T+7 merchant would be told almost everything is late — technically true against a
+contracted T+2, useless as advice, and indistinguishable from a broken engine.
+
+Worth recording that I asserted the wrong cause confidently before measuring. The
+measurement took two minutes and the guess would have produced a fix that did nothing.
+
+### The fix
+
+`finctl/cycle.py` infers the cycle from the batch — the **mode** of capture-to-settlement
+working days, not the mean, because the distribution is deliberately right-skewed by the
+planted lags and a mean would drift toward the very thing it is supposed to measure
+against.
+
+Observed wins over configured, because "late" is only meaningful relative to what actually
+happens. The disagreement is logged rather than resolved silently, and every TIMING proof
+now carries `cycle_days` and `cycle_source` so a merchant disputing a call can see the
+baseline used. Under 20 settled orders falls back to config — a wrong inference from three
+orders would silently rebase every judgement.
+
+On the blind batch: **0 caught / 84 below tolerance → 37 caught / 47 below tolerance.**
+Same data, same seed. In the matrix, T+1 and T+2 now detect identically (63/11 vs 63/11)
+where T+1 previously caught 54.
+
+### Why 22 matrix runs missed it
+
+The matrix ran T+1 twenty-two times at 100% recall. Recall counts only planted defects,
+and the scorer correctly bucketed the unflagged ones as "below tolerance" — so a whole
+axis catching *zero* was invisible in the aggregate.
+
+The blind test found it because it forced attention onto **one unfamiliar configuration**
+rather than a summary. A green aggregate can hide a systematically dead axis, and no
+amount of re-running the aggregate would have surfaced it.
+
+### A latent bug it exposed
+
+The audit scrubber called `k.lower()` on every dict key. The cycle distribution is keyed
+by int, so it crashed — meaning *any* integer-keyed dict would have. Only string keys can
+name a credential, so only those are checked now.
+
+### State
+
+**531 tests green**, ruff clean, matrix re-run with 0 missed and 0 false positives across
+22 runs.

@@ -36,8 +36,15 @@ REDACT_KEYS = frozenset({
 def _scrub(value: Any) -> Any:
     """Recursively drop anything credential-shaped. Structure is preserved."""
     if isinstance(value, dict):
+        # Keys are not always strings — a distribution keyed by int reaches here from
+        # the settlement-cycle observation, and `k.lower()` crashed on it. Only string
+        # keys can name a credential, so only those are checked.
         return {
-            k: ("[redacted]" if k.lower() in REDACT_KEYS else _scrub(v))
+            k: (
+                "[redacted]"
+                if isinstance(k, str) and k.lower() in REDACT_KEYS
+                else _scrub(v)
+            )
             for k, v in value.items()
         }
     if isinstance(value, list):

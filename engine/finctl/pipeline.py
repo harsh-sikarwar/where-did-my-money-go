@@ -17,6 +17,7 @@ from finctl.audit.log import AuditLog
 from finctl.classify.classifier import Classification, ClassificationResult, Classifier
 from finctl.config.loader import Config, load_config
 from finctl.correlate.correlator import CorrelationResult, Correlator
+from finctl.cycle import CycleObservation
 from finctl.generate.ground_truth import GroundTruth
 from finctl.match.matcher import MatchResult, match
 from finctl.rank.ranker import Ranker, Verdict
@@ -39,6 +40,7 @@ class PipelineResult:
     verdict: Verdict
     scored: ScoreReport | None
     audit: AuditLog
+    cycle: CycleObservation | None
     elapsed_seconds: float
     rows_processed: int
 
@@ -59,6 +61,7 @@ class PipelineResult:
                 "rows_per_second": round(self.throughput),
             },
             "audit": {"events": len(self.audit), "by_stage": self.audit.by_stage()},
+            "settlement_cycle": self.cycle.as_dict() if self.cycle else None,
         }
         if self.scored is not None:
             out["score"] = self.scored.as_dict()
@@ -95,7 +98,26 @@ def run(data_dir: Path, config: Config | None = None) -> PipelineResult:
         log.record("match", "duplicate_order_id", {"occurrences": count},
                    order_id=order_id)
 
-    classified = Classifier(cfg).classify(matches)
+    classifier = Classifier(cfg)
+    classified = classifier.classify(matches)
+
+    # The settlement cycle the batch was actually settled on, versus the one configured.
+    # Logged always, not only on disagreement, so the audit trail records which baseline
+    # every timing judgement was made against.
+    if classifier.cycle is not None:
+        log.record("classify", "settlement_cycle", classifier.cycle.as_dict())
+        if not classifier.cycle.agrees_with_config:
+            log.record("classify", "settlement_cycle_disagrees_with_config", {
+                "configured_days": classifier.cycle.configured_days,
+                "observed_days": classifier.cycle.observed_days,
+                "judged_against": classifier.cycle.effective_days,
+                "note": (
+                    "The data settles on a different cycle than tolerances.yaml states. "
+                    "Timing was judged against the OBSERVED cycle, because 'late' is only "
+                    "meaningful relative to what actually happens. Worth checking whether "
+                    "the contract changed."
+                ),
+            })
     # One event per non-reconciled finding, carrying the arithmetic that produced it.
     # RECONCILED rows are summarised rather than enumerated: at 50k rows they would be
     # 95% of the log and none of the interest, and the count is what makes the totals
@@ -153,6 +175,7 @@ def run(data_dir: Path, config: Config | None = None) -> PipelineResult:
         verdict=verdict,
         scored=scored,
         audit=log,
+        cycle=classifier.cycle,
         elapsed_seconds=elapsed,
         rows_processed=sum(s.row_count for s in batch.sources.values()),
     )
