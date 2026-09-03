@@ -256,6 +256,34 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             ),
         ))
 
+    # --- settlements for orders the ledger does not contain ---------------------------
+    # Razorpay settled a sale the merchant has no record of. That money reached the bank
+    # and is inside `received`, but nothing in `expected` claims it — so it NARROWS the
+    # gap and must be subtracted.
+    #
+    # Found by a hand-edited blind test: deleting two ledger rows left ₹16,992.29
+    # unaccounted for, exactly the net credit of the two orphaned settlements. The
+    # matcher had detected them all along (`unmatched_recon_orders`); the decomposition
+    # simply never consumed them. Every generated defect removes money or moves it, so
+    # no synthetic case had ever produced settled money with no ledger row behind it.
+    orphan_settlements = sum(
+        row.get("credit", 0) - row.get("debit", 0)
+        for row in matches.unmatched_recon_orders
+    )
+    if orphan_settlements:
+        d.components.append(GapComponent(
+            classification=Classification.UNEXPECTED_SETTLEMENT,
+            amount_paise=-orphan_settlements,
+            count=len({
+                row.get("order_id") for row in matches.unmatched_recon_orders
+                if row.get("order_id")
+            }) or len(matches.unmatched_recon_orders),
+            order_ids=sorted({
+                row["order_id"] for row in matches.unmatched_recon_orders
+                if row.get("order_id")
+            }),
+        ))
+
     # --- bank credits with no settlement behind them ---------------------------------
     # Already counted inside `received`, so they narrow the gap.
     orphan = sum(r["credit_paise"] for r in matches.unmatched_bank_rows)

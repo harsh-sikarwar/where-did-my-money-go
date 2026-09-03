@@ -541,3 +541,139 @@ class TestSplitSettlementsAndEarlyRefunds:
             if line.classification is Classification.REFUND
         ]
         assert len(refund_lines) <= 1
+
+
+class TestHandEditedLedger:
+    """Defects a human introduced by editing the CSV, not ones a generator planted.
+
+    Found a real bug on first contact: deleting two ledger rows left ₹16,992.29
+    unaccounted for. The matcher had detected the orphaned settlements all along
+    (`unmatched_recon_orders`); the decomposition simply never consumed them.
+
+    No generated defect had ever produced this shape. Every planted defect removes money
+    or moves it — none had ever left money SETTLED with no ledger row behind it, because
+    the generator writes the ledger first and derives everything else from it. That is
+    the structural blind spot hand-editing exists to find.
+    """
+
+    @pytest.fixture
+    def batch_dir(self, tmp_path: Path) -> Path:
+        write_batch(Generator(load_config(), seed=20260902, volume=200,
+                              defect_profile="demo").generate(), tmp_path)
+        return tmp_path
+
+    def _delete_ledger_rows(self, batch_dir: Path, data_rows: list[int]) -> list[str]:
+        """Delete 1-indexed DATA rows (header excluded). Returns the deleted order ids."""
+        p = batch_dir / "ledger.csv"
+        lines = p.read_text().splitlines()
+        deleted = []
+        for n in sorted(data_rows, reverse=True):   # descending keeps indices valid
+            deleted.append(lines[n].split(",")[0])
+            del lines[n]
+        p.write_text("\n".join(lines) + "\n")
+        return deleted
+
+    def test_deleting_ledger_rows_still_balances(self, batch_dir: Path) -> None:
+        self._delete_ledger_rows(batch_dir, [10, 19])
+        v = run(batch_dir).verdict
+        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+
+    def test_a_deleted_order_becomes_an_unexpected_settlement(
+        self, batch_dir: Path
+    ) -> None:
+        """Razorpay settled a sale the merchant has no record of. That is an exception
+        in its own right — money arriving unexplained is as notable as money missing."""
+        from finctl.classify.classifier import Classification
+
+        deleted = set(self._delete_ledger_rows(batch_dir, [10, 19]))
+        v = run(batch_dir).verdict
+        line = next(
+            line for line in v.lines
+            if line.classification is Classification.UNEXPECTED_SETTLEMENT
+        )
+        assert line.count == len(deleted)
+
+    def test_an_unexpected_settlement_narrows_the_gap(self, batch_dir: Path) -> None:
+        """The money reached the bank and is inside `received`, but nothing in
+        `expected` claims it. So it must be NEGATIVE."""
+        from finctl.classify.classifier import Classification
+
+        self._delete_ledger_rows(batch_dir, [10, 19])
+        v = run(batch_dir).verdict
+        line = next(
+            line for line in v.lines
+            if line.classification is Classification.UNEXPECTED_SETTLEMENT
+        )
+        assert line.amount_paise < 0
+
+    def test_the_orphan_amount_equals_what_was_actually_settled(
+        self, batch_dir: Path
+    ) -> None:
+        """Exact, not approximate: the net credit of the orphaned settlement rows."""
+        from finctl.classify.classifier import Classification
+
+        self._delete_ledger_rows(batch_dir, [10, 19])
+        result = run(batch_dir)
+        expected = sum(
+            row.get("credit", 0) - row.get("debit", 0)
+            for row in result.matches.unmatched_recon_orders
+        )
+        line = next(
+            line for line in result.verdict.lines
+            if line.classification is Classification.UNEXPECTED_SETTLEMENT
+        )
+        assert line.amount_paise == -expected
+
+    def test_inflating_a_ledger_amount_is_unexplained_not_a_refund(
+        self, batch_dir: Path
+    ) -> None:
+        """The ledger claims more than Razorpay settled: a shortfall.
+
+        This is the sign trap from ADR-024 in the opposite direction. A refund means the
+        bank got MORE than the books expected; a shortfall means money never arrived.
+        Labelling it REFUND would tell a merchant they refunded a customer they did not.
+        """
+        from finctl.classify.classifier import Classification
+
+        # Pick a row the generator left CLEAN. Inflating one that already carries a
+        # one-sided refund only shrinks that existing negative gap, so it stays REFUND —
+        # correctly. My first attempt at this test picked such a row and blamed the
+        # engine for being right.
+        baseline = run(batch_dir)
+        clean = {
+            f.order_id for f in baseline.correlated.findings
+            if f.classification is Classification.RECONCILED
+        }
+
+        p = batch_dir / "ledger.csv"
+        lines = p.read_text().splitlines()
+        target = next(
+            i for i, line in enumerate(lines[1:], start=1)
+            if line.split(",")[0] in clean
+        )
+        parts = lines[target].split(",")
+        order_id, original = parts[0], float(parts[1])
+        parts[1] = f"{original + 1149:.2f}"
+        lines[target] = ",".join(parts)
+        p.write_text("\n".join(lines) + "\n")
+
+        result = run(batch_dir)
+        finding = next(
+            f for f in result.correlated.findings if f.order_id == order_id
+        )
+        assert finding.classification is Classification.UNEXPLAINED
+        assert finding.amount_paise == 114900
+
+    def test_several_hand_edits_at_once_still_balance(self, batch_dir: Path) -> None:
+        """The combination, as a human would actually make it."""
+        p = batch_dir / "ledger.csv"
+        lines = p.read_text().splitlines()
+        parts = lines[15].split(",")
+        parts[1] = "3456.00"
+        lines[15] = ",".join(parts)
+        del lines[19]
+        del lines[10]
+        p.write_text("\n".join(lines) + "\n")
+
+        v = run(batch_dir).verdict
+        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise

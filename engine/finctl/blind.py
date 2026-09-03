@@ -131,6 +131,14 @@ def create(
     return receipt
 
 
+def changed_files(batch_dir: Path, receipt: dict[str, Any]) -> set[str]:
+    """Which batch files differ from the receipt taken at generation time."""
+    return {
+        problem.split(" ")[0]
+        for problem in verify_receipt(batch_dir, receipt)
+    }
+
+
 def verify_receipt(batch_dir: Path, receipt: dict[str, Any]) -> list[str]:
     """Check the batch files still match the hashes taken at generation time.
 

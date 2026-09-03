@@ -847,18 +847,51 @@ def blind_score(
         f"({report.total_caught} caught, {report.total_missed} missed, "
         f"{report.total_below_tolerance} below tolerance)"
     )
-    console.print(
-        "  false positives: "
-        + ("[green]0[/green]" if not report.false_positives
-           else f"[red]{len(report.false_positives)}[/red]")
-    )
+    # A hand-edited batch will produce findings that are NOT in the answer key, because
+    # the human planted them and the generator did not know. Those are the engine
+    # working, not failing — so they must not be reported as false positives, which
+    # would penalise it for catching exactly what the edit was testing.
+    edited = bool(problems)
+    if report.false_positives and edited:
+        console.print(
+            f"  [yellow]{len(report.false_positives)} finding(s) not in the answer key"
+            "[/yellow] — expected, since the batch was hand-edited:"
+        )
+        for order_id in report.false_positives[:10]:
+            finding = next(
+                (f for f in correlated.findings if f.order_id == order_id), None
+            )
+            if finding:
+                console.print(
+                    f"    [dim]{order_id}  {finding.classification}  "
+                    f"{format_rupees(finding.amount_paise)}[/dim]"
+                )
+                proof = finding.proof.get("arithmetic")
+                if proof:
+                    console.print(f"      [dim]{proof}[/dim]")
+    else:
+        console.print(
+            "  false positives: "
+            + ("[green]0[/green]" if not report.false_positives
+               else f"[red]{len(report.false_positives)}[/red]")
+        )
     console.print(
         f"  unexplained {format_rupees(report.unexplained_before_paise)} → "
         f"{format_rupees(report.unexplained_after_paise)}"
     )
 
-    verdict = (
-        "[bold green]PASSED[/bold green]" if not report.total_missed and not report.false_positives
-        else "[bold red]FAILED[/bold red]"
+    # PASSED requires zero MISSED defects. False positives only count against the run
+    # when the batch is untouched — on a hand-edited batch, findings outside the answer
+    # key are the point of the exercise rather than a failure.
+    failed = report.total_missed > 0 or (report.false_positives and not edited)
+    verdict = "[bold red]FAILED[/bold red]" if failed else "[bold green]PASSED[/bold green]"
+    suffix = (
+        "on a hand-edited batch the engine had never seen"
+        if edited else "on a batch the engine had never seen"
     )
-    console.print(f"\n  {verdict}  [dim]on a batch the engine had never seen[/dim]")
+    console.print(f"\n  {verdict}  [dim]{suffix}[/dim]")
+    if edited and report.false_positives:
+        console.print(
+            "  [dim]The findings above are not in the answer key because a human "
+            "planted them.\n  Check them against the edits you actually made.[/dim]"
+        )

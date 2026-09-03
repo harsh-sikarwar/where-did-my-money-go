@@ -1112,3 +1112,72 @@ aggregate.** A green aggregate can hide a systematically dead axis.
 - Fixing this exposed a latent bug in the audit scrubber: it called `k.lower()` on every
   dict key, so any integer-keyed dict — like the cycle distribution — crashed the audit
   log. Only string keys can name a credential, so only those are now checked.
+
+---
+
+## ADR-031 — Settlements for orders the ledger does not contain narrow the gap
+
+**Date:** 2026-09-03 · **Phase:** blind testing (hand-edited)
+
+**Context.** A hand-edited blind test — two ledger rows deleted with `sed` — left
+**₹16,992.29** unaccounted for. The balance invariant caught it as a negative residual,
+and the number was exactly the net credit of the two settlements whose ledger rows had
+been removed.
+
+**The gap in the decomposition.** `decompose()` handled orphan *bank rows* (a credit with
+no settlement behind it) but not orphan *settlements* (money Razorpay settled for an order
+the ledger has no record of). The matcher had been detecting them all along in
+`unmatched_recon_orders`; the decomposition simply never consumed them.
+
+**Why no generated case had found it.** Every planted defect either removes money or moves
+it, and the generator writes the ledger **first**, deriving settlements from it. So no
+synthetic batch could ever produce settled money with no ledger row behind it — the shape
+was structurally unreachable by the generator, not merely unlikely.
+
+That is precisely what hand-editing exists to reach. Three `sed` edits found a class of
+bug that 22 matrix runs, 6 blind configurations and 500+ tests could not.
+
+**Choice.** Orphan settlements become a negative `UNEXPECTED_SETTLEMENT` component: the
+money reached the bank and sits inside `received`, but nothing in `expected` claims it, so
+it narrows the gap.
+
+**Consequences.**
+- "Money in for an order you don't have" is now a verdict line a merchant can see, which
+  is a real exception in its own right — unexplained money arriving is as notable as money
+  missing, and it usually means a bookkeeping failure on the merchant's side.
+- The user's other two edits were handled correctly with no change needed: an inflated
+  ledger amount classified `UNEXPLAINED` at exactly ₹1,149.00, and **not** `REFUND` — the
+  sign rule from ADR-024 holding in the opposite direction.
+
+---
+
+## ADR-032 — On a hand-edited batch, findings outside the answer key are not false positives
+
+**Date:** 2026-09-03 · **Phase:** blind testing
+
+**Context.** After the hand-edited run, `blind score` reported **1 false positive** and
+`FAILED`. The "false positive" was the ₹1,149.00 shortfall the user had personally
+introduced by editing an amount. The engine had caught it exactly, with the arithmetic
+shown.
+
+**The flaw.** The scorer defines a false positive as *"the engine flagged an order that
+ground truth does not list as a defect."* On a generated batch that is right. On a
+hand-edited batch it is exactly backwards: the human planted a defect the generator knew
+nothing about, so the engine catching it is the whole point of the exercise — and the
+scorer penalised it for succeeding.
+
+**Choice.** `blind score` already verifies a SHA-256 receipt, so it knows whether the
+batch was edited. When it was, findings outside the answer key are listed with their proof
+under "not in the answer key — expected", and `PASSED` requires only zero **missed**
+defects. On an untouched batch, false positives still fail the run.
+
+**Why this is not weakening the test.** The strict rule is preserved wherever it is
+meaningful. What changed is that the tool no longer reports a correct answer as a failure
+in the one mode specifically designed to test unfamiliar defects. A scoring rule that
+punishes the engine for finding a real problem would train us to avoid the most valuable
+test we have.
+
+**Consequences.**
+- The unmatched findings are printed with their arithmetic, so the human can check them
+  against the edits they actually made — which is the correct way to score a hand-edited
+  run, by inspection rather than by a list the generator wrote.

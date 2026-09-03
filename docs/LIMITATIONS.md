@@ -117,6 +117,13 @@ the batch was actually settled on (ADR-030).
 **What this establishes.** The engine is not tuned to one specific batch. It handles
 unseen volumes, mixes, archetypes and cycles.
 
+**A hand-edited run found a bug nothing else could.** Deleting two ledger rows with `sed`
+left ₹16,992.29 unaccounted for: `decompose()` handled orphan bank rows but not orphan
+settlements (ADR-031). No generated case could have found it — the generator writes the
+ledger first and derives settlements from it, so settled money with no ledger row behind
+it is structurally unreachable. Three edits found what 22 matrix runs and 500+ tests could
+not.
+
 **What it does not establish.** The generator still produces Razorpay-shaped data with
 defect types we designed. A blind test rules out *"tuned to one batch"*; it does not rule
 out *"tuned to the failure modes we imagined"*. Closing that gap needs data we did not

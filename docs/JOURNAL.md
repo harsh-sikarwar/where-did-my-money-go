@@ -1412,3 +1412,94 @@ name a credential, so only those are checked now.
 
 **531 tests green**, ruff clean, matrix re-run with 0 missed and 0 false positives across
 22 runs.
+
+---
+
+## 2026-09-03 — Hand-edited blind test: three `sed` edits, one real bug
+
+The user asked for three edits to a freshly generated blind batch: delete data rows 10
+and 19, change row 15's amount to ₹3,456. They noted that opening the CSV in a spreadsheet
+corrupts it, so the edits were applied with a Python script instead — no round-trip
+through Excel, structure preserved exactly.
+
+### Predictions, made before running
+
+Two deleted orders: Razorpay still settled them, so the settlement holds money the ledger
+no longer claims. Should surface as `UNEXPECTED_SETTLEMENT` and **narrow** the gap.
+
+One inflated amount: the ledger now claims ₹1,149 more than arrived — a shortfall, so
+`UNEXPLAINED`, **not** `REFUND` (ADR-024's sign rule in the opposite direction).
+
+### The engine crashed, correctly
+
+```
+ArithmeticError: gap decomposition does not balance:
+  gap=16564940, components sum to 18264169, residual=-1699229
+```
+
+**−₹16,992.29** — exactly the net credit of the two orphaned settlements, to the paise.
+
+`decompose()` handled orphan *bank rows* but not orphan *settlements*. The matcher had
+been detecting them all along in `unmatched_recon_orders`; the decomposition never
+consumed them.
+
+**Why no generated case could ever have found it.** Every planted defect removes money or
+moves it, and the generator writes the ledger **first**, deriving settlements from it. So
+a synthetic batch cannot produce settled money with no ledger row behind it — the shape is
+structurally unreachable by the generator, not merely improbable.
+
+Three `sed` edits found a class of bug that 22 matrix runs, 6 blind configurations and
+500+ tests could not. That is the entire argument for hand-editing, demonstrated rather
+than asserted.
+
+### After the fix
+
+```
+UNEXPECTED_SETTLEMENT   2 rows   -₹16,992.29     <- the deleted orders
+UNEXPLAINED             1 row      ₹1,149.00     <- the inflated amount
+residual ₹0.00 · balances
+```
+
+Both predictions correct. The inflated amount classified `UNEXPLAINED` at exactly
+₹1,149.00 with the arithmetic shown — `ledger says 345600, Razorpay recorded gross 230700,
+difference 114900` — and correctly not called a refund.
+
+### Then the scorer got it wrong (ADR-032)
+
+`blind score` reported **1 false positive** and `FAILED`. The "false positive" was the
+₹1,149.00 the user had personally introduced.
+
+The scorer defines a false positive as *"flagged an order ground truth does not list."* On
+a generated batch that is right. On a hand-edited batch it is exactly backwards — the
+human planted a defect the generator knew nothing about, so catching it is the point, and
+the scorer penalised the engine for succeeding.
+
+Fixed using the receipt it already verifies: when the batch was edited, findings outside
+the answer key are printed **with their proof** under "not in the answer key — expected",
+and `PASSED` requires only zero *missed* defects. On an untouched batch the strict rule is
+unchanged.
+
+Worth being clear this is not a weakened test. A scoring rule that punishes the engine for
+finding a real problem would train us away from the most valuable test we have.
+
+### Final result
+
+```
+130 caught · 0 missed · 47 below tolerance · recall 100.0%
+1 finding not in the answer key — expected, hand-edited:
+  order_27VM0IApjRVfO0  UNEXPLAINED  ₹1,149.00
+PASSED on a hand-edited batch the engine had never seen
+```
+
+### A test of mine that was wrong, not the engine
+
+My first regression test inflated ledger row 15 of a `demo` batch and asserted
+`UNEXPLAINED`. It failed — because that row already carried a one-sided-refund defect
+(ledger ₹4,920 vs settled ₹9,840), so adding ₹1,149 merely shrank an existing negative
+gap and it stayed `REFUND`. Correctly. The test now picks a row the generator left clean.
+
+Second time in this project I have blamed the engine for being right before checking.
+
+### State
+
+**537 tests green**, ruff clean.
