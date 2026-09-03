@@ -640,3 +640,225 @@ def matrix(
            else f"[red]FAILS in {len(unbalanced)} runs[/red]")
     )
     console.print(f"\n[dim]results → {path}[/dim]")
+
+
+blind_app = typer.Typer(
+    no_args_is_help=True,
+    help="Blind testing: run the engine against a batch whose answers it cannot see.",
+)
+app.add_typer(blind_app, name="blind")
+
+
+@blind_app.command("new")
+def blind_new(
+    out: str = typer.Option("data/blind", "--out", "-o", help="Where the batch goes."),
+    answers: str = typer.Option(
+        "~/finctl-answers", "--answers", "-a",
+        help="Where the answer key goes. Keep this away from the project.",
+    ),
+    seed: int = typer.Option(None, "--seed", "-s", help="Omit for a random one."),
+) -> None:
+    """Create a blind batch. Prints NOTHING about what was planted.
+
+    The answer key is written outside the project by default, so it cannot be read by
+    accident while debugging.
+    """
+    import random as _random
+    from pathlib import Path
+
+    from finctl.blind import create, random_spec
+    from finctl.config.loader import load_config
+
+    rng = _random.Random(seed)
+    spec = random_spec(rng)
+
+    batch_dir = Path(out)
+    answer_dir = Path(answers).expanduser()
+
+    receipt = create(load_config(), batch_dir, answer_dir, spec)
+
+    console.print("[bold]Blind batch created.[/bold]\n")
+    console.print(f"  data    [bold]{batch_dir}[/bold]  [dim]({len(receipt['files'])} files)[/dim]")
+    console.print(f"  answers [bold]{answer_dir}[/bold]  [red]do not open this yet[/red]\n")
+    console.print(
+        "[dim]Nothing about the configuration or the planted defects is printed here,\n"
+        "deliberately — printing it would spoil the test.[/dim]\n"
+    )
+    console.print("Next:  [bold]uv run finctl blind run[/bold]")
+
+
+@blind_app.command("run")
+def blind_run(
+    data: str = typer.Option("data/blind", "--data", "-D"),
+    out: str = typer.Option("data/blind/findings.json", "--out", "-o"),
+) -> None:
+    """Reconcile a blind batch and write findings. Requires no ground truth.
+
+    This is also exactly the path real merchant data takes, since real data has no
+    ground truth either.
+    """
+    import json
+    from pathlib import Path
+
+    from finctl.classify.classifier import Classification
+    from finctl.config.loader import load_config
+    from finctl.money import format_rupees
+    from finctl.pipeline import run as run_pipeline
+
+    batch_dir = Path(data)
+    if (batch_dir / "ground_truth.json").exists():
+        console.print(
+            "[red]ground_truth.json is present in the batch directory.[/red] "
+            "This is not a blind run — remove it or use `finctl blind new`."
+        )
+        raise typer.Exit(1)
+
+    result = run_pipeline(batch_dir, load_config())
+    v = result.verdict
+
+    console.print(f"[bold]Blind run[/bold]  [dim]{batch_dir}[/dim]\n")
+    console.print(
+        f"Expected [bold]{format_rupees(v.expected_paise)}[/bold] · "
+        f"Received [bold]{format_rupees(v.received_paise)}[/bold] · "
+        f"Gap [bold]{format_rupees(v.gap_paise)}[/bold]\n"
+    )
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("classification")
+    table.add_column("rows", justify="right")
+    table.add_column("amount", justify="right")
+    for line in v.lines:
+        table.add_row(str(line.classification), str(line.count),
+                      format_rupees(line.amount_paise))
+    console.print(table)
+
+    balances = sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+    console.print(
+        f"\n  residual {format_rupees(v.unexplained_paise)}  ·  "
+        + ("[green]balances[/green]" if balances else "[red]DOES NOT BALANCE[/red]")
+    )
+    console.print(
+        f"  match rate {result.matches.pass1_match_rate * 100:.1f}% order→PSP, "
+        f"{result.matches.pass2_match_rate * 100:.1f}% PSP→bank"
+    )
+    console.print(f"  {result.rows_processed:,} rows in {result.elapsed_seconds * 1000:.0f}ms")
+
+    # The findings file is the engine's ANSWER: one claim per order, which is what the
+    # answer key is scored against. Written as data rather than read off the screen so
+    # scoring cannot be fudged after the fact.
+    findings = {
+        "batch": str(batch_dir),
+        "expected_paise": v.expected_paise,
+        "received_paise": v.received_paise,
+        "gap_paise": v.gap_paise,
+        "residual_paise": v.unexplained_paise,
+        "balances": balances,
+        "claims": [
+            {
+                "order_id": f.order_id,
+                "classification": str(f.classification),
+                "amount_paise": f.amount_paise,
+            }
+            for f in result.correlated.findings
+            if f.classification is not Classification.RECONCILED
+        ],
+        "reconciled_count": sum(
+            1 for f in result.correlated.findings
+            if f.classification is Classification.RECONCILED
+        ),
+    }
+    Path(out).write_text(json.dumps(findings, indent=2))
+    console.print(f"\n[dim]findings → {out}[/dim]")
+    console.print("\nNext:  [bold]uv run finctl blind score[/bold]  (after revealing the answers)")
+
+
+@blind_app.command("score")
+def blind_score(
+    data: str = typer.Option("data/blind", "--data", "-D"),
+    answers: str = typer.Option("~/finctl-answers", "--answers", "-a"),
+    findings: str = typer.Option("data/blind/findings.json", "--findings", "-f"),
+) -> None:
+    """Reveal the answers and score the blind run."""
+    import json
+    from pathlib import Path
+
+    from finctl.blind import verify_receipt
+    from finctl.classify.classifier import Classifier
+    from finctl.config.loader import load_config
+    from finctl.correlate.correlator import Correlator
+    from finctl.generate.ground_truth import GroundTruth
+    from finctl.match.matcher import match as run_match
+    from finctl.money import format_rupees
+    from finctl.score import score as score_run
+    from finctl.stage.staging import stage_from_dir
+
+    batch_dir = Path(data)
+    answer_dir = Path(answers).expanduser()
+    gt_path = answer_dir / "ground_truth.json"
+
+    if not gt_path.exists():
+        console.print(f"[red]no answer key at {gt_path}[/red]")
+        raise typer.Exit(1)
+    if not Path(findings).exists():
+        console.print(f"[red]no findings at {findings}[/red] — run `finctl blind run` first.")
+        raise typer.Exit(1)
+
+    spec = json.loads((answer_dir / "spec.json").read_text())
+
+    # Verify the data was not altered between generation and scoring. Without this,
+    # "we ran it blind" is a claim rather than a fact.
+    problems = verify_receipt(batch_dir, spec.get("receipt", {}))
+    console.print("[bold]Integrity[/bold]")
+    if problems:
+        for p in problems:
+            console.print(f"  [red]{p}[/red]")
+        console.print("  [red]the batch changed after generation — this result is not blind[/red]\n")
+    else:
+        console.print("  [green]batch files unchanged since generation[/green]\n")
+
+    console.print("[bold]What was actually generated[/bold]")
+    for key in ("archetype", "payment_mix", "volume", "cycle_days", "defect_profile", "seed"):
+        console.print(f"  {key:16} {spec[key]}")
+
+    cfg = load_config()
+    batch = stage_from_dir(batch_dir)
+    matches = run_match(batch)
+    correlated = Correlator(batch).correlate(Classifier(cfg).classify(matches))
+    report = score_run(GroundTruth.read(gt_path), correlated, matches, cfg)
+
+    console.print("\n[bold]Score[/bold]")
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("defect")
+    table.add_column("caught", justify="right")
+    table.add_column("missed", justify="right")
+    table.add_column("below tol.", justify="right")
+    table.add_column("recall", justify="right")
+    for name, s in sorted(report.by_type.items()):
+        colour = "green" if not s.missed else "red"
+        table.add_row(
+            name, str(len(s.caught)),
+            f"[{colour}]{len(s.missed)}[/{colour}]",
+            f"[dim]{len(s.below_tolerance)}[/dim]",
+            f"[{colour}]{s.recall * 100:.0f}%[/{colour}]",
+        )
+    console.print(table)
+
+    console.print(
+        f"\n  recall [bold]{report.recall * 100:.1f}%[/bold] "
+        f"({report.total_caught} caught, {report.total_missed} missed, "
+        f"{report.total_below_tolerance} below tolerance)"
+    )
+    console.print(
+        "  false positives: "
+        + ("[green]0[/green]" if not report.false_positives
+           else f"[red]{len(report.false_positives)}[/red]")
+    )
+    console.print(
+        f"  unexplained {format_rupees(report.unexplained_before_paise)} → "
+        f"{format_rupees(report.unexplained_after_paise)}"
+    )
+
+    verdict = (
+        "[bold green]PASSED[/bold green]" if not report.total_missed and not report.false_positives
+        else "[bold red]FAILED[/bold red]"
+    )
+    console.print(f"\n  {verdict}  [dim]on a batch the engine had never seen[/dim]")

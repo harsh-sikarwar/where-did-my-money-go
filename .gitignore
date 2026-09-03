@@ -36,6 +36,10 @@ out/
 /data/*
 !/data/.gitkeep
 engine/data/
+# Blind-test batches and their answer keys. Never committed: a committed answer
+# key is not an answer key.
+data/blind/
+finctl-answers/
 *.sqlite
 *.sqlite3
 *.db
