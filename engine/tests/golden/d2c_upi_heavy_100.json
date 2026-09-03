@@ -3,7 +3,7 @@
     "bank": 29,
     "ledger": 100,
     "payments": 100,
-    "recon": 98,
+    "recon": 101,
     "subscriptions": 6
   },
   "defects": {
@@ -12,19 +12,23 @@
       "halted_subscription": 6,
       "missing_order": 3,
       "one_sided_refund": 8,
+      "payment_on_hold": 2,
       "split_settlement": 4,
       "timing_lag": 10,
+      "unrecorded_refund": 3,
       "wrong_fee_rate": 30
     },
-    "count": 64,
+    "count": 69,
     "impact_by_type": {
-      "early_refund": 361000,
-      "halted_subscription": 2246000,
-      "missing_order": 718500,
-      "one_sided_refund": 1091100,
+      "early_refund": 243000,
+      "halted_subscription": 1574000,
+      "missing_order": 858000,
+      "one_sided_refund": 1009700,
+      "payment_on_hold": 183857,
       "split_settlement": 0,
-      "timing_lag": 3418782,
-      "wrong_fee_rate": 35866
+      "timing_lag": 3066190,
+      "unrecorded_refund": 262400,
+      "wrong_fee_rate": 36102
     }
   },
   "first_ledger_row": {
@@ -40,14 +44,14 @@
     "card_network": null,
     "card_type": null,
     "created_at": 1785751200,
-    "credit": 58800,
+    "credit": 57412,
     "credit_type": "default",
     "currency": "INR",
     "debit": 0,
     "description": "Order payment",
     "dispute_id": null,
     "entity_id": "pay_mLrgerQ0gSbusC",
-    "fee": 0,
+    "fee": 1388,
     "method": "upi",
     "notes": null,
     "on_hold": false,
@@ -57,23 +61,23 @@
     "posted_at": null,
     "settled": true,
     "settled_at": 1785952800,
-    "settlement_id": "setl_rUMiuXTT2a5ZuI",
-    "settlement_utr": "1785924000k0g6ls",
-    "tax": 0,
+    "settlement_id": "setl_glWKYLacOfNo99",
+    "settlement_utr": "1785924000fkzorj",
+    "tax": 212,
     "type": "payment"
   },
   "method_mix": {
     "card_credit": 4,
     "card_debit": 7,
-    "upi": 87
+    "upi": 90
   },
   "totals": {
-    "bank_credit_paise": 26176638,
-    "expected_fee_paise": 46296,
-    "expected_net_paise": 26573504,
-    "gross_paise": 28493200,
-    "recon_credit_paise": 26537638,
-    "recon_fee_paise": 82162,
-    "recon_tax_paise": 7062
+    "bank_credit_paise": 24377497,
+    "expected_fee_paise": 606744,
+    "expected_net_paise": 25102856,
+    "gross_paise": 27131900,
+    "recon_credit_paise": 25066754,
+    "recon_fee_paise": 642846,
+    "recon_tax_paise": 92552
   }
 }

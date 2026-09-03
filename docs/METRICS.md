@@ -76,11 +76,11 @@ harness rather than the product.
 
 | batch | rows ingested | seconds | rows/sec |
 |---|---|---|---|
-| 50 | 175 | 0.003 | 55,173 |
-| 200 | 636 | 0.010 | 62,147 |
-| 500 | 1,539 | 0.020 | 78,719 |
-| 5,000 | 15,108 | 0.205 | 73,509 |
-| 50,000 | 150,783 | 2.379 | 63,369 |
+| 50 | 175 | 0.005 | 32,019 |
+| 200 | 636 | 0.015 | 41,083 |
+| 500 | 1,539 | 0.027 | 56,575 |
+| 5,000 | 15,108 | 0.223 | 67,796 |
+| 50,000 | 150,783 | 2.493 | 60,489 |
 
 ## Correlation gain by archetype
 
@@ -91,9 +91,9 @@ harness rather than the product.
 
 ## Totals across 22 runs
 
-- defects caught: **26489**
+- defects caught: **26564**
 - defects missed: **0**
-- below tolerance (planted, correctly not flagged): **10145**
+- below tolerance (planted, correctly not flagged): **10094**
 - false positives: **0**
 - balance identity failures: **0**
 

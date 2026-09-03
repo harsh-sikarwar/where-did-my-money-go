@@ -41,11 +41,25 @@ demo:
     note: "One order paid across two settlements. Legitimate Razorpay behaviour,
            NOT an error — impact is zero by design. Tests that the engine does not
            report a discrepancy, which is harder to get right than reporting one."
+  payment_on_hold:
+    count: 2
+    note: "Razorpay withholding a payment on purpose (on_hold=true in the recon row).
+      Neither late nor missing: the reason is in the data, so an engine that reports
+      UNEXPLAINED here is failing to read a field it already has. See ADR-036."
+
   early_refund:
     count: 3
     note: "A refund that settled BEFORE the payment it reverses. The debit lands in
            an earlier settlement than the credit, so a naive per-settlement view
            shows money leaving before it arrived."
+
+  unrecorded_refund:
+    count: 3
+    note: "The MIRROR of one_sided_refund: Razorpay settled a refund the merchant
+      never wrote down. Modelled on row 10 of Razorpay's own sample recon export —
+      a `refund` row with a settlement_id and NO order_id. The missing order_id is
+      the point: the matcher used to drop such rows outright, so money left the
+      merchant's account with no stage ever seeing it. See ADR-039."
 
 # No defects at all. Adversarial case: does the engine correctly say 'nothing to do'?
 clean:
@@ -89,3 +103,5 @@ scale:
     rate: 0.02
   early_refund:
     rate: 0.015
+  unrecorded_refund:
+    rate: 0.01

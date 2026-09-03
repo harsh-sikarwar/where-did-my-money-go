@@ -48,6 +48,8 @@ EXPECTED: dict[str, frozenset[Classification]] = {
     # to get right than reporting one, and the reason this case is planted at all.
     DefectType.SPLIT_SETTLEMENT: frozenset({Classification.RECONCILED}),
     DefectType.EARLY_REFUND: frozenset({Classification.REFUND}),
+    DefectType.PAYMENT_ON_HOLD: frozenset({Classification.ON_HOLD}),
+    DefectType.UNRECORDED_REFUND: frozenset({Classification.UNRECORDED_REFUND}),
 }
 
 
@@ -171,6 +173,17 @@ def score(
         if f.order_id:
             found.setdefault(f.order_id, set()).add(f.classification)
 
+    # entity_id -> classifications, for defects that have no order_id to be keyed by.
+    # A settlement-side refund is identified only by its `rfnd_…` entity_id — Razorpay's
+    # real export leaves order_id blank on those rows (ADR-039). Scoring purely by
+    # order_id marked every such defect MISSED no matter what the engine reported,
+    # because the join key did not exist. See ADR-040.
+    found_by_entity: dict[str, set[Classification]] = {}
+    for f in correlated.findings:
+        entity_id = f.proof.get("entity_id") if f.proof else None
+        if entity_id:
+            found_by_entity.setdefault(str(entity_id), set()).add(f.classification)
+
     planted_orders: set[str] = set()
 
     # Built once and reused, rather than rebuilt per defect.
@@ -183,6 +196,13 @@ def score(
 
         acceptable = EXPECTED.get(defect.defect_type, frozenset())
         assigned = found.get(defect.order_id or "", set())
+
+        # Fall back to the entity key when the defect has no order_id. Ground truth
+        # records the entity_id in `detail` for exactly this purpose.
+        if not assigned:
+            entity_id = defect.detail.get("entity_id") if defect.detail else None
+            if entity_id:
+                assigned = found_by_entity.get(str(entity_id), set())
 
         if assigned & acceptable:
             s.caught.append(defect.defect_id)

@@ -96,11 +96,19 @@ class RateCard:
                 raise ConfigError(f"methods.{name}.mdr_bps must be non-negative in {source}, got {mdr}")
             methods[name] = MethodRate(method=name, mdr_bps=mdr, note=spec.get("note", ""))
 
-        if "upi" in methods and methods["upi"].mdr_bps != 0:
+        # UPI has zero *MDR* by statute, but that is not what the merchant pays: the
+        # aggregator's platform fee (~2%) is deducted regardless, and it is the platform
+        # fee that lands in the settlement `fee` field. An earlier version of this check
+        # asserted the opposite — mdr_bps == 0 — which made the engine expect a zero fee
+        # on every UPI row. Because the generator computes fees with this same rate card
+        # (ADR-013), the synthetic data agreed and the error was invisible. See ADR-030.
+        if "upi" in methods and methods["upi"].mdr_bps == 0:
             raise ConfigError(
-                f"rate card {source} sets UPI mdr_bps to {methods['upi'].mdr_bps}, expected 0. "
-                "UPI carries zero MDR, mandated for banks. If a contract genuinely differs, "
-                "remove this check deliberately and record why."
+                f"rate card {source} sets UPI mdr_bps to 0. Zero MDR is a statutory fact "
+                "about interchange, not the merchant's cost: Razorpay levies a platform "
+                "fee (~200 bps) on bank-to-bank UPI, and that is what is deducted. "
+                "Expecting 0 flags every UPI row as a fee discrepancy. If this merchant "
+                "genuinely pays nothing on UPI, set the rate explicitly and record why."
             )
 
         return cls(

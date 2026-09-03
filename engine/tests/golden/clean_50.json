@@ -24,14 +24,14 @@
     "card_network": null,
     "card_type": null,
     "created_at": 1785837600,
-    "credit": 825200,
+    "credit": 805725,
     "credit_type": "default",
     "currency": "INR",
     "debit": 0,
     "description": "Recurring Payment via Subscription",
     "dispute_id": null,
     "entity_id": "pay_XGv0Tm6uHbPKzC",
-    "fee": 0,
+    "fee": 19475,
     "method": "upi",
     "notes": null,
     "on_hold": false,
@@ -43,7 +43,7 @@
     "settled_at": 1786039200,
     "settlement_id": "setl_DwD9jSQT8EPaNT",
     "settlement_utr": "1786010400kvsqax",
-    "tax": 0,
+    "tax": 2971,
     "type": "payment"
   },
   "method_mix": {
@@ -53,12 +53,12 @@
     "upi": 15
   },
   "totals": {
-    "bank_credit_paise": 26592462,
-    "expected_fee_paise": 370038,
-    "expected_net_paise": 26592462,
+    "bank_credit_paise": 26326185,
+    "expected_fee_paise": 636315,
+    "expected_net_paise": 26326185,
     "gross_paise": 26962500,
-    "recon_credit_paise": 26592462,
-    "recon_fee_paise": 370038,
-    "recon_tax_paise": 56445
+    "recon_credit_paise": 26326185,
+    "recon_fee_paise": 636315,
+    "recon_tax_paise": 97065
   }
 }

@@ -76,7 +76,9 @@ class TestGroundTruthCompleteness:
         assert len(batch.subscriptions) == 6
         assert all(s["status"] == "halted" for s in batch.subscriptions)
 
-    def test_all_five_defect_types_are_planted(self, batch) -> None:
+    def test_every_defect_type_is_planted(self, batch) -> None:
+        """The demo profile must exercise every type the generator knows about,
+        so no defect type ships with its engine behaviour unverified."""
         planted = {d.defect_type for d in batch.ground_truth.real_defects}
         assert planted == set(DefectType.ALL)
 
@@ -110,7 +112,7 @@ class TestDefectsAreActuallyPresentInTheData:
 
     def test_missing_orders_are_in_the_ledger_but_not_in_recon(self, batch) -> None:
         gt = batch.ground_truth
-        recon_orders = {r["order_id"] for r in batch.recon}
+        recon_orders = {r["order_id"] for r in batch.recon if r.get("order_id")}
         ledger_orders = {r["order_id"] for r in batch.ledger}
         for d in gt.by_type(DefectType.MISSING_ORDER):
             assert d.order_id in ledger_orders
@@ -127,7 +129,7 @@ class TestDefectsAreActuallyPresentInTheData:
 
     def test_halted_subscriptions_have_an_invoice_but_no_settlement(self, batch) -> None:
         """The cruelty of the halted state: invoices keep coming, money never does."""
-        recon_orders = {r["order_id"] for r in batch.recon}
+        recon_orders = {r["order_id"] for r in batch.recon if r.get("order_id")}
         by_order = {p["order_id"]: p for p in batch.payments}
         for d in batch.ground_truth.by_type(DefectType.HALTED_SUBSCRIPTION):
             assert d.order_id not in recon_orders
@@ -145,7 +147,7 @@ class TestDefectsAreActuallyPresentInTheData:
 
     def test_fee_overcharges_exceed_the_contracted_rate(self, batch, config: Config) -> None:
         from finctl.fees import expected_fee
-        by_order = {r["order_id"]: r for r in batch.recon}
+        by_order = {r["order_id"]: r for r in batch.recon if r.get("order_id")}
         for d in batch.ground_truth.by_type(DefectType.WRONG_FEE_RATE):
             row = by_order[d.order_id]
             contracted = expected_fee(row["amount"], row["method"], config.rate_card)
@@ -157,7 +159,7 @@ class TestDefectsAreActuallyPresentInTheData:
 
         from finctl.calendar import WorkingCalendar
         cal = WorkingCalendar(config.tolerances.weekend_days, config.tolerances.holidays)
-        by_order = {r["order_id"]: r for r in batch.recon}
+        by_order = {r["order_id"]: r for r in batch.recon if r.get("order_id")}
         for d in batch.ground_truth.by_type(DefectType.TIMING_LAG):
             row = by_order[d.order_id]
             captured = datetime.fromtimestamp(row["created_at"], tz=UTC).date()
@@ -199,23 +201,31 @@ class TestRazorpayShapeCompliance:
 class TestFeeCorrectness:
     """'The most likely place your build is quietly wrong.'"""
 
-    def test_upi_rows_are_charged_nothing(self, config: Config) -> None:
+    def test_upi_rows_are_charged_the_platform_fee(self, config: Config) -> None:
+        """ADR-030. UPI rows carry ~2% + GST, so credit is strictly below amount."""
         batch = Generator(config, seed=7, volume=300, payment_mix="upi_heavy",
                           archetype="d2c_ecommerce", defect_profile="clean").generate()
         upi = [r for r in batch.recon if r["method"] == "upi"]
         assert upi, "upi_heavy mix must produce UPI rows"
         for row in upi:
-            assert row["fee"] == 0
-            assert row["tax"] == 0
-            assert row["credit"] == row["amount"]   # every paise reaches the bank
+            assert row["fee"] > 0
+            assert row["tax"] > 0
+            assert row["credit"] < row["amount"]
 
-    def test_upi_heavy_and_card_heavy_produce_different_fee_totals(self, config: Config) -> None:
-        """The judge's question, answered with data rather than assertion."""
+    def test_upi_heavy_is_no_longer_almost_free(self, config: Config) -> None:
+        """Regression guard for ADR-030.
+
+        The old rate card made a UPI-heavy batch cost ~1/5 of a card-heavy one.
+        At the real platform fee the two are within a few percent, because the
+        domestic rate is a flat 2% either way.
+        """
         upi = Generator(config, seed=7, volume=300, payment_mix="upi_heavy",
                         defect_profile="clean").generate()
         card = Generator(config, seed=7, volume=300, payment_mix="card_heavy",
                          defect_profile="clean").generate()
-        assert sum(r["fee"] for r in upi.recon) < sum(r["fee"] for r in card.recon) / 5
+        upi_fees = sum(r["fee"] for r in upi.recon)
+        card_fees = sum(r["fee"] for r in card.recon)
+        assert upi_fees > card_fees / 2
 
     def test_clean_profile_matches_the_rate_card_exactly(self, config: Config) -> None:
         """With no defects planted, every fee must equal the contracted fee."""
@@ -261,10 +271,27 @@ class TestInternalConsistency:
         for bank_row in batch.bank:
             assert bank_row["credit_amount"] == by_utr[bank_row["utr"]]
 
-    def test_every_recon_row_belongs_to_a_settlement_with_a_utr(self, batch) -> None:
+    def test_every_settled_recon_row_belongs_to_a_settlement_with_a_utr(self, batch) -> None:
+        """Every row EXCEPT a held one, which by definition has no settlement yet."""
         for row in batch.recon:
+            if row.get("on_hold"):
+                continue
             assert row["settlement_id"] and row["settlement_id"].startswith("setl_")
             assert row["settlement_utr"]
+
+    def test_a_held_recon_row_has_no_settlement(self, batch) -> None:
+        """The inverse invariant: being held means no settlement, no UTR, no settled_at.
+
+        If a held row ever acquired a UTR the money would appear in the bank while the
+        engine reported it withheld. See ADR-036.
+        """
+        held = [r for r in batch.recon if r.get("on_hold")]
+        assert held, "demo profile must plant held payments"
+        for row in held:
+            assert row["settlement_id"] is None
+            assert row["settlement_utr"] is None
+            assert row["settled_at"] is None
+            assert row["settled"] is False
 
     def test_ledger_totals_match_ground_truth(self, batch) -> None:
         assert sum(r["amount"] for r in batch.ledger) == batch.ground_truth.total_gross_paise

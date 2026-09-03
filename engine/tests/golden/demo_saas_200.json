@@ -1,9 +1,9 @@
 {
   "counts": {
-    "bank": 32,
+    "bank": 31,
     "ledger": 200,
     "payments": 200,
-    "recon": 198,
+    "recon": 201,
     "subscriptions": 6
   },
   "defects": {
@@ -12,19 +12,23 @@
       "halted_subscription": 6,
       "missing_order": 3,
       "one_sided_refund": 8,
+      "payment_on_hold": 2,
       "split_settlement": 4,
       "timing_lag": 20,
+      "unrecorded_refund": 3,
       "wrong_fee_rate": 30
     },
-    "count": 74,
+    "count": 79,
     "impact_by_type": {
-      "early_refund": 542100,
-      "halted_subscription": 2459700,
-      "missing_order": 1935400,
-      "one_sided_refund": 2154100,
+      "early_refund": 405400,
+      "halted_subscription": 1975400,
+      "missing_order": 902300,
+      "one_sided_refund": 1705200,
+      "payment_on_hold": 1448880,
       "split_settlement": 0,
-      "timing_lag": 9383934,
-      "wrong_fee_rate": 64933
+      "timing_lag": 10579585,
+      "unrecorded_refund": 127900,
+      "wrong_fee_rate": 67253
     }
   },
   "first_ledger_row": {
@@ -57,24 +61,24 @@
     "posted_at": null,
     "settled": true,
     "settled_at": 1785952800,
-    "settlement_id": "setl_X96jF2OFsSbFGc",
-    "settlement_utr": "1785924000gmrvkl",
+    "settlement_id": "setl_xyoC2uHpXreK8m",
+    "settlement_utr": "1785924000dstrvh",
     "tax": 517,
     "type": "payment"
   },
   "method_mix": {
-    "card_credit": 92,
-    "card_debit": 39,
-    "netbanking": 15,
-    "upi": 52
+    "card_credit": 113,
+    "card_debit": 45,
+    "netbanking": 9,
+    "upi": 34
   },
   "totals": {
-    "bank_credit_paise": 97855003,
-    "expected_fee_paise": 1495664,
-    "expected_net_paise": 98462036,
-    "gross_paise": 102198700,
-    "recon_credit_paise": 98397103,
-    "recon_fee_paise": 1560597,
-    "recon_tax_paise": 228152
+    "bank_credit_paise": 93131119,
+    "expected_fee_paise": 2300548,
+    "expected_net_paise": 95180552,
+    "gross_paise": 98653600,
+    "recon_credit_paise": 95113299,
+    "recon_fee_paise": 2367801,
+    "recon_tax_paise": 350926
   }
 }

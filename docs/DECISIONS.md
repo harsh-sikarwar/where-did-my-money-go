@@ -1505,3 +1505,139 @@ before it produced a false MISSING. 558 tests green.
 because there was no *check* that our field names matched Razorpay's — only an intention
 to keep them aligned. The sample files are now that check. Naming a convention is not the
 same as enforcing one.
+
+---
+
+## ADR-039 — A refund with no `order_id` is money leaving that nothing was watching
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** `LIMITATIONS.md` has carried this since Phase 1b:
+
+> **Refunds are modelled as one-sided by omission.** The one-sided-refund defect is a
+> refund the merchant recorded that never reaches settlement. The reverse case — a
+> settlement refund the merchant never recorded — is not yet generated.
+
+Razorpay's own sample recon export contains one. Row 10 of
+`sample-settlements-recon-report.xlsx`:
+
+```
+transaction_entity : refund
+entity_id          : rfnd_Jt7Bq2djxtuWo5
+debit              : 1.0        credit : 0.0
+settlement_id      : setl_JtAs2E7Uf55JMV
+order_id           : (blank)
+```
+
+**The blank `order_id` is the whole finding.** Razorpay keys these rows by `rfnd_…`, and
+nothing links them to a sale. Our matcher opened with:
+
+```python
+for row in recon:
+    if not row.get("order_id"):
+        continue          # <- the refund row dies here
+```
+
+For a *payment* that `continue` is right: a payment with no order cannot be attributed.
+For a *refund* it was catastrophic and silent. Money genuinely left the merchant's bank
+account, and **no stage of the engine ever saw the row**. Not classify, not correlate,
+not the verdict. Reproduced before fixing: a ₹1,000 settlement-side refund on a batch
+that the engine reported as `RECONCILED`.
+
+This is the mirror of `UNEXPECTED_SETTLEMENT` (ADR-031) — that is money arriving for a
+sale the merchant has no record of; this is money leaving for a refund they have no
+record of. ADR-031's lesson was that the matcher had detected the orphans all along and
+the decomposition never consumed them. Here the matcher did not even detect them.
+
+**Decision.** Add `UNRECORDED_REFUND` as a first-class classification.
+
+1. `MatchResult.unattributed_refunds` collects refund rows no ledger order claims —
+   both those with a blank `order_id` and those naming an order the ledger lacks.
+2. The classifier emits one finding per row, with `entity_id`, `arn`, `settled_at` and
+   the `refund_notes` reason carried into the proof. A refund reason sitting in the row
+   is exactly what the merchant needs to identify it in their dashboard.
+3. **It is not `BENIGN`.** The merchant's books overstate their balance and nothing in
+   their own records would ever reveal it.
+4. **It gets its own gap component**, split out from `REFUND`. This is the subtle half.
+   Both are debits of identical size and sign, so the arithmetic balances either way —
+   but the verdict screen is built from components, and `REFUND` is a line a merchant
+   reads and moves past. Folding them together meant the finding existed, scored as
+   caught, and *still never reached the actionable list*. Correct arithmetic is not the
+   same as a correct answer.
+
+**Generating it.** Per ADR-004, a defect that cannot be scored does not get planted, and
+per ADR-035/036 a classification with no data to exercise it is unverified. So
+`unrecorded_refund` is a defect type: 3 in `demo`, rate-based in `scale`. The generated
+row deliberately carries **no `order_id` and no `payment_id`** — the shape that broke us
+— but it *does* carry `payment_method`, because Razorpay's real refund rows do
+(`bank_transfer` in the sample). An earlier draft omitted it and produced a row shape
+that does not occur in real data.
+
+**Three latent bugs this surfaced.**
+
+1. **`assigned` was not total.** Emission sites read `assigned[DefectType.X]` directly,
+   so a profile omitting a defect raised `KeyError` rather than planting none of it. Now
+   `{d: set() for d in DefectType.ALL}`.
+2. **`demanded` was a hand-maintained tuple** that had drifted from `DefectType.ALL`.
+   Adding the type to the enum *and* the profile still planted nothing, and ground truth
+   would have been silent about a defect the profile asked for. Now derived from `ALL`.
+3. **`DefectType.ALL`'s order is load-bearing** and nobody had said so. The generator
+   slices a shuffled index range across it in sequence, so deriving `demanded` from `ALL`
+   silently swapped `HALTED_SUBSCRIPTION` and `TIMING_LAG`, reassigning which orders got
+   which defect and shifting every golden file by ~₹55,000 for no real reason. The tuple
+   now preserves the historical order with a comment saying why, and new types are
+   appended at the end. Verified by setting `count: 0` and confirming the goldens matched
+   byte-for-byte — proof the code changes were behaviour-preserving and the remaining
+   diff was only the three new defects consuming index slots.
+
+**Consequences.** 8 tests added. Demo batch: 3 caught, 0 missed, 0 false positives, gap
+residual ₹0.00. The actionable list grew from 3 lines to 5 — and the cap in
+`test_rank.py` was raised deliberately rather than the feature trimmed to fit it, because
+each addition moves money *out* of a silent bucket and onto a line with an owner.
+
+**Cost, stated plainly.** Like ADR-036, this narrows the residual for a reason that is
+not engine cleverness: it is reading rows we were throwing away. The `REFUND` line on
+every prior demo was slightly overstated, since settlement-side refunds we now name
+separately were previously either invisible or folded in.
+
+---
+
+## ADR-040 — Ground truth cannot be scored by `order_id` alone
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** `score.py` joined findings to planted defects on one key:
+
+```python
+found[f.order_id].add(f.classification)
+...
+assigned = found.get(defect.order_id or "", set())
+```
+
+Every defect the engine has ever been scored against had an `order_id`, so this held.
+`UNRECORDED_REFUND` does not have one — Razorpay identifies those rows by `rfnd_…`
+(ADR-039). The consequence is worse than a crash: the defect scored as **MISSED**
+regardless of what the engine actually reported, because *the join key did not exist*.
+The engine found all three, and the scorecard said it found none.
+
+That is a measurement bug, and this project's central claim is a measurement.
+
+**Decision.** Score on `entity_id` where there is no `order_id`.
+
+1. A second index, `found_by_entity`, keyed on `finding.proof["entity_id"]`.
+2. The order-keyed lookup is tried first; the entity key is a **fallback**, not a
+   parallel path. Existing behaviour is untouched.
+3. Ground truth records `entity_id` in `detail` for exactly this join.
+
+**The general shape of the bug.** The scorer assumed every unit of work is an *order*.
+That was true while every defect was something happening to a sale. It stopped being
+true the moment a defect was something happening to a **settlement**, and settlement-
+level entities — refunds, disputes, adjustments, transfers — are a large part of what
+Razorpay's recon export actually contains. Disputes are next, and they carry
+`dispute_id`, not `order_id`. This fallback is what makes that possible.
+
+**Consequences.** `unrecorded_refund` scores 3 caught / 0 missed / 0 false positives.
+The false-positive check still keys on `order_id`, which is correct: a false positive is
+an order the engine flagged that was never planted, and order-less findings cannot be
+false positives in that sense. Worth revisiting if a future defect type can be
+*wrongly* attributed to an entity.

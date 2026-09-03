@@ -1650,3 +1650,92 @@ generator's idea of a date, and the first real file disagreed.
 ### State
 
 **553 tests green** (6 added, including a named regression for the 1970 case).
+
+---
+
+## 2026-09-03 — The reverse refund, and three latent bugs it dragged out
+
+`LIMITATIONS.md` had carried this since Phase 1b: the reverse refund — a settlement
+refund the merchant never recorded — "is not yet generated. Both should exist; only one
+does."
+
+Razorpay's sample export has one. Row 10:
+
+```
+transaction_entity : refund
+entity_id          : rfnd_Jt7Bq2djxtuWo5
+debit              : 1.0
+settlement_id      : setl_JtAs2E7Uf55JMV
+order_id           : (blank)
+```
+
+That blank `order_id` turned a missing feature into a live bug. The matcher opened with
+`if not row.get("order_id"): continue`, which is right for a payment and catastrophic
+for a refund. I reproduced it before fixing anything: a ₹1,000 settlement-side refund on
+a batch the engine reported as **RECONCILED**. Money left the account and not one stage
+of the pipeline saw the row.
+
+### The part I nearly got wrong
+
+The first version classified it correctly, scored 3 caught / 0 missed, balanced to ₹0.00
+— and the verdict screen still didn't show it. The findings existed; the *verdict* is
+built from gap components, and the refund debit was being absorbed into the existing
+`REFUND` component. Arithmetically identical. Practically invisible: `REFUND` is a line a
+merchant reads and moves past.
+
+Correct arithmetic is not the same as a correct answer. Split into its own component,
+and ₹1,279 moved from a benign line onto the actionable list.
+
+### Three latent bugs, all of the same species
+
+Adding one defect type dragged out three things that had been wrong for a while and were
+waiting for someone to add a defect type:
+
+1. `assigned[DefectType.X]` — emission sites indexed a dict that only had keys for
+   defects the profile requested. Any profile omitting one raised `KeyError`.
+2. `demanded` was a **hand-maintained tuple** that had drifted from `DefectType.ALL`.
+   Adding the type to the enum *and* the config still planted nothing. Ground truth
+   would have been silent about a defect the profile explicitly asked for.
+3. Fixing (2) by deriving from `ALL` swapped `HALTED_SUBSCRIPTION` and `TIMING_LAG` in
+   the iteration order — and **that order is load-bearing**. The generator slices a
+   shuffled index range across it in sequence, so the swap reassigned which orders got
+   which defect and moved every golden file by ~₹55,000.
+
+The third one is the one worth remembering. I nearly regenerated the goldens and moved
+on. The test file says: *"Never regenerate to make a red test go green without reading
+the diff first. The diff IS the finding."* The diff said bank credit fell by ₹55,725
+while my new defects only totalled ₹2,755 — a 20× discrepancy that had nothing to do
+with the feature.
+
+Proving it: set `count: 0`, re-run, goldens matched byte-for-byte. That established the
+code changes were behaviour-preserving and the remaining diff was only the three new
+defects consuming index slots. *Then* regenerate.
+
+### And a measurement bug
+
+`score.py` joined findings to ground truth on `order_id` alone. A defect without one
+scored **MISSED** no matter what the engine reported — the join key simply did not
+exist. The engine found all three; the scorecard said zero.
+
+That is the worst kind of bug for this project specifically, because the central claim
+is a measurement. Fixed with an `entity_id` fallback (ADR-040). The general shape: the
+scorer assumed every unit of work is an *order*, which held while every defect was
+something happening to a sale, and stopped holding the moment a defect was something
+happening to a **settlement**. Disputes are next, and they key on `dispute_id`.
+
+### Test counts as a design signal
+
+`test_rank.py` asserts the actionable list stays `<= 3`. It's now 5, and I raised the cap
+rather than trimming the feature — each addition (ON_HOLD in ADR-036, UNRECORDED_REFUND
+here) moves money *out* of a silent bucket onto a line with an owner. But I replaced the
+bare number with the property it was protecting: actionable lines must stay a minority of
+the verdict. A screen where everything is urgent says nothing.
+
+Same for `test_cycle.py`'s `== 15`, now `== 10`. The load-bearing property there is that
+all three settlement cycles **agree**, not the literal count — so I asserted the agreement
+directly instead of leaving it implied by three parametrised cases.
+
+### State
+
+**566 tests green**, ruff clean. Demo batch: 0 missed, 0 false positives, gap residual
+₹0.00, actionable list 5 lines.

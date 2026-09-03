@@ -17,8 +17,12 @@ class TestApplyBps:
         """The example from the brief: ₹10,000 card txn, 2% MDR = ₹200."""
         assert apply_bps(1_000_000, 200) == 20_000
 
-    def test_upi_is_genuinely_zero(self) -> None:
-        """Not 'small'. Zero. UPI carries no MDR, mandated for banks."""
+    def test_a_zero_rate_is_genuinely_zero(self) -> None:
+        """A zero rate yields zero at any magnitude — no float drift, no rounding up.
+
+        This is arithmetic about bps, not a claim about UPI: UPI's *MDR* is zero
+        but its platform fee is not, so UPI does not use a zero rate. See ADR-030.
+        """
         assert apply_bps(1_000_000, 0) == 0
         assert apply_bps(999_999_999, 0) == 0
 

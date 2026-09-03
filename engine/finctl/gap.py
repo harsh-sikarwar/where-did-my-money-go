@@ -260,22 +260,36 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
     # Without this, a refund settling against a matched order left its full value
     # unattributed — found by generating the "refund before the original settled" case,
     # which the invariant then caught as a ₹5,421 residual.
-    refund_debits = sum(
-        row.get("debit", 0)
+    # Refunds the merchant never recorded are split into their OWN component rather
+    # than folded in with the rest. Both are debits of the same size and sign, so the
+    # arithmetic is identical either way — but the verdict screen is built from these
+    # components, and REFUND is a line a merchant reads and moves past. An unrecorded
+    # refund is not that: their books overstate their balance and nothing in their own
+    # records would ever reveal it. Folding the two together hid an actionable finding
+    # inside a benign line. See ADR-039.
+    unrecorded_ids = {
+        id(row) for row in matches.unattributed_refunds
+    }
+    refund_rows = [
+        row
         for sm in matches.settlement_matches
         for row in sm.recon_rows
         if is_recon_type(row, ReconType.REFUND)
-    )
-    if refund_debits:
-        d.components.append(GapComponent(
-            classification=Classification.REFUND,
-            amount_paise=refund_debits,
-            count=sum(
-                1 for sm in matches.settlement_matches
-                for row in sm.recon_rows
-                if is_recon_type(row, ReconType.REFUND)
-            ),
-        ))
+    ]
+
+    for classification, rows in (
+        (Classification.REFUND,
+         [r for r in refund_rows if id(r) not in unrecorded_ids]),
+        (Classification.UNRECORDED_REFUND,
+         [r for r in refund_rows if id(r) in unrecorded_ids]),
+    ):
+        debits = sum(row.get("debit", 0) for row in rows)
+        if debits:
+            d.components.append(GapComponent(
+                classification=classification,
+                amount_paise=debits,
+                count=len(rows),
+            ))
 
     # --- settlements for orders the ledger does not contain ---------------------------
     # Razorpay settled a sale the merchant has no record of. That money reached the bank

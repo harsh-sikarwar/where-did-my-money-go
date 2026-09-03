@@ -193,15 +193,11 @@ class Generator:
         # the one failure mode this project cannot tolerate. So: refuse, loudly, naming
         # the arithmetic. Found by a test at volume=40 (51 defects demanded), where it
         # had silently produced zero halted subscriptions.
-        demanded = {dt: self._defect_count(dt) for dt in (
-            DefectType.MISSING_ORDER,
-            DefectType.WRONG_FEE_RATE,
-            DefectType.ONE_SIDED_REFUND,
-            DefectType.HALTED_SUBSCRIPTION,
-            DefectType.TIMING_LAG,
-            DefectType.SPLIT_SETTLEMENT,
-            DefectType.EARLY_REFUND,
-        )}
+        # Derived from DefectType.ALL rather than listed by hand. A hand-maintained
+        # list drifts: adding UNRECORDED_REFUND to the enum and to the profile still
+        # planted nothing, because this tuple had not been updated, and ground truth
+        # would then have been silent about a defect the profile asked for.
+        demanded = {dt: self._defect_count(dt) for dt in DefectType.ALL}
         total_demanded = sum(demanded.values())
         if total_demanded > self.volume:
             breakdown = ", ".join(f"{k}={v}" for k, v in demanded.items() if v)
@@ -213,7 +209,11 @@ class Generator:
             )
 
         cursor = 0
-        assigned: dict[str, set[int]] = {}
+        # Every known defect type gets an entry, empty where the profile does not ask
+        # for it. A profile is free to omit a defect — `clean` omits all of them — and
+        # the emission sites below should read "this profile wants none of these",
+        # not raise KeyError.
+        assigned: dict[str, set[int]] = {d: set() for d in DefectType.ALL}
         for defect_type, n in demanded.items():
             assigned[defect_type] = set(indices[cursor : cursor + n])
             cursor += n
@@ -415,6 +415,20 @@ class Generator:
             else:
                 recon_fee, recon_credit = fee_paise - tax_paise, amount - fee_paise
 
+            # ---- payment held by the PSP ---------------------------------------
+            # on_hold=true means Razorpay is withholding deliberately: not late, not
+            # missing, and the reason is in the row. See ADR-036.
+            on_hold = i in assigned[DefectType.PAYMENT_ON_HOLD]
+            if on_hold:
+                gt.add(PlantedDefect(
+                    defect_id=f"hold-{order_id}",
+                    defect_type=DefectType.PAYMENT_ON_HOLD,
+                    order_id=order_id,
+                    impact_paise=amount - fee_paise,
+                    expected_classification="ON_HOLD",
+                    detail={"hold_reason": "risk_review", "settled": False},
+                ))
+
             recon_row = {
                 "entity_id": payment_id,
                 "type": "payment",
@@ -424,8 +438,8 @@ class Generator:
                 "currency": "INR",
                 "fee": recon_fee,
                 "tax": tax_paise,
-                "on_hold": False,
-                "settled": True,
+                "on_hold": on_hold,
+                "settled": not on_hold,
                 "created_at": self._ts(order_day),
                 "settled_at": self._ts(settled_day, 18),
                 "settlement_id": None,   # filled once settlements are grouped
@@ -495,7 +509,15 @@ class Generator:
                 ))
                 continue
 
-            settlement_groups.setdefault(settled_day, []).append(recon_row)
+            # A held payment is NOT grouped into a settlement and never reaches the
+            # bank: that is what being held means. The recon row exists and carries
+            # on_hold=true, so the engine can explain the gap from the row itself
+            # rather than reporting UNEXPLAINED. See ADR-036.
+            if not on_hold:
+                settlement_groups.setdefault(settled_day, []).append(recon_row)
+            else:
+                recon_row["settled_at"] = None
+                recon_row["hold_reason"] = "risk_review"
             batch.recon.append(recon_row)
 
             # ---- DEFECT: refund before the original settled ---------------------
@@ -531,6 +553,54 @@ class Generator:
                             "refund_settled_on": early_day.isoformat(),
                             "payment_settled_on": settled_day.isoformat(),
                             "note": "refund settled BEFORE the payment it reverses"},
+                ))
+
+            # ---- DEFECT: unrecorded (reverse) refund ---------------------------
+            # Razorpay settled a refund the merchant never wrote down. Modelled on row
+            # 10 of `sample-settlements-recon-report.xlsx`: a `refund` row carrying an
+            # entity_id and a settlement_id, and NO order_id at all.
+            #
+            # The missing order_id is the whole point, not an omission. Razorpay keys
+            # these by `rfnd_…`, so nothing links the row to a sale, and the matcher
+            # used to drop it outright — money left the merchant's account and no stage
+            # ever saw it. See ADR-039.
+            if i in assigned[DefectType.UNRECORDED_REFUND]:
+                refund_amount = amount // 4 // 100 * 100
+                refund_day = self.calendar.add_working_days(settled_day, 2)
+                orphan = {
+                    "entity_id": self._rid("rfnd_"),
+                    "type": "refund",
+                    "amount": refund_amount,
+                    "debit": refund_amount,
+                    "credit": 0,
+                    "fee": 0,
+                    "tax": 0,
+                    "currency": "INR",
+                    # Razorpay's real export DOES carry payment_method on refund rows
+                    # (verified against sample-settlements-recon-report.xlsx, where the
+                    # refund row reads `bank_transfer`). Omitting it here produced a row
+                    # shape that does not occur in real data.
+                    "method": method,
+                    "settled_at": self._ts(refund_day, 18),
+                    "description": "Refund the merchant never recorded",
+                    "refund_notes": '{"refund_reason":"Issued from dashboard"}',
+                    # Deliberately NO order_id and NO payment_id: that is the shape
+                    # Razorpay's real export uses, and the shape that broke us.
+                }
+                settlement_groups.setdefault(refund_day, []).append(orphan)
+                batch.recon.append(orphan)
+
+                gt.add(PlantedDefect(
+                    defect_id=f"unrecorded-refund-{order_id}",
+                    defect_type=DefectType.UNRECORDED_REFUND,
+                    order_id=None,
+                    impact_paise=refund_amount,
+                    expected_classification="UNRECORDED_REFUND",
+                    detail={"refund_paise": refund_amount,
+                            "entity_id": orphan["entity_id"],
+                            "refund_settled_on": refund_day.isoformat(),
+                            "note": "settlement-side refund with no order_id; the "
+                                    "merchant ledger has no record of it"},
                 ))
 
             # ---- DEFECT: one-sided refund --------------------------------------

@@ -69,9 +69,14 @@ internally consistent; a genuinely mixed batch is treated as an error (ADR-007).
 Razorpay ever mixes conventions within one recon report, our engine raises rather than
 handling it. That is the intended behaviour, but it is an assumption, not a verified fact.
 
-**Refunds are modelled as one-sided by omission.** The one-sided-refund defect is a refund
+**Refunds are modelled as one-sided by omission.** ~~The one-sided-refund defect is a refund
 the merchant recorded that never reaches settlement. The reverse case — a settlement refund
-the merchant never recorded — is not yet generated. Both should exist; only one does.
+the merchant never recorded — is not yet generated. Both should exist; only one does.~~
+**Closed 2026-09-03 (ADR-039).** The reverse case is now generated and classified as
+`UNRECORDED_REFUND`. Razorpay's own sample export contained one, and it revealed something
+worse than a missing defect type: those rows carry a blank `order_id`, and the matcher
+dropped every row without one. Money left the merchant's account and no stage of the
+engine ever saw it.
 
 ### Phase 1c — normalize / stage / match
 
@@ -207,6 +212,13 @@ negative amount gap as REFUND because that is the shape a one-sided refund makes
 not verify against an actual `type: "refund"` recon row, because in the one-sided case
 there is none by definition. A negative gap with some other cause would be mislabelled.
 This is a genuine soft spot and a good candidate for the Day 3 adversarial pass.
+
+**Partially addressed (ADR-039), and stated precisely.** Where a real refund row *does*
+exist, the engine now reads it rather than inferring: `UNRECORDED_REFUND` fires on the
+row itself, carrying its `entity_id`, `arn` and reason. The direction inference remains
+for the genuinely one-sided case — where by definition there is no row to check — so the
+soft spot is narrowed, not closed. Two confidence levels now exist where there was one,
+which is the honest position rather than a claim to have solved it.
 
 ### Phase 1 — engine
 

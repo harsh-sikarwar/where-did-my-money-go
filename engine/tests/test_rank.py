@@ -256,5 +256,14 @@ class TestAgainstRealBatch:
                               defect_profile="demo").generate(), tmp_path)
         v: Verdict = run(tmp_path).verdict
 
-        assert len(v.actionable_lines) <= 3, "the actionable list must stay short"
+        # The cap is a product promise: a merchant reads this list on a Monday morning
+        # and it must fit in one glance. It is NOT a fixed number — it grew from 3 to 5
+        # as the engine learned to name causes it previously left in UNEXPLAINED
+        # (ON_HOLD, ADR-036; UNRECORDED_REFUND, ADR-039). Each addition moves money OUT
+        # of a silent bucket and onto a line with an owner, which is the point. What
+        # must not happen is the list becoming a dashboard.
+        assert len(v.actionable_lines) <= 5, "the actionable list must stay short"
+        # Actionable lines must stay a MINORITY of the verdict: most of a merchant's
+        # money is always fine, and a screen where everything is urgent says nothing.
+        assert len(v.actionable_lines) < len(v.lines)
         assert "customers" in v.headline()

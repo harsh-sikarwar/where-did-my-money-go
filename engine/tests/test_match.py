@@ -79,7 +79,20 @@ class TestAgainstGroundTruth:
         # while a settled refund means money went back out (widens it). Conflating the
         # two is the sign trap this test has now hit twice.
         debited = sum(m.refunded_paise for m in result.order_matches)
-        assert result.gap_paise - fees - missing + one_sided - debited == 0
+        # A payment the PSP is HOLDING is matched (a recon row exists) but never
+        # reaches the bank, so it widens the gap with the same sign as `missing`.
+        # Booked net of fee, since `fees` already accounts for that part. ADR-036.
+        held_ids = {d.order_id for d in truth.by_type(DefectType.PAYMENT_ON_HOLD)}
+        held = sum(m.ledger_amount_paise - m.fee_paise
+                   for m in result.order_matches if m.order_id in held_ids)
+        # A refund the merchant never recorded is a debit like any other refund, but it
+        # hangs off no order, so `debited` (which sums per-order refund rows) cannot see
+        # it. Same sign as `debited`: money went back out. Without this term the identity
+        # fails by exactly the orphan refund total -- which is how this test caught the
+        # new defect type the day it was added. ADR-039.
+        unrecorded = sum(row.get("debit", 0) for row in result.unattributed_refunds)
+        assert (result.gap_paise - fees - missing + one_sided
+                - debited - held - unrecorded) == 0
 
 
 class TestTwoPassesNameTheLeg:

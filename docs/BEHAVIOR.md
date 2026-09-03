@@ -130,7 +130,13 @@ An amount-based near-match is a guess wearing a confidence score.
 ## Stage: `classify`
 
 **Promises.** Assigns exactly one label per discrepancy, with the arithmetic attached:
-`FEE · TAX_ON_FEE · TIMING · REFUND · ROUNDING · DUPLICATE · MISSING · UNEXPLAINED`.
+`FEE · TAX_ON_FEE · TIMING · REFUND · ROUNDING · DUPLICATE · MISSING · ON_HOLD ·
+UNRECORDED_REFUND · UNEXPECTED_SETTLEMENT · UNEXPLAINED`.
+
+Two of these are **settlement-level**, not order-level, and carry no `order_id`:
+`UNRECORDED_REFUND` (money Razorpay returned that the merchant never recorded, keyed by
+`rfnd_…`) and `UNEXPECTED_SETTLEMENT` (money in for an order the ledger lacks). Both are
+identified by `entity_id`, which is how Razorpay's own recon export identifies them.
 
 **Refuses.** To pick a winner when more than one rule fits. Multiple matches →
 `NEEDS_REVIEW`, carrying all candidate explanations. (Cointab's "leave it unmatched when

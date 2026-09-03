@@ -88,11 +88,28 @@ class TestTheBugItFixed:
         Before the fix: T+1 flagged 0, T+2 flagged 15, T+7 flagged 291 — on batches with
         an identical lag distribution. The same defects must be detected whatever cycle
         the merchant is on.
+
+        The load-bearing property is AGREEMENT across cycles, not the literal count:
+        the count follows from the batch composition, which changes whenever a defect
+        type is added (it moved 15 -> 10 when UNRECORDED_REFUND took three index slots,
+        ADR-039). A cycle-dependent count is the bug; a composition-dependent one is not.
         """
         result = Classifier(load_config()).classify(
             match(stage_from_dir(batch_at(cycle, volume=300, seed=99)))
         )
-        assert len(result.by_class(Classification.TIMING)) == 15
+        assert len(result.by_class(Classification.TIMING)) == 10
+
+    def test_all_cycles_agree_on_the_same_batch_shape(self) -> None:
+        """The invariant behind the case above, asserted directly rather than implied."""
+        counts = {
+            cycle: len(
+                Classifier(load_config())
+                .classify(match(stage_from_dir(batch_at(cycle, volume=300, seed=99))))
+                .by_class(Classification.TIMING)
+            )
+            for cycle in (1, 2, 7)
+        }
+        assert len(set(counts.values())) == 1, f"cycle-dependent detection: {counts}"
 
     def test_a_slow_cycle_does_not_flag_every_order_as_late(self) -> None:
         """A T+7 merchant is not late. They are on a slower contract.

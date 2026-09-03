@@ -3,6 +3,13 @@
 The running record of this build, maintained as the work happens rather than
 reconstructed at the end.
 
+**Reading it cold, in order:** [../README.md](../README.md) for what this is and how the
+stages map to code → [BEHAVIOR.md](BEHAVIOR.md) for what each stage promises and refuses →
+[METRICS.md](METRICS.md) for what it measurably does (read the caveats above the table
+first) → [LIMITATIONS.md](LIMITATIONS.md) for what it does not. [DECISIONS.md](DECISIONS.md)
+and [JOURNAL.md](JOURNAL.md) are reference depth — 35 ADRs and a chronological log — rather
+than front-to-back reads.
+
 | File | What's in it | Read it when |
 |---|---|---|
 | [DECISIONS.md](DECISIONS.md) | Every fork taken — context, options, choice, why, consequences | You want to know *why* something is built the way it is |
@@ -11,6 +18,7 @@ reconstructed at the end.
 | [BEHAVIOR.md](BEHAVIOR.md) | Each stage's contract — promises, refusals, bad-input handling | Before writing or changing a stage |
 | [METRICS.md](METRICS.md) | Measured results from test day | You need the numbers |
 | [LIMITATIONS.md](LIMITATIONS.md) | Deliberate cuts and discovered limits | A judge asks what this doesn't do |
+| [BLIND-TEST.md](BLIND-TEST.md) | The protocol for running against unseen and hand-edited batches | You want to know how we tested honestly |
 
 ## How these are maintained
 
