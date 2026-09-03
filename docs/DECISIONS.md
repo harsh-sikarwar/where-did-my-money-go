@@ -1868,3 +1868,72 @@ wins if both exist — a tie-break for determinism, not a judgement about which 
 map unfamiliar column names interactively, or take a merchant's own rate card — those are
 the next three pieces. And these sample files remain tiny and synthetic: authoritative
 for schema and format, not a substitute for one real merchant's data.
+
+---
+
+## ADR-044 — Upload: missing legs are reported, not rejected
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** Every number this engine has produced came from a directory on the machine
+running it. The honest description was *"a well-engineered engine demonstrated on data it
+generated itself."* The gap between that and a tool is a door a merchant can walk through
+with their own files.
+
+**Decision.** `POST /api/upload`, deliberately thin.
+
+It writes the posted files into a batch directory and calls the same `run()` the CLI
+does. No reconciliation logic lives in it, per ADR-001 — and the constraint is stronger
+here than elsewhere, because an upload path that grew its own parsing or classification
+would become a **second implementation of the engine** that could disagree with the
+first. The test file says so explicitly: if the upload path ever needs its own
+reconciliation tests, that is the signal it has become one.
+
+**Only the ledger is required.** The other four legs are optional, because the engine
+already has a real answer for each absence:
+
+| absent | what the engine does instead |
+|---|---|
+| bank | two-way reconciliation — released money is reported **in flight**, not missing |
+| subscriptions | halted-subscription correlation unavailable; those gaps stay in the residual |
+| payments | failed-payment correlation unavailable |
+
+Demanding all three would refuse batches the engine reconciles perfectly well. The
+missing-bank case is the strongest demo in the product — *"this money is on its way"* is
+a better answer than *"this money is gone"* — and rejecting the upload would throw it
+away.
+
+But absence is **named**, never silent. The response carries `missing_sources` and a
+`note` saying which question the answer does not cover. A merchant who uploads two files
+gets a real reconciliation and is told what it could not see, rather than being left to
+assume it saw everything.
+
+**Errors surface the engine's own message.** A `NormalizationError` is returned verbatim
+in a 422. That message names the offending column and lists the spellings the engine
+accepts — it *is* the fix instruction, and it is what the column-mapping UI will render.
+Flattening it to "bad file" would discard the most useful part of the refusal-to-guess
+design.
+
+**Four safety properties, each tested.**
+
+1. **Batch names are validated before touching the filesystem** — no `/`, no `\`, no
+   leading dot, alphanumerics plus `-_` only. Tested with `../escape`, `a/b`, `.hidden`,
+   empty and `has space`.
+2. **Reusing a batch name is a 409, not an overwrite.** Staging entries are immutable and
+   corrections create a new batch (BEHAVIOR.md, stage `stage`). Silently overwriting
+   would destroy the audit trail the previous run's numbers depend on.
+3. **A failed upload removes its directory.** Otherwise a half-written batch is staged on
+   the next request and silently reconciles a partial upload — the exact class of
+   confidently-wrong answer this project exists to prevent.
+4. **Per-slot format enforcement.** Tabular slots take `.csv`/`.xlsx`/`.xlsm`; recon,
+   payments and subscriptions take `.json`, because they are Razorpay collection
+   envelopes rather than tabular exports (ADR-008). 64 MB cap.
+
+**Consequences.** 18 tests, driven through the real ASGI app rather than by calling the
+handler directly. `/api/batches` no longer hardcodes `ledger.csv` — it finds the ledger
+in whichever format it was supplied as, and reports whether a batch was uploaded or
+generated.
+
+**What is still missing.** A merchant whose CSV uses unfamiliar column names gets a
+correct, informative 422 and no way to act on it from the browser. That is the column
+mapping picker, and it is next. The rate card is after it.

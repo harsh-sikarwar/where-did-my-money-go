@@ -351,3 +351,20 @@ this project argues against from the README down. The next classification added 
 real decision (grouping related causes, or a "more" affordance), not another cap raise.
 Stated here so that decision is made deliberately rather than by a test edit.
 
+### Upload exists; the mapping picker does not
+
+`POST /api/upload` accepts a merchant's own files and reconciles them (ADR-044). Two
+things it does not yet do:
+
+**An unfamiliar column name is a dead end in the browser.** The engine returns a 422
+naming the column it could not map and listing every spelling it accepts — which is the
+right refusal, and is exactly the data a picker needs — but there is no UI to act on it
+and no way to record the merchant's choice. Until that exists, a merchant whose export
+says `txn_ref` instead of `order_id` has to rename a column by hand.
+
+**The rate card is still ours, not theirs.** Fee checking compares against
+`standard-india-2026`. Merchants negotiate away from standard pricing and enterprise
+rates are common, so for a real merchant the FEE line currently answers "was this the
+standard rate?" rather than "was this MY contracted rate?" — a materially different, and
+less useful, question.
+

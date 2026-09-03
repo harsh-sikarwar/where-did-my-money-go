@@ -8,7 +8,9 @@ If a number appears only in the browser, it is not testable and does not exist.
 
 from __future__ import annotations
 
+import shutil
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,13 +19,15 @@ ENGINE_DIR = Path(__file__).parent.parent / "engine"
 if str(ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(ENGINE_DIR))
 
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from finctl.classify.classifier import Classification  # noqa: E402
 from finctl.config.loader import load_config  # noqa: E402
 from finctl.money import format_rupees  # noqa: E402
+from finctl.normalize.normalizer import NormalizationError  # noqa: E402
 from finctl.pipeline import PipelineResult, run  # noqa: E402
+from finctl.schema import Source  # noqa: E402
 
 app = FastAPI(
     title="Where did my money go?",
@@ -96,18 +100,188 @@ def health() -> dict[str, Any]:
     return {"status": "ok", "engine": "finctl", "batches": batches}
 
 
+def _ledger_file(path: Path) -> Path | None:
+    """The batch's ledger, in whichever tabular format it was supplied as (ADR-043)."""
+    for suffix in (".csv", ".xlsx", ".xlsm"):
+        candidate = path / f"ledger{suffix}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
 @app.get("/api/batches")
 def list_batches() -> dict[str, Any]:
     if not DATA_ROOT.is_dir():
         return {"batches": []}
     out = []
     for path in sorted(DATA_ROOT.iterdir()):
-        if path.is_dir() and (path / "ledger.csv").exists():
+        if path.is_dir() and _ledger_file(path):
             out.append({
                 "name": path.name,
                 "has_ground_truth": (path / "ground_truth.json").exists(),
+                "uploaded": (path / ".uploaded").exists(),
             })
     return {"batches": out}
+
+
+# What a merchant may upload, and where each file lands. The KEY is the form field; the
+# VALUE is the on-disk stem `stage_from_dir` looks for.
+#
+# `ledger` is the only required leg. Everything else is genuinely optional and the engine
+# already has an answer for its absence: no bank file is a two-way reconciliation, and no
+# subscriptions file means correlation has one fewer path. Demanding all three would
+# refuse batches the engine can reconcile perfectly well. See ADR-044.
+UPLOAD_SLOTS: dict[str, str] = {
+    "ledger": "ledger",
+    "bank": "bank",
+    "recon": "settlement_recon",
+    "payments": "payments",
+    "subscriptions": "subscriptions",
+}
+
+TABULAR_SUFFIXES = {".csv", ".xlsx", ".xlsm"}
+JSON_SUFFIXES = {".json"}
+
+# Slots that must be JSON, because they are Razorpay collection envelopes rather than
+# tabular exports (ADR-008).
+JSON_SLOTS = {"recon", "payments", "subscriptions"}
+
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024   # 64 MB: ~50k rows of xlsx with room to spare
+
+
+def _safe_batch_name(name: str) -> str:
+    """Reject anything that could escape DATA_ROOT, before touching the filesystem."""
+    cleaned = name.strip()
+    if not cleaned or cleaned.startswith(".") or "/" in cleaned or "\\" in cleaned:
+        raise HTTPException(400, f"invalid batch name: {name!r}")
+    if not all(ch.isalnum() or ch in "-_" for ch in cleaned):
+        raise HTTPException(
+            400,
+            f"invalid batch name: {name!r}. Use letters, digits, hyphens and "
+            "underscores only.",
+        )
+    return cleaned
+
+
+@app.post("/api/upload")
+async def upload(
+    batch: str = Form(...),
+    ledger: UploadFile = File(...),
+    bank: UploadFile | None = File(None),
+    recon: UploadFile | None = File(None),
+    payments: UploadFile | None = File(None),
+    subscriptions: UploadFile | None = File(None),
+) -> dict[str, Any]:
+    """Accept a merchant's own files and reconcile them.
+
+    Deliberately thin, like the rest of this module (ADR-001): it writes the files to a
+    batch directory and calls the same `run()` the CLI does. No reconciliation logic
+    lives here, and the upload path must not become a second way to reconcile.
+
+    Missing legs are reported, not rejected — the engine's answer for an absent bank file
+    is "this money is in flight", which is a better answer than refusing the upload.
+    """
+    name = _safe_batch_name(batch)
+    target = DATA_ROOT / name
+    if target.exists():
+        raise HTTPException(
+            409,
+            f"batch {name!r} already exists. Staging entries are immutable — "
+            "corrections create a new batch (BEHAVIOR.md, stage `stage`). "
+            "Choose another name.",
+        )
+
+    supplied = {
+        "ledger": ledger, "bank": bank, "recon": recon,
+        "payments": payments, "subscriptions": subscriptions,
+    }
+
+    target.mkdir(parents=True)
+    written: dict[str, dict[str, Any]] = {}
+    try:
+        for slot, upload_file in supplied.items():
+            if upload_file is None or not upload_file.filename:
+                continue
+
+            suffix = Path(upload_file.filename).suffix.lower()
+            allowed = JSON_SUFFIXES if slot in JSON_SLOTS else TABULAR_SUFFIXES
+            if suffix not in allowed:
+                raise HTTPException(
+                    400,
+                    f"{slot}: cannot read {upload_file.filename!r} — expected "
+                    f"{' or '.join(sorted(allowed))}, got {suffix or 'no extension'}.",
+                )
+
+            payload = await upload_file.read()
+            if len(payload) > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    413,
+                    f"{slot}: {upload_file.filename!r} is "
+                    f"{len(payload) // (1024 * 1024)} MB, over the "
+                    f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.",
+                )
+
+            dest = target / f"{UPLOAD_SLOTS[slot]}{suffix}"
+            dest.write_bytes(payload)
+            written[slot] = {"filename": upload_file.filename, "bytes": len(payload)}
+
+        (target / ".uploaded").write_text(datetime.now(UTC).isoformat())
+
+        try:
+            result = run(target, load_config())
+        except NormalizationError as exc:
+            # The normalizer's errors name the offending column, row or value and list
+            # the spellings it accepts. That message IS the fix instruction, so it is
+            # surfaced verbatim rather than flattened into "bad file".
+            raise HTTPException(422, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(422, f"{type(exc).__name__}: {exc}") from exc
+
+    except Exception:
+        # A half-written batch would be staged on the next request and silently
+        # reconcile a partial upload. Remove it.
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+
+    _cache[name] = result
+
+    staged = set(result.batch.sources)
+    missing = [s.value for s in Source if s not in staged]
+
+    return {
+        "batch": name,
+        "files": written,
+        "rows_processed": result.rows_processed,
+        "missing_sources": missing,
+        # Named explicitly rather than left for the caller to infer: a merchant who
+        # uploads only a ledger and a recon file gets a real answer, and should be told
+        # which question it cannot answer rather than assuming it answered all of them.
+        "note": _missing_note(missing),
+        "manifest": result.batch.manifest(),
+        "headline": result.verdict.headline(),
+    }
+
+
+def _missing_note(missing: list[str]) -> str | None:
+    if not missing:
+        return None
+    notes = []
+    if "bank" in missing:
+        notes.append(
+            "No bank statement, so this is a two-way reconciliation: money Razorpay has "
+            "released but which has not landed is reported as in flight rather than as "
+            "missing."
+        )
+    if "subscriptions" in missing:
+        notes.append(
+            "No subscriptions file, so halted-subscription correlation is unavailable — "
+            "those gaps stay in the residual rather than being explained."
+        )
+    if "payments" in missing:
+        notes.append(
+            "No payments file, so failed-payment correlation is unavailable."
+        )
+    return " ".join(notes) or None
 
 
 @app.get("/api/verdict/{batch}")

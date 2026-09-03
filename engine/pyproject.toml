@@ -31,6 +31,9 @@ dev = [
     "pytest>=8.3",
     "pytest-cov>=6.0",
     "ruff>=0.8",
+    # For fastapi.testclient, which drives the upload endpoint tests through the real
+    # ASGI app rather than by calling the handler function directly.
+    "httpx>=0.28",
 ]
 
 [build-system]
@@ -52,6 +55,14 @@ ignore = [
     "RUF002",
     "RUF003",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI declares request parameters as call expressions in argument defaults —
+# `File(...)`, `Form(...)`, `Depends(...)`. That is the framework's documented idiom,
+# not the mutable-default bug B008 exists to catch, and there is no way to express an
+# upload endpoint without it.
+"../api/*.py" = ["B008"]
+"**/api/*.py" = ["B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

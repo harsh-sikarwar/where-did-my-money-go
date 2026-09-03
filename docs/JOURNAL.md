@@ -1914,3 +1914,59 @@ produces the same gap, headline, score *and decoy result* as the identical `.csv
 
 Next: the HTTP upload endpoint, interactive column mapping, and the merchant's own rate
 card. The engine can now read the file; a merchant still cannot hand it one.
+
+---
+
+## 2026-09-03 — A door a merchant can walk through
+
+Every number this engine has produced came from a directory on the machine running it.
+The honest description was *"a well-engineered engine demonstrated on data it generated
+itself."* `POST /api/upload` is the difference.
+
+### The design decision that mattered
+
+Only the **ledger** is required. Bank, recon, payments and subscriptions are all
+optional, because the engine already has a real answer for each absence — and the
+missing-bank case is the best demo in the product: *"this money is on its way"* rather
+than *"this money is gone."* Rejecting an upload for want of a bank statement would throw
+that away.
+
+But absence is named. The response carries `missing_sources` and a note saying which
+question the answer does not cover. A merchant who uploads two files gets a real
+reconciliation and is told what it could not see, instead of being left to assume it saw
+everything.
+
+### Keeping it thin
+
+The endpoint writes files and calls the same `run()` the CLI does. The test file states
+the constraint explicitly: *if the upload path ever needs its own reconciliation tests,
+that is the signal it has become a second implementation of the engine.* An upload path
+that grew its own parsing could disagree with the CLI about the same file, and then there
+would be two engines to keep honest.
+
+### Four things that would have bitten
+
+- **Batch names validated before touching the filesystem.** Tested with `../escape`,
+  `a/b`, `.hidden`, empty, `has space`.
+- **A reused batch name is a 409, not an overwrite.** Staging entries are immutable;
+  overwriting would destroy the audit trail the previous run's numbers depend on.
+- **A failed upload removes its directory.** Otherwise a half-written batch gets staged
+  on the next request and silently reconciles a partial upload — precisely the
+  confidently-wrong answer this project exists to prevent.
+- **Per-slot format enforcement.** Recon/payments/subscriptions must be JSON: they are
+  Razorpay collection envelopes, not tabular exports.
+
+### The nice part
+
+The 422 for an unmappable column returns the normalizer's own message verbatim — naming
+the column, listing every accepted spelling. That refusal-to-guess design, written in
+Phase 1c for the CLI, turns out to be exactly the payload a column-mapping picker needs.
+The UI work is rendering something the engine already says.
+
+### State
+
+**616 tests green** (18 new, driven through the real ASGI app), ruff clean.
+
+Next: the mapping picker, so an unfamiliar column name stops being a dead end in the
+browser; then the merchant's own rate card, so the FEE line answers "was this MY
+contracted rate?" instead of "was this the standard rate?"
