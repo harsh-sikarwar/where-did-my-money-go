@@ -39,6 +39,63 @@ class NormalizationError(ValueError):
     """
 
 
+class UnmappedColumnsError(NormalizationError):
+    """A required column could not be mapped, carrying what a human needs to fix it.
+
+    Subclasses NormalizationError so every existing `except NormalizationError` and
+    every test matching on the message keeps working — the message is unchanged. What
+    is added is the same information as STRUCTURED DATA, so a UI can render a picker
+    instead of asking a merchant to read a paragraph and rename a column by hand.
+
+    This is not a weakening of the refusal to guess. The engine still refuses. It now
+    hands over the evidence for a HUMAN to decide, once, which is what Cointab and
+    Hyperswitch both do at onboarding (docs/PRIOR-ART.md). See ADR-045.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        source: str,
+        unmapped: list[str],
+        headers: list[str],
+        resolved: dict[str, str],
+        aliases: dict[str, tuple[str, ...]],
+    ) -> None:
+        super().__init__(message)
+        self.source = source
+        self.unmapped = unmapped
+        self.headers = headers
+        self.resolved = resolved
+        self.aliases = aliases
+
+    def as_dict(self) -> dict[str, Any]:
+        """What a mapping picker needs: what is missing, and what is available.
+
+        `candidates` deliberately lists EVERY unclaimed header rather than a ranked
+        guess. Ordering them by similarity would put a suggestion in front of a human
+        who is being asked precisely because the engine cannot tell — and a plausible
+        wrong suggestion accepted without thought is worse than no suggestion.
+        """
+        claimed = set(self.resolved.values())
+        available = [h for h in self.headers if h not in claimed]
+        return {
+            "error": "unmapped_columns",
+            "source": self.source,
+            "message": str(self),
+            "unmapped": [
+                {
+                    "canonical": name,
+                    "accepted_spellings": list(self.aliases.get(name, ())),
+                    "candidates": available,
+                }
+                for name in self.unmapped
+            ],
+            "already_mapped": dict(sorted(self.resolved.items())),
+            "headers": list(self.headers),
+        }
+
+
 @dataclass(frozen=True)
 class ColumnMapping:
     """The resolved input-column -> canonical-column map, kept for the audit trail.
@@ -49,11 +106,17 @@ class ColumnMapping:
 
     resolved: dict[str, str]           # canonical -> actual input column name
     unmapped: tuple[str, ...]          # input columns we did not use
+    # Fields a HUMAN mapped explicitly rather than the alias table resolving. Recorded
+    # so the audit trail distinguishes "we recognised this column" from "someone told
+    # us what this column was" — a different kind of claim, and worth being able to
+    # tell apart when a number is disputed. See ADR-045.
+    overridden: tuple[str, ...] = ()
 
     def describe(self) -> str:
         pairs = ", ".join(f"{v!r}->{k}" for k, v in sorted(self.resolved.items()))
         extra = f"; ignored {list(self.unmapped)}" if self.unmapped else ""
-        return pairs + extra
+        chosen = f"; mapped by hand: {list(self.overridden)}" if self.overridden else ""
+        return pairs + chosen + extra
 
 
 def resolve_columns(
@@ -61,11 +124,20 @@ def resolve_columns(
     aliases: dict[str, tuple[str, ...]],
     required: tuple[str, ...],
     source_name: str,
+    overrides: dict[str, str] | None = None,
 ) -> ColumnMapping:
     """Map input headers onto canonical names, or raise explaining why not.
 
     Never positional. A reordered file is fine; an unrecognisable one is an error.
+
+    `overrides` is a canonical -> input-column map supplied by a HUMAN who was shown the
+    unmapped columns and chose. It is applied BEFORE the alias table, and it wins: a
+    person who has looked at their own export knows more about it than our alias list
+    does. Every override is recorded in the ColumnMapping and reaches the audit trail,
+    so "which column did you read as the amount?" stays answerable — and the answer
+    names who decided. See ADR-045.
     """
+    overrides = overrides or {}
     folded = {normalise_key(h): h for h in headers}
     if len(folded) != len(headers):
         seen: dict[str, list[str]] = {}
@@ -80,7 +152,33 @@ def resolve_columns(
     resolved: dict[str, str] = {}
     claimed: set[str] = set()
 
+    # Human choices first. An override naming a column that is not in the file is a
+    # mistake worth refusing loudly: silently ignoring it would fall through to the
+    # alias table and produce a mapping the person did not ask for.
+    for canonical, input_col in overrides.items():
+        if canonical not in aliases:
+            raise NormalizationError(
+                f"{source_name}: cannot map unknown field {canonical!r}. "
+                f"Known fields: {sorted(aliases)}."
+            )
+        if input_col not in headers:
+            raise NormalizationError(
+                f"{source_name}: mapping for {canonical!r} names column {input_col!r}, "
+                f"which is not in the file. Headers: {headers}."
+            )
+        if input_col in claimed:
+            raise NormalizationError(
+                f"{source_name}: column {input_col!r} is mapped to more than one field. "
+                "Each input column may be used once."
+            )
+        resolved[canonical] = input_col
+        claimed.add(input_col)
+
+    human_mapped = set(resolved)
+
     for canonical, candidates in aliases.items():
+        if canonical in resolved:
+            continue   # a human already decided this one
         # dict.fromkeys de-duplicates while preserving order. Several aliases can fold
         # to the same key ("order_id" and "orderid" both fold to "orderid"), so the same
         # input column may be hit more than once - that is one candidate, not an
@@ -106,17 +204,23 @@ def resolve_columns(
 
     missing = [c for c in required if c not in resolved]
     if missing:
-        raise NormalizationError(
+        raise UnmappedColumnsError(
             f"{source_name}: could not map required column(s) {missing}. "
             f"Input headers: {headers}. "
             f"Accepted spellings: "
             + "; ".join(f"{m}: {list(aliases[m])}" for m in missing)
-            + ". Refusing to guess — see docs/BEHAVIOR.md, stage `normalize`."
+            + ". Refusing to guess — see docs/BEHAVIOR.md, stage `normalize`.",
+            source=source_name,
+            unmapped=missing,
+            headers=list(headers),
+            resolved=dict(resolved),
+            aliases=aliases,
         )
 
     return ColumnMapping(
         resolved=resolved,
         unmapped=tuple(h for h in headers if h not in claimed),
+        overridden=tuple(sorted(human_mapped)),
     )
 
 
@@ -218,7 +322,9 @@ def _parse_timestamp(value: Any, source_name: str, row_num: int) -> datetime | N
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def normalize_ledger(path: Path) -> tuple[list[dict[str, Any]], ColumnMapping]:
+def normalize_ledger(
+    path: Path, overrides: dict[str, str] | None = None
+) -> tuple[list[dict[str, Any]], ColumnMapping]:
     """Read a merchant ledger CSV into canonical rows.
 
     Amounts arrive as rupee strings and leave as integer paise — this is the boundary.
@@ -230,10 +336,13 @@ def normalize_ledger(path: Path) -> tuple[list[dict[str, Any]], ColumnMapping]:
         source_name="ledger",
         money_fields={"amount_paise": False},   # False = negatives not allowed
         timestamp_fields=("captured_at",),
+        overrides=overrides,
     )
 
 
-def normalize_bank(path: Path) -> tuple[list[dict[str, Any]], ColumnMapping]:
+def normalize_bank(
+    path: Path, overrides: dict[str, str] | None = None
+) -> tuple[list[dict[str, Any]], ColumnMapping]:
     """Read a bank statement CSV into canonical rows.
 
     Credits may legitimately be negative — a settlement reversal debits the account —
@@ -246,6 +355,7 @@ def normalize_bank(path: Path) -> tuple[list[dict[str, Any]], ColumnMapping]:
         source_name="bank",
         money_fields={"credit_paise": True},
         timestamp_fields=(),
+        overrides=overrides,
     )
     for i, row in enumerate(rows, start=2):
         raw = row.get("value_date")
@@ -354,6 +464,7 @@ def _normalize_csv(
     source_name: str,
     money_fields: dict[str, bool],
     timestamp_fields: tuple[str, ...],
+    overrides: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], ColumnMapping]:
     if not path.exists():
         raise NormalizationError(f"{source_name}: file not found: {path}")
@@ -364,7 +475,7 @@ def _normalize_csv(
             f"{source_name}: {path} has no header row. Refusing to read positionally."
         )
 
-    mapping = resolve_columns(headers, aliases, required, source_name)
+    mapping = resolve_columns(headers, aliases, required, source_name, overrides)
     rows: list[dict[str, Any]] = []
 
     for row_num, raw in enumerate(raw_rows, start=2):

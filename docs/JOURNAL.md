@@ -1970,3 +1970,73 @@ The UI work is rendering something the engine already says.
 Next: the mapping picker, so an unfamiliar column name stops being a dead end in the
 browser; then the merchant's own rate card, so the FEE line answers "was this MY
 contracted rate?" instead of "was this the standard rate?"
+
+---
+
+## 2026-09-03 — Refuse once, then never again
+
+The refusal to guess a column mapping is right. It is also a wall a merchant hits every
+single week if the answer is never recorded.
+
+AI column mapping is a deliberate cut — determinism would do. But the alternative to AI
+is not "make them rename a column by hand." It is asking a human once, which is exactly
+what the prior art does: Cointab configures a merchant's format at onboarding,
+Hyperswitch has them email a sample file.
+
+### Three pieces, none of which weakens the refusal
+
+**A structured error.** `UnmappedColumnsError` subclasses `NormalizationError` so every
+existing handler and test keeps working — the message is byte-identical. What it adds is
+`as_dict()`: which fields are unmapped, and every unclaimed column in the file.
+
+Every unclaimed column, deliberately, not a ranked guess. Ordering candidates by
+similarity would put a suggestion in front of the one person being asked *because* the
+engine cannot tell, and a plausible wrong suggestion accepted without thought is worse
+than none. Same reason `resolve_columns` won't break an ambiguity by preference order.
+
+**An override that wins.** Applied before the alias table: a person who has looked at
+their own export knows more about it than our alias list. Three refusals guard it, because
+silently ignoring a bad override would fall through and map something nobody asked for.
+
+**A store keyed by file shape.** Order-independent and fold-insensitive — an export tool
+that reorders columns hasn't produced a different *kind* of file — and exactly as tolerant
+as `resolve_columns` already is, no more. Gain or lose a column and you get asked again,
+which is correct: nobody confirmed a mapping for that shape.
+
+### The distinction I wanted in the audit trail
+
+`ColumnMapping.overridden` records which fields a human chose. *"We recognised this
+column"* and *"someone told us what this column was"* are different kinds of claim, and
+when a number is disputed it matters which one is behind it. The manifest now reads:
+
+```
+'sale_value'->amount_paise, 'when'->captured_at, 'txn_ref'->order_id,
+'rail'->payment_method; mapped by hand: [amount_paise, captured_at, order_id]
+```
+
+Three fields a person decided, one the alias table got on its own.
+
+### A leak worth noting
+
+A test failed because two tests saw each other's remembered mappings. `MAPPINGS_PATH`
+derives from `DATA_ROOT` at import time, so patching `DATA_ROOT` alone left the real path
+in place.
+
+That is a test bug and also the shape of a real one: it is precisely how mappings would
+leak *between merchants* in any multi-tenant deployment. Auth is out of scope, but the
+store is now scoped to a data root rather than global, so scoping it per-merchant is a
+configuration change rather than a rewrite.
+
+### What is actually done
+
+The loop works end to end by API: upload `txn_ref,sale_value,when` → 422 with candidates
+→ inspect (headers + three real sample rows, so you can see what is *in* a column rather
+than guess from its name) → remember → upload succeeds → next month's reordered export is
+recognised without asking.
+
+The screen does not exist. Written into LIMITATIONS as such, because "the endpoints are
+built" is not the same as "a merchant can do this."
+
+### State
+
+**642 tests green**, ruff clean.

@@ -68,16 +68,23 @@ class PipelineResult:
         return out
 
 
-def run(data_dir: Path, config: Config | None = None) -> PipelineResult:
+def run(
+    data_dir: Path,
+    config: Config | None = None,
+    mappings: Any | None = None,
+) -> PipelineResult:
     """Ingest, match, classify, correlate, rank — and score if ground truth exists.
 
     Scoring is optional because real merchant data has no ground truth. Its absence is
     not an error; it just means the accuracy columns are unavailable, which is honest.
+
+    `mappings` is an optional MappingStore of column mappings a human confirmed earlier
+    (ADR-045). Absent, the engine behaves exactly as before: alias table or refuse.
     """
     cfg = config or load_config()
     started = time.perf_counter()
 
-    batch = stage_from_dir(data_dir)
+    batch = stage_from_dir(data_dir, mappings=mappings)
     log = AuditLog(batch.batch_id)
 
     # INGEST: what was read, from where, with which columns mapped to what. The answer

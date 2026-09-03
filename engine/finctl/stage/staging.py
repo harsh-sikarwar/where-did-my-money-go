@@ -165,7 +165,11 @@ class StagedBatch:
         }
 
 
-def stage_from_dir(data_dir: Path, batch_id: str | None = None) -> StagedBatch:
+def stage_from_dir(
+    data_dir: Path,
+    batch_id: str | None = None,
+    mappings: Any | None = None,
+) -> StagedBatch:
     """Ingest a generated or downloaded batch directory into a sealed StagedBatch.
 
     Ledger and bank may be .csv or .xlsx — Razorpay's dashboard exports Excel, so a
@@ -197,14 +201,29 @@ def stage_from_dir(data_dir: Path, batch_id: str | None = None) -> StagedBatch:
                 return candidate
         return None
 
+    def remembered(source: Source, path: Path) -> dict[str, str] | None:
+        """A mapping a human previously confirmed for this exact file shape (ADR-045).
+
+        Looked up rather than inferred: the store only answers for a header set someone
+        has already been shown and decided on, so this is never the engine guessing.
+        """
+        if mappings is None:
+            return None
+        from finctl.normalize.normalizer import _read_tabular
+
+        headers, _ = _read_tabular(path, source.value)
+        return mappings.lookup(source.value, headers)
+
     ledger_path = find("ledger")
     if ledger_path:
-        rows, mapping = normalize_ledger(ledger_path)
+        rows, mapping = normalize_ledger(
+            ledger_path, remembered(Source.LEDGER, ledger_path)
+        )
         batch.add(Source.LEDGER, rows, str(ledger_path), mapping.describe())
 
     bank_path = find("bank")
     if bank_path:
-        rows, mapping = normalize_bank(bank_path)
+        rows, mapping = normalize_bank(bank_path, remembered(Source.BANK, bank_path))
         batch.add(Source.BANK, rows, str(bank_path), mapping.describe())
 
     for source, filename in (

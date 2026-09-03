@@ -1937,3 +1937,83 @@ generated.
 **What is still missing.** A merchant whose CSV uses unfamiliar column names gets a
 correct, informative 422 and no way to act on it from the browser. That is the column
 mapping picker, and it is next. The rate card is after it.
+
+---
+
+## ADR-045 — Remembered mappings: refuse once, then never again
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** `BEHAVIOR.md` promises the normalizer refuses to guess a column mapping, and
+ADR-044 shipped an upload path that returns that refusal to the browser. It is the right
+refusal — a silently mapped column produces a confident wrong reconciliation a merchant
+cannot distinguish from a correct one — and it is also **a wall a merchant hits every
+single week** if the answer is never recorded.
+
+`AI column mapping` is a deliberate cut (LIMITATIONS): it is AI applied where determinism
+would do. The alternative is not AI. It is asking a human once, which is what the prior
+art does — Cointab configures a merchant's format at onboarding; Hyperswitch has them
+email a sample file so someone sets it up (docs/PRIOR-ART.md).
+
+**Decision.** Three pieces, none of which weakens the refusal.
+
+**1. A structured error.** `UnmappedColumnsError` subclasses `NormalizationError`, so
+every existing handler and every test matching on the message keeps working — the message
+is byte-identical. What it adds is `as_dict()`: which canonical fields are unmapped, the
+spellings accepted for each, and **every unclaimed column** in the file.
+
+Every unclaimed column, not a ranked guess. Ordering candidates by similarity would put a
+suggestion in front of the one person who is being asked precisely *because* the engine
+cannot tell — and a plausible wrong suggestion accepted without thought is worse than no
+suggestion at all. That is the same reason `resolve_columns` refuses to break an
+ambiguity by preference order.
+
+**2. An override that wins.** `resolve_columns(..., overrides)` applies human choices
+*before* the alias table. A person who has looked at their own export knows more about it
+than our alias list does. Three refusals guard it — an unknown canonical field, a column
+not in the file, and one column claimed by two fields — because silently ignoring a bad
+override would fall through to the alias table and produce a mapping nobody asked for.
+
+`ColumnMapping.overridden` records which fields a human decided, and it reaches the audit
+trail. *"We recognised this column"* and *"someone told us what this column was"* are
+different kinds of claim, and when a number is disputed it matters which one is behind it.
+
+**3. A store keyed by file shape.** `header_fingerprint` is order-independent and
+fold-insensitive — an export tool that reorders columns or changes their capitalisation
+has not produced a different *kind* of file, and the fingerprint is exactly as tolerant
+as `resolve_columns` already is. A file that gains or loses a column gets a different
+fingerprint and is asked about again, which is correct: nobody has confirmed a mapping
+for that shape.
+
+The store is a JSON file. Flat files are the storage decision everywhere else here, and a
+merchant has a handful of file shapes, not thousands.
+
+**Four properties worth stating.**
+
+- **Mappings never leak between sources.** The same headers mean different things in a
+  ledger and a bank statement, so the key is `source:fingerprint`.
+- **Re-confirming replaces, never merges.** A merchant correcting a mapping they got
+  wrong must not be left half-corrected, and merging would make the stored state depend
+  on the order corrections happened to arrive in.
+- **A corrupt store does not break reconciliation.** Cost of ignoring it: one more
+  mapping question. Cost of raising: they cannot reconcile at all.
+- **A remembered mapping is never an inference.** It is replayed only for a header set a
+  human was shown and decided on.
+
+**`POST /api/inspect`** completes the loop: it reads a file's headers, says whether a
+mapping is already remembered, and returns **three real sample rows**. A merchant
+choosing between `amount` and `total` needs to see what is actually in each column, not
+guess from its name.
+
+**Consequences.** 26 tests. The loop verified end to end: upload an export with
+`txn_ref`/`sale_value`/`when` → 422 with candidates → inspect → remember → upload
+succeeds, and next month's reordered export is recognised without asking again. The
+manifest shows `mapped by hand: [amount_paise, captured_at, order_id]` alongside
+`'rail'->payment_method`, which the alias table resolved on its own.
+
+**A test-isolation bug this found.** `MAPPINGS_PATH` derives from `DATA_ROOT` at import
+time, so patching only `DATA_ROOT` let remembered mappings leak between tests through the
+real data directory — which is also exactly how they would leak between merchants in any
+multi-tenant deployment. Production auth is out of scope (LIMITATIONS), but the store is
+now explicitly scoped to a data root rather than global, so that scoping is a
+configuration change rather than a rewrite.

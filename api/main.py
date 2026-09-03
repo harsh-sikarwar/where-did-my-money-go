@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,12 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from finctl.classify.classifier import Classification  # noqa: E402
 from finctl.config.loader import load_config  # noqa: E402
 from finctl.money import format_rupees  # noqa: E402
-from finctl.normalize.normalizer import NormalizationError  # noqa: E402
+from finctl.normalize.mappings import MappingStore, header_fingerprint  # noqa: E402
+from finctl.normalize.normalizer import (  # noqa: E402
+    NormalizationError,
+    UnmappedColumnsError,
+    _read_tabular,
+)
 from finctl.pipeline import PipelineResult, run  # noqa: E402
 from finctl.schema import Source  # noqa: E402
 
@@ -148,6 +154,16 @@ JSON_SLOTS = {"recon", "payments", "subscriptions"}
 
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024   # 64 MB: ~50k rows of xlsx with room to spare
 
+# Where confirmed column mappings live. One file beside the data, because a merchant has
+# a handful of file shapes and a database to hold five entries would be infrastructure
+# the problem does not have. See ADR-045.
+MAPPINGS_PATH = DATA_ROOT / "column-mappings.json"
+
+
+def _mapping_store() -> MappingStore:
+    """Read fresh each time: the file is small and this is a single-user demo tool."""
+    return MappingStore(MAPPINGS_PATH)
+
 
 def _safe_batch_name(name: str) -> str:
     """Reject anything that could escape DATA_ROOT, before touching the filesystem."""
@@ -228,7 +244,13 @@ async def upload(
         (target / ".uploaded").write_text(datetime.now(UTC).isoformat())
 
         try:
-            result = run(target, load_config())
+            result = run(target, load_config(), mappings=_mapping_store())
+        except UnmappedColumnsError as exc:
+            # The one error a merchant can FIX from the browser. Returned as structured
+            # data — which columns are unmapped, and every column available to choose
+            # from — so the UI renders a picker instead of a paragraph. The engine still
+            # refuses to guess; it now hands a human the evidence to decide. ADR-045.
+            raise HTTPException(422, detail=exc.as_dict()) from exc
         except NormalizationError as exc:
             # The normalizer's errors name the offending column, row or value and list
             # the spellings it accepts. That message IS the fix instruction, so it is
@@ -282,6 +304,91 @@ def _missing_note(missing: list[str]) -> str | None:
             "No payments file, so failed-payment correlation is unavailable."
         )
     return " ".join(notes) or None
+
+
+@app.get("/api/mappings")
+def list_mappings() -> dict[str, Any]:
+    """Every column mapping a human has confirmed, and for which file shape."""
+    return {"mappings": [m.as_dict() for m in _mapping_store().all()]}
+
+
+@app.post("/api/mappings")
+def remember_mapping(payload: dict[str, Any]) -> dict[str, Any]:
+    """Record a merchant's choice for one file shape, so it is asked only once.
+
+    Takes the headers of the file they were shown and the canonical -> column map they
+    chose. Keyed by a fold-insensitive, order-independent fingerprint of those headers,
+    so next month's export with the same columns in a different order is recognised —
+    and one with a DIFFERENT column set is not, because that shape was never confirmed.
+    """
+    source = str(payload.get("source", "")).strip()
+    headers = payload.get("headers") or []
+    mapping = payload.get("mapping") or {}
+
+    if source not in {s.value for s in Source}:
+        raise HTTPException(400, f"unknown source {source!r}")
+    if not headers or not isinstance(headers, list):
+        raise HTTPException(400, "headers must be a non-empty list")
+    if not mapping or not isinstance(mapping, dict):
+        raise HTTPException(400, "mapping must be a non-empty object")
+
+    unknown = [c for c in mapping.values() if c not in headers]
+    if unknown:
+        raise HTTPException(
+            400,
+            f"mapping names column(s) {unknown} that are not in the supplied headers. "
+            "Refusing to remember a mapping that cannot apply to this file.",
+        )
+
+    store = _mapping_store()
+    remembered = store.remember(source, headers, mapping)
+    return {"remembered": remembered.as_dict()}
+
+
+@app.post("/api/inspect")
+async def inspect(
+    source: str = Form(...),
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """What columns does this file have, and do we already know how to read it?
+
+    Lets the UI show a picker BEFORE a merchant commits to an upload, rather than making
+    them upload, fail, and try again.
+    """
+    if source not in {s.value for s in Source}:
+        raise HTTPException(400, f"unknown source {source!r}")
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in TABULAR_SUFFIXES:
+        raise HTTPException(
+            400,
+            f"{source}: cannot inspect {file.filename!r} — expected "
+            f"{' or '.join(sorted(TABULAR_SUFFIXES))}.",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = Path(tmp) / f"inspect{suffix}"
+        scratch.write_bytes(await file.read())
+        try:
+            headers, rows = _read_tabular(scratch, source)
+        except NormalizationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+        sample = [
+            {h: ("" if r.get(h) is None else str(r.get(h))) for h in headers}
+            for r in rows[:3]
+        ]
+
+    return {
+        "source": source,
+        "headers": headers,
+        "row_count": len(rows),
+        "fingerprint": header_fingerprint(headers),
+        "remembered_mapping": _mapping_store().lookup(source, headers),
+        # A few real rows, so a merchant choosing between `amount` and `total` can see
+        # what is actually in each column rather than guessing from its name.
+        "sample_rows": sample,
+    }
 
 
 @app.get("/api/verdict/{batch}")

@@ -356,11 +356,14 @@ Stated here so that decision is made deliberately rather than by a test edit.
 `POST /api/upload` accepts a merchant's own files and reconciles them (ADR-044). Two
 things it does not yet do:
 
-**An unfamiliar column name is a dead end in the browser.** The engine returns a 422
-naming the column it could not map and listing every spelling it accepts — which is the
-right refusal, and is exactly the data a picker needs — but there is no UI to act on it
-and no way to record the merchant's choice. Until that exists, a merchant whose export
-says `txn_ref` instead of `order_id` has to rename a column by hand.
+**~~An unfamiliar column name is a dead end in the browser.~~ Closed 2026-09-03
+(ADR-045).** The 422 now carries structured data — which fields are unmapped and every
+column available to choose from — `POST /api/inspect` returns headers plus three real
+sample rows, and `POST /api/mappings` records the choice against a fingerprint of the
+file's shape. Asked once, then never again for that shape, including next month's export
+with the columns reordered. **What is still missing is the UI itself**: the endpoints are
+built and tested, the picker screen is not, so today this loop is driveable by API but
+not by a merchant in a browser.
 
 **The rate card is still ours, not theirs.** Fee checking compares against
 `standard-india-2026`. Merchants negotiate away from standard pricing and enterprise

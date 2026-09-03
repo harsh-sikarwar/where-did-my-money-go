@@ -80,6 +80,13 @@ integer paise and all timestamps to UTC. This is the **only** place rupee string
 **Refuses.** To guess a column mapping. An unrecognised or ambiguous column raises with
 the column name and the candidates it was between.
 
+**Asks once.** The refusal carries structured data — which fields are unmapped, and every
+unclaimed column available — so a human can choose. That choice is remembered against a
+fold-insensitive, order-independent fingerprint of the file's headers and replayed only
+for that same shape, so it is a recorded decision rather than an inference. A human
+override beats the alias table, and the audit trail records which fields a person mapped
+by hand (ADR-045).
+
 **On bad input.**
 - Renamed/reordered columns → resolved by the mapping table, or raise. Never positional.
 - `"1,234.50"`, `"₹1234.50"`, `"1234.5"` → all parse to `123450` paise.

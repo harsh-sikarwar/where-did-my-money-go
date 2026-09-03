@@ -45,7 +45,12 @@ def client(tmp_path, monkeypatch):
     """A client whose DATA_ROOT is a fresh directory, so uploads never collide."""
     import main
 
-    monkeypatch.setattr(main, "DATA_ROOT", tmp_path / "data")
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(main, "DATA_ROOT", data_root)
+    # MAPPINGS_PATH is derived from DATA_ROOT at import time, so it must be patched
+    # too — otherwise remembered mappings leak between tests via the real data
+    # directory, which is also how they would leak between merchants.
+    monkeypatch.setattr(main, "MAPPINGS_PATH", data_root / "column-mappings.json")
     monkeypatch.setattr(main, "_cache", {})
     return TestClient(main.app)
 
@@ -164,10 +169,13 @@ class TestBadInput:
         r = client.post("/api/upload", data={"batch": "bad"},
                         files={"ledger": ("l.csv", b"foo,bar\n1,2\n", "text/csv")})
         assert r.status_code == 422
+        # Structured since ADR-045: the picker needs data, not a paragraph. The
+        # paragraph is still there, under `message`, because it is what a CLI user reads.
         detail = r.json()["detail"]
-        assert "could not map required column" in detail
-        assert "order_id" in detail
-        assert "Accepted spellings" in detail
+        assert detail["error"] == "unmapped_columns"
+        assert "could not map required column" in detail["message"]
+        assert "order_id" in detail["message"]
+        assert "Accepted spellings" in detail["message"]
 
     def test_a_wrong_format_for_the_slot_is_named(self, client) -> None:
         r = client.post("/api/upload", data={"batch": "pdf"},
@@ -210,3 +218,131 @@ class TestBadInput:
                     files={"ledger": ("l.csv", b"foo,bar\n1,2\n", "text/csv")})
         assert not (main.DATA_ROOT / "willfail").exists()
         assert client.get("/api/batches").json()["batches"] == []
+
+
+class TestColumnMappingFlow:
+    """Refuse -> inspect -> remember -> succeed. ADR-045.
+
+    The refusal is correct and it is also a dead end unless a merchant can act on it.
+    These four steps are the loop that turns a 422 into a one-time question.
+    """
+
+    @pytest.fixture
+    def weird_ledger(self, source_batch, tmp_path) -> bytes:
+        """The same ledger with column names our alias table does not know."""
+        rows = list(csv.reader((source_batch / "ledger.csv").open()))
+        rows[0] = ["txn_ref", "sale_value", "when", "buyer", "rail"]
+        out = tmp_path / "weird.csv"
+        with out.open("w", newline="") as fh:
+            csv.writer(fh).writerows(rows)
+        return out.read_bytes()
+
+    @staticmethod
+    def _payload(source_batch, weird: bytes) -> dict:
+        return {
+            "ledger": ("weird.csv", weird, "text/csv"),
+            "recon": ("settlement_recon.json",
+                      (source_batch / "settlement_recon.json").read_bytes(),
+                      "application/json"),
+        }
+
+    def test_an_unfamiliar_file_returns_a_pickable_error(
+        self, client, source_batch, weird_ledger
+    ) -> None:
+        r = client.post("/api/upload", data={"batch": "weird"},
+                        files=self._payload(source_batch, weird_ledger))
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert detail["error"] == "unmapped_columns"
+        assert {u["canonical"] for u in detail["unmapped"]} == {"order_id", "amount_paise"}
+        # Every unclaimed column is offered — not a ranked guess. A plausible wrong
+        # suggestion accepted without thought is worse than no suggestion.
+        assert "txn_ref" in detail["unmapped"][0]["candidates"]
+
+    def test_inspect_shows_the_columns_and_real_sample_values(
+        self, client, weird_ledger
+    ) -> None:
+        """A merchant choosing between two columns needs to see what is IN them."""
+        r = client.post("/api/inspect", data={"source": "ledger"},
+                        files={"file": ("weird.csv", weird_ledger, "text/csv")})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["headers"][:2] == ["txn_ref", "sale_value"]
+        assert body["remembered_mapping"] is None
+        assert body["sample_rows"]
+        assert body["sample_rows"][0]["txn_ref"].startswith("order_")
+
+    def test_remembering_makes_the_next_upload_succeed(
+        self, client, source_batch, weird_ledger
+    ) -> None:
+        """THE loop. Asked once, then never again for that file shape."""
+        headers = ["txn_ref", "sale_value", "when", "buyer", "rail"]
+        assert client.post("/api/mappings", json={
+            "source": "ledger", "headers": headers,
+            "mapping": {"order_id": "txn_ref", "amount_paise": "sale_value",
+                        "captured_at": "when"},
+        }).status_code == 200
+
+        r = client.post("/api/upload", data={"batch": "weird"},
+                        files=self._payload(source_batch, weird_ledger))
+        assert r.status_code == 200
+        assert r.json()["rows_processed"] > 0
+
+    def test_the_manifest_distinguishes_recognised_from_told(
+        self, client, source_batch, weird_ledger
+    ) -> None:
+        """'We recognised this column' and 'someone told us' are different claims."""
+        headers = ["txn_ref", "sale_value", "when", "buyer", "rail"]
+        client.post("/api/mappings", json={
+            "source": "ledger", "headers": headers,
+            "mapping": {"order_id": "txn_ref", "amount_paise": "sale_value",
+                        "captured_at": "when"},
+        })
+        r = client.post("/api/upload", data={"batch": "weird"},
+                        files=self._payload(source_batch, weird_ledger))
+        recorded = r.json()["manifest"]["sources"]["ledger"]["column_mapping"]
+        assert "mapped by hand" in recorded
+        # `rail` was resolved by the alias table, not by the human.
+        assert "'rail'->payment_method" in recorded
+
+    def test_a_reordered_export_next_month_is_still_recognised(
+        self, client, source_batch, tmp_path
+    ) -> None:
+        """Export tools reorder columns. That is not a different file."""
+        rows = list(csv.reader((source_batch / "ledger.csv").open()))
+        rows[0] = ["txn_ref", "sale_value", "when", "buyer", "rail"]
+        reordered = [[r[2], r[0], r[1], r[3], r[4]] for r in rows]
+        out = tmp_path / "reordered.csv"
+        with out.open("w", newline="") as fh:
+            csv.writer(fh).writerows(reordered)
+
+        client.post("/api/mappings", json={
+            "source": "ledger", "headers": ["txn_ref", "sale_value", "when", "buyer", "rail"],
+            "mapping": {"order_id": "txn_ref", "amount_paise": "sale_value",
+                        "captured_at": "when"},
+        })
+        r = client.post("/api/upload", data={"batch": "nextmonth"}, files={
+            "ledger": ("reordered.csv", out.read_bytes(), "text/csv"),
+            "recon": ("settlement_recon.json",
+                      (source_batch / "settlement_recon.json").read_bytes(),
+                      "application/json"),
+        })
+        assert r.status_code == 200
+
+    def test_a_mapping_naming_a_column_not_in_the_file_is_refused(self, client) -> None:
+        """Refusing to remember a mapping that cannot apply to the file it describes."""
+        r = client.post("/api/mappings", json={
+            "source": "ledger", "headers": ["a", "b"],
+            "mapping": {"order_id": "nope"},
+        })
+        assert r.status_code == 400
+
+    def test_remembered_mappings_are_listable(self, client) -> None:
+        """A merchant must be able to see, and therefore correct, what was recorded."""
+        client.post("/api/mappings", json={
+            "source": "ledger", "headers": ["a", "b"], "mapping": {"order_id": "a"},
+        })
+        listed = client.get("/api/mappings").json()["mappings"]
+        assert len(listed) == 1
+        assert listed[0]["source"] == "ledger"
+        assert listed[0]["mapping"] == {"order_id": "a"}
