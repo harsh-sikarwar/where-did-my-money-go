@@ -57,6 +57,12 @@ class DefectType:
     # deadline attached. See ADR-041.
     DISPUTED = "disputed"
 
+    # A DECOY, not a defect: a failed payment against a HEALTHY subscription. It has the
+    # same surface shape as a halted one — failed payment, subscription_id, a gap — and
+    # the engine must decline to claim it as halted. Planted with is_real_defect=False,
+    # so it is scored as a trap rather than as something to find. See ADR-042.
+    HEALTHY_SUBSCRIPTION_DECOY = "healthy_subscription_decoy"
+
     # ORDER IS LOAD-BEARING. The generator slices a shuffled index range across these
     # in sequence, so changing the order changes WHICH orders receive WHICH defect —
     # every golden file shifts, for no real reason. This tuple therefore preserves the
@@ -65,7 +71,7 @@ class DefectType:
     ALL = (
         MISSING_ORDER, WRONG_FEE_RATE, ONE_SIDED_REFUND, HALTED_SUBSCRIPTION,
         TIMING_LAG, SPLIT_SETTLEMENT, EARLY_REFUND, PAYMENT_ON_HOLD,
-        UNRECORDED_REFUND, DISPUTED,
+        UNRECORDED_REFUND, DISPUTED, HEALTHY_SUBSCRIPTION_DECOY,
     )
 
 

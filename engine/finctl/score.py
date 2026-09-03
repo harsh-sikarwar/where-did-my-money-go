@@ -77,6 +77,20 @@ class ScoreReport:
     unexplained_before_paise: int = 0
     unexplained_after_paise: int = 0
 
+    # Decoys: planted things that RESEMBLE a defect but are not one. A decoy the engine
+    # claims is a false attribution — the failure this project's headline number exists
+    # to rule out. Tracked separately from `false_positives` because a decoy is a
+    # DELIBERATE trap with a known answer, while a false positive is any unplanted order
+    # the engine flagged. See ADR-042.
+    decoys_resisted: list[str] = field(default_factory=list)
+    decoys_claimed: list[str] = field(default_factory=list)
+
+    @property
+    def false_attribution_rate(self) -> float:
+        """Fraction of deliberate traps the engine walked into. Must be 0.0."""
+        total = len(self.decoys_resisted) + len(self.decoys_claimed)
+        return len(self.decoys_claimed) / total if total else 0.0
+
     @property
     def total_caught(self) -> int:
         return sum(len(s.caught) for s in self.by_type.values())
@@ -101,6 +115,10 @@ class ScoreReport:
             "missed": self.total_missed,
             "below_tolerance": self.total_below_tolerance,
             "false_positives": len(self.false_positives),
+            "decoys_resisted": len(self.decoys_resisted),
+            "decoys_claimed": len(self.decoys_claimed),
+            "false_attribution_rate": round(self.false_attribution_rate, 4),
+            "decoys_claimed_ids": self.decoys_claimed[:10],
             "unexplained_before_paise": self.unexplained_before_paise,
             "unexplained_after_paise": self.unexplained_after_paise,
             "by_type": {
@@ -211,6 +229,45 @@ def score(
             s.below_tolerance.append(defect.defect_id)
         else:
             s.missed.append(defect.defect_id)
+
+    # --- decoys: the false-attribution guard ------------------------------------------
+    # A decoy is planted to LOOK like a defect while not being one — a failed payment
+    # against a healthy subscription, say. The engine must decline to claim it.
+    #
+    # This is scored separately from `false_positives` because the two answer different
+    # questions. A false positive is "did the engine flag something unplanted?", which
+    # a batch where every gap has a real cause can only ever answer trivially. A decoy
+    # asks "does the engine claim a cause that is NOT there when one is dangled in front
+    # of it?" — which is the question the headline number needs. See ADR-042.
+    #
+    # `claimed` is deliberately narrow: only the classifications that assert a SPECIFIC
+    # cause with an owner. Reporting a decoy as UNEXPLAINED is not a false attribution —
+    # it is the engine correctly declining to explain something, which is the behaviour
+    # BEHAVIOR.md asks for.
+    for decoy in truth.decoys:
+        assigned = found.get(decoy.order_id or "", set())
+        if not assigned and decoy.detail.get("entity_id"):
+            assigned = found_by_entity.get(str(decoy.detail["entity_id"]), set())
+
+        forbidden = {
+            Classification[c] for c in decoy.detail.get("must_not_claim", ())
+            if c in Classification.__members__
+        } or set(EXPECTED.get(decoy.defect_type, frozenset()))
+
+        if assigned & forbidden:
+            report.decoys_claimed.append(decoy.defect_id)
+        else:
+            report.decoys_resisted.append(decoy.defect_id)
+
+        # A decoy order is PLANTED, even though it is not a real defect. Without this
+        # the false-positive check below sees a flagged order it has no record of and
+        # reports it as a false positive — which would be wrong twice over: the engine
+        # gave the correct answer (PAYMENT_FAILED; the payment really did fail), and
+        # the decoy's whole purpose is to be flagged as something MILDER than the trap.
+        # Scoring the right answer as a false positive would make planting decoys look
+        # like a regression and discourage ever adding one.
+        if decoy.order_id:
+            planted_orders.add(decoy.order_id)
 
     # A false positive is an order the engine flagged as a problem that was never
     # planted as one. These matter more than misses: a miss is a gap in coverage, a

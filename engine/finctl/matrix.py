@@ -42,6 +42,11 @@ class RunResult:
     defects_missed: int
     defects_below_tolerance: int
     false_positives: int
+    # Deliberate traps the engine resisted vs walked into. `decoys_claimed` must be 0 in
+    # every row: it is what makes the false-positive column a statement about the ENGINE
+    # rather than about data where every gap had a real cause. See ADR-042.
+    decoys_resisted: int = 0
+    decoys_claimed: int = 0
     missed_ids: list[str] = field(default_factory=list)
 
     # money
@@ -127,6 +132,8 @@ def run_cell(
         defects_missed=s.total_missed if s else 0,
         defects_below_tolerance=s.total_below_tolerance if s else 0,
         false_positives=len(s.false_positives) if s else 0,
+        decoys_resisted=len(s.decoys_resisted) if s else 0,
+        decoys_claimed=len(s.decoys_claimed) if s else 0,
         missed_ids=[
             i for entry in (s.as_dict()["by_type"].values() if s else [])
             for i in entry["missed_ids"]

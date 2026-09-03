@@ -222,3 +222,83 @@ class TestEndToEndAgainstGroundTruth:
                        correlated, matches, cfg)
         assert report.total_missed == 0
         assert report.false_positives == []
+
+
+class TestFalseAttributionAtBatchScale:
+    """The decoy, scored. ADR-042.
+
+    The unit tests above prove the engine declines a single hand-built decoy. This
+    proves it at batch scale, through the real pipeline, with the decoys planted by the
+    generator and scored by the scorer — which is what turns "0 false positives" from a
+    statement about DATA (where every gap happened to have a real cause) into a
+    statement about the ENGINE (which had a wrong cause dangled in front of it).
+    """
+
+    @staticmethod
+    def _run(tmp_path, **kwargs):
+        from finctl.config.loader import load_config
+        from finctl.generate.generator import Generator
+        from finctl.generate.writer import write_batch
+        from finctl.pipeline import run
+
+        params = dict(seed=20260902, volume=200, defect_profile="demo")
+        params.update(kwargs)
+        write_batch(Generator(load_config(), **params).generate(), tmp_path)
+        return run(tmp_path)
+
+    def test_the_demo_batch_plants_decoys_at_all(self, tmp_path) -> None:
+        """A guard that is never exercised guards nothing."""
+        r = self._run(tmp_path)
+        assert r.scored.decoys_resisted or r.scored.decoys_claimed, (
+            "no decoys were scored — the false-attribution guard is not being exercised"
+        )
+
+    def test_no_decoy_is_ever_claimed(self, tmp_path) -> None:
+        """THE headline assertion.
+
+        A claimed decoy means the engine told a merchant to chase a customer whose
+        subscription is working fine. That is worse than a miss: a miss is a gap in
+        coverage, a false attribution is the engine being confidently wrong.
+        """
+        r = self._run(tmp_path)
+        assert r.scored.decoys_claimed == [], (
+            f"false attribution: {r.scored.decoys_claimed}"
+        )
+        assert r.scored.false_attribution_rate == 0.0
+
+    def test_the_decoy_gets_the_milder_correct_answer(self, tmp_path) -> None:
+        """Resisting is not enough — the engine must still explain the gap.
+
+        Declining to say HALTED_SUBSCRIPTION while saying nothing at all would resist
+        the trap and fail the merchant. The right answer is PAYMENT_FAILED: the payment
+        really did fail, it is simply retryable rather than terminal.
+        """
+        from finctl.classify.classifier import Classification
+        from finctl.generate.ground_truth import GroundTruth
+
+        r = self._run(tmp_path)
+        gt = GroundTruth.read(tmp_path / "ground_truth.json")
+        decoy_orders = {d.order_id for d in gt.decoys}
+        assert decoy_orders
+        by_order = {f.order_id: f.classification for f in r.correlated.findings}
+        for oid in decoy_orders:
+            assert by_order.get(oid) is Classification.PAYMENT_FAILED, (
+                f"decoy {oid} got {by_order.get(oid)}, expected PAYMENT_FAILED"
+            )
+
+    def test_a_decoy_is_not_counted_as_a_false_positive(self, tmp_path) -> None:
+        """The engine gave the RIGHT answer on a decoy. That must not score as a miss.
+
+        A decoy order is planted, just not as a defect. Scoring the correct answer as a
+        false positive would make planting decoys look like a regression and discourage
+        ever adding one.
+        """
+        r = self._run(tmp_path)
+        assert r.scored.false_positives == []
+
+    @pytest.mark.parametrize("cycle", [1, 2, 7])
+    def test_decoys_are_resisted_across_settlement_cycles(self, tmp_path, cycle) -> None:
+        """The guard must not depend on the merchant's settlement terms."""
+        r = self._run(tmp_path, settlement_cycle_days=cycle)
+        assert r.scored.decoys_claimed == []
+

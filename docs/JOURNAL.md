@@ -1806,3 +1806,70 @@ test edit.
 ### State
 
 **575 tests green**, ruff clean. Demo batch: 0 missed, 0 false positives, residual ₹0.00.
+
+---
+
+## 2026-09-03 — The decoy, finally run
+
+`is_real_defect`, `GroundTruth.decoys()`, and a comment saying *"the false-attribution
+test (Day 3) plants a gap that looks like a halted subscription but isn't"* have been in
+the codebase since Phase 1b. Day 3 arrived several times without it being run.
+
+It was the last thing guarding the headline. "0 false positives across 22 runs" was
+measured on batches where every gap has a real cause — because the generator makes gaps
+by planting causes. An engine that flagged everything would still score zero there,
+provided it attached the right label. The number measured the data, not the engine.
+
+### The trap
+
+A failed payment on a **healthy** subscription. Same surface shape as the demo
+centrepiece — failed payment, subscription_id, a gap — differing in the fields that
+matter:
+
+|  | halted | decoy |
+|---|---|---|
+| status | `halted` | `active` |
+| auth_attempts | 3 | 0 |
+| error_reason | `subscription_halted` | `insufficient_funds` |
+
+Razorpay has not given up, so nothing died silently. Right answer: `PAYMENT_FAILED`.
+Wrong answer: `HALTED_SUBSCRIPTION`, which tells a merchant to chase a customer whose
+subscription is fine.
+
+### Result
+
+**2,246 decoys across the 22 matrix runs. 0 claimed. False-attribution rate 0.0000.**
+
+Resisted at every volume from 50 to 50,000, both archetypes, all three payment mixes, and
+T+1/T+2/T+7 — the last asserted by a parametrised test, because a guard that depends on
+the merchant's settlement terms is not a guard.
+
+### Two things I nearly got wrong
+
+**Scoring UNEXPLAINED as a false attribution.** Only classifications that assert a
+specific cause with an owner count as claiming a decoy. Declining to explain is the
+behaviour BEHAVIOR.md asks for, and penalising it would train the engine toward exactly
+the over-claiming this is meant to catch.
+
+**Treating resistance as sufficient.** An engine that said nothing about anything would
+resist every trap and fail every merchant. A separate test asserts the decoy still gets
+the milder *correct* answer.
+
+### And one it caught immediately
+
+First run: 4 decoys resisted, **4 false positives** — the same four orders.
+`planted_orders` was built from `real_defects`, so a decoy order looked unplanted and the
+engine's correct answer scored against it. Left alone, adding decoys would have looked
+like a regression and put anyone off ever planting one.
+
+### The count is 2, not 4
+
+At 4, decoys pushed PAYMENT_FAILED to 7 findings — outranking the 6 halted subscriptions
+and changing the demo headline from *"those 6 customers"* to *"7 payments that failed"*.
+The decoys were being resisted correctly either way; the count was drowning the story the
+demo exists to tell. Reduced deliberately, and written into the ADR so it is visible
+rather than quiet.
+
+### State
+
+**583 tests green**, ruff clean. Matrix: 0 missed, 0 false positives, 0 decoys claimed.

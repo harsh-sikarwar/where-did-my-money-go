@@ -44,16 +44,21 @@ class TestAgainstGroundTruth:
     def test_unmatched_orders_are_exactly_the_planted_gaps(self, result, truth) -> None:
         found = {m.order_id for m in result.unmatched_orders()}
         expected = {
-            d.order_id for d in truth.real_defects
-            if d.defect_type in (DefectType.MISSING_ORDER, DefectType.HALTED_SUBSCRIPTION)
+            d.order_id for d in truth.defects
+            if d.defect_type in (DefectType.MISSING_ORDER, DefectType.HALTED_SUBSCRIPTION,
+                                 DefectType.HEALTHY_SUBSCRIPTION_DECOY)
         }
         assert found == expected, "matcher must find exactly the planted gaps, no others"
 
     def test_no_false_positives(self, result, truth) -> None:
         """An order the matcher calls missing that WAS settled is a lie to the merchant."""
+        # Decoys are included: a decoy's payment also FAILS, so it also leaves a gap.
+        # It is planted, just not as a defect — the trap is whether the engine explains
+        # the gap correctly (PAYMENT_FAILED), not whether the gap exists. ADR-042.
         planted = {
-            d.order_id for d in truth.real_defects
-            if d.defect_type in (DefectType.MISSING_ORDER, DefectType.HALTED_SUBSCRIPTION)
+            d.order_id for d in truth.defects
+            if d.defect_type in (DefectType.MISSING_ORDER, DefectType.HALTED_SUBSCRIPTION,
+                                 DefectType.HEALTHY_SUBSCRIPTION_DECOY)
         }
         for m in result.unmatched_orders():
             assert m.order_id in planted

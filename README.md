@@ -189,23 +189,26 @@ predates any code in this repo, deliberately.
 
 ## Status
 
-**Engine, API and UI are built and measured.** 575 tests green. The full pipeline runs
+**Engine, API and UI are built and measured.** 583 tests green. The full pipeline runs
 end to end: generate → normalize → stage → match → classify → correlate → rank → verdict,
 with an audit trail behind every figure.
 
 Measured across 22 configurations (volume × archetype × payment mix × settlement cycle):
 **0 defects missed, 0 false positives, 0 balance-identity failures**, ~63,000 rows/sec
-flat from 50 to 50,000 rows. Full numbers and their caveats in
+flat from 50 to 50,000 rows. Those runs also plant **2,246 deliberate decoys** — failed
+payments on *healthy* subscriptions, which look exactly like the halted ones the engine
+is built to find — and **none was claimed**. That is what makes the false-positive column
+a statement about the engine rather than about data where every gap had a real cause
+(ADR-042). Full numbers and their caveats in
 [docs/METRICS.md](docs/METRICS.md) — read the two caveats at the top before the table.
 
 Five bugs were found by *running* the adversarial cases rather than reasoning about the
 code ([docs/METRICS.md](docs/METRICS.md)), two more by hand-editing blind batches, and
 four more by reading Razorpay's own sample exports — all of them shapes the generator
-structurally cannot produce (ADR-031, ADR-033, ADR-037 – ADR-041). That story is in
+structurally cannot produce (ADR-031, ADR-033, ADR-037 – ADR-042). That story is in
 [docs/JOURNAL.md](docs/JOURNAL.md); what it means for the accuracy claims is in
 [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 **Known open items** — the live-API fee convention is unresolved (ADR-007/ADR-012), the
-UI renders one hardcoded batch, ingest reads CSV but not the `.xlsx` Razorpay actually
-exports, and the deliberate false-attribution decoy is still to be run. All are stated in
-[docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+UI renders one hardcoded batch, and ingest reads CSV but not the `.xlsx` Razorpay
+actually exports. All are stated in [docs/LIMITATIONS.md](docs/LIMITATIONS.md).

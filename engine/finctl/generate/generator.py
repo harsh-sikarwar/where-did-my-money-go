@@ -296,6 +296,73 @@ class Generator:
                 ))
                 continue
 
+            # ---- DECOY: a failed payment on a HEALTHY subscription --------------
+            # Not a defect. This is a trap, and the engine's job is to decline it.
+            #
+            # The surface shape is identical to a halted subscription: a failed payment,
+            # a subscription_id, and a gap where money should be. The difference is one
+            # field — the subscription is `active` with auth_attempts=0, meaning Razorpay
+            # is still trying. That is a normal retryable failure, not silent revenue
+            # death, and claiming otherwise tells a merchant to chase a customer whose
+            # subscription is working fine.
+            #
+            # Planted with is_real_defect=False so the scorer treats it as a trap. See
+            # ADR-042.
+            if i in assigned[DefectType.HEALTHY_SUBSCRIPTION_DECOY]:
+                sub_id = self._rid("sub_")
+                batch.subscriptions.append({
+                    "id": sub_id,
+                    "entity": "subscription",
+                    "plan_id": self._rid("plan_"),
+                    "customer_id": customer_id,
+                    "status": "active",       # <- the ONLY meaningful difference
+                    "auth_attempts": 0,       # <- Razorpay is still trying
+                    "paid_count": self.rng.randrange(2, 8),
+                    "total_count": 12,
+                    "remaining_count": self.rng.randrange(3, 9),
+                    "current_start": self._ts(order_day),
+                    "current_end": self._ts(order_day + timedelta(days=30)),
+                    "charge_at": self._ts(order_day + timedelta(days=30)),
+                    "created_at": self._ts(order_day - timedelta(days=90)),
+                    "payment_method": method,
+                    "notes": {"order_id": order_id},
+                })
+                batch.payments.append({
+                    "id": payment_id,
+                    "entity": "payment",
+                    "amount": amount,
+                    "currency": "INR",
+                    "status": "failed",
+                    "order_id": order_id,
+                    "invoice_id": self._rid("inv_"),
+                    "subscription_id": sub_id,
+                    "method": method,
+                    "captured": False,
+                    "amount_refunded": 0,
+                    "fee": None,
+                    "tax": None,
+                    "error_code": "BAD_REQUEST_ERROR",
+                    "error_description": "Card has insufficient funds",
+                    "error_source": "bank",
+                    "error_step": "payment_authorization",
+                    "error_reason": "insufficient_funds",   # retryable, NOT halted
+                    "created_at": self._ts(order_day),
+                })
+                gt.add(PlantedDefect(
+                    defect_id=f"decoy-healthy-sub-{sub_id}",
+                    defect_type=DefectType.HEALTHY_SUBSCRIPTION_DECOY,
+                    order_id=order_id,
+                    impact_paise=amount,
+                    expected_classification="PAYMENT_FAILED",
+                    is_real_defect=False,
+                    detail={"subscription_id": sub_id, "payment_id": payment_id,
+                            "customer_id": customer_id,
+                            "must_not_claim": ["HALTED_SUBSCRIPTION"],
+                            "note": "healthy subscription; a retryable failure, not "
+                                    "silent revenue death"},
+                ))
+                continue
+
             # ---- DEFECT: missing order ----------------------------------------
             # Payment failed, so it never reached settlement. Indistinguishable from
             # lost money until correlation reads error_reason.

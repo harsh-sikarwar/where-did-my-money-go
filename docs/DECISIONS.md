@@ -1730,3 +1730,85 @@ case, since a disputed orphan's credit is no longer counted as money that arrive
 **Cost.** The actionable list is now 5 lines and at its cap. The next classification
 added will force a real product decision — grouping, or a "more" affordance — rather
 than another cap raise. Recorded in LIMITATIONS.
+
+---
+
+## ADR-042 — The decoy is what makes "0 false positives" a claim about the engine
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** The headline number across 22 matrix runs was *0 defects missed, 0 false
+positives*. The second half of that was weaker than it looked, and `LIMITATIONS.md` said
+so: every gap in a generated batch has a real cause, because the generator creates gaps
+by planting causes. An engine that flagged *everything* it saw would still score zero
+false positives on such data, provided it happened to attach the right label.
+
+So the number measured the DATA — "no gap here lacks an explanation" — rather than the
+ENGINE — "this thing does not invent an explanation when one is dangled in front of it."
+
+The scaffolding for fixing this had existed since Phase 1b and was never used:
+`PlantedDefect.is_real_defect`, `GroundTruth.decoys()`, and a comment reading *"the
+false-attribution test (Day 3) plants a gap that looks like a halted subscription but
+isn't."* Day 3 arrived several times without it being run.
+
+**Decision.** Plant decoys in the generator and score them explicitly.
+
+The decoy is a **failed payment against a healthy subscription**. Its surface shape is
+identical to the demo centrepiece — failed payment, `subscription_id`, a gap where money
+should be — and it differs in exactly the fields that matter:
+
+| | halted (real defect) | healthy (decoy) |
+|---|---|---|
+| `status` | `halted` | `active` |
+| `auth_attempts` | 3 | 0 |
+| `error_reason` | `subscription_halted` | `insufficient_funds` |
+
+That is the whole trap: Razorpay has **not** given up, so nothing died silently. The
+right answer is `PAYMENT_FAILED` — retryable, worth one email — and the wrong answer is
+`HALTED_SUBSCRIPTION`, which tells a merchant to chase a customer whose subscription is
+working fine.
+
+**Scored separately from false positives**, because they answer different questions:
+
+- *false positives* — "did the engine flag something unplanted?" Trivially answerable on
+  cooperative data.
+- *decoys claimed* — "does the engine assert a cause that is NOT there when invited to?"
+  The question the headline needs.
+
+`ScoreReport` gains `decoys_resisted`, `decoys_claimed` and `false_attribution_rate`, and
+the matrix carries the last two as columns.
+
+**Two design points worth stating.**
+
+1. **Reporting a decoy as UNEXPLAINED is NOT a false attribution.** Only classifications
+   asserting a specific cause with an owner count as claiming it. Declining to explain
+   is the behaviour `BEHAVIOR.md` asks for, and penalising it would train the engine
+   toward exactly the over-claiming this guards against. Ground truth carries an explicit
+   `must_not_claim` list per decoy.
+2. **Resisting the trap is not sufficient.** A separate test asserts the decoy still gets
+   the *milder correct answer*, `PAYMENT_FAILED`. An engine that declined to say anything
+   would resist every trap and fail every merchant.
+
+**A scoring bug this found immediately.** The first run reported 4 decoys resisted **and
+4 false positives** — the same four orders. `planted_orders` was built from
+`truth.real_defects`, so a decoy order looked unplanted, and the engine's *correct*
+answer scored as a false positive. Left unfixed, planting decoys would have looked like a
+regression and discouraged anyone from ever adding one. Decoy orders now count as
+planted.
+
+**Result.** **2,246 decoys across the 22 matrix runs, 0 claimed, false-attribution rate
+0.0000.** Resisted at every volume from 50 to 50,000, on both archetypes, all three
+payment mixes, and T+1/T+2/T+7 — a parametrised test asserts the guard does not depend on
+the merchant's settlement terms.
+
+**Count tuning, and why it is not fudging.** The demo profile plants 2, not the 4 first
+tried. At 4 the decoys pushed `PAYMENT_FAILED` to 7 findings, which outranked the 6
+halted subscriptions and changed the demo headline from *"those 6 customers"* to *"7
+payments that failed"*. The decoys were being resisted correctly in both cases; the count
+was drowning the story the demo batch exists to tell. Reduced deliberately, recorded
+here so it is visible rather than quiet.
+
+**The honest limit.** We designed the decoy, so it tests the confusion we anticipated. It
+does not prove the engine resists a confusion we did not think of — the same structural
+limit as every other number in `METRICS.md`, and the reason the hand-edited blind rounds
+(ADR-031/033) and the real sample files (ADR-037/038) exist alongside it.

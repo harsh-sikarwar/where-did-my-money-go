@@ -32,6 +32,23 @@ Our match rate is not directly comparable to either, because ours is an **exact-
 rate** with no fuzzy matching (ADR-015) — a stricter measure that trades headline
 percentage for the guarantee that no match is a guess.
 
+**The false-positive column now means something.** Until 2026-09-03 it was measured on
+batches where *every* gap had a real cause to find, so "0 false positives" was partly a
+statement about the data. The `demo` and `scale` profiles now plant **decoys**: failed
+payments against *healthy* subscriptions, which have the same surface shape as a halted
+one (failed payment, `subscription_id`, a gap) and differ in one field — `status=active`,
+`auth_attempts=0`. The engine must report `PAYMENT_FAILED` and must **not** claim
+`HALTED_SUBSCRIPTION`.
+
+**Result: 2,246 decoys planted across the 22 runs, 0 claimed. False-attribution rate
+0.0000.** That is the number to push on, because a false attribution is worse than a
+miss: a miss is a gap in coverage, a false attribution is the engine telling a merchant
+to chase a customer whose subscription is working fine (ADR-042).
+
+The honest limit is the same as everywhere else on this page: we designed the decoy, so
+it tests the confusion we anticipated. It does not prove the engine resists a confusion
+we did not think of.
+
 **"Below tolerance" is not a miss.** The generator plants timing lags of 1–2 working
 days; `grace_days: 1` means a one-day lag is inside tolerance and deliberately not
 flagged. Counting those as misses would report a correctly-working tolerance as failure.

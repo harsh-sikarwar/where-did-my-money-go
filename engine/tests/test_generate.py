@@ -73,14 +73,33 @@ class TestGroundTruthCompleteness:
         """The demo centrepiece. Six customers, not 'about six'."""
         gt = batch.ground_truth
         assert len(gt.by_type(DefectType.HALTED_SUBSCRIPTION)) == 6
-        assert len(batch.subscriptions) == 6
-        assert all(s["status"] == "halted" for s in batch.subscriptions)
+        halted = [s for s in batch.subscriptions if s["status"] == "halted"]
+        assert len(halted) == 6
+        # The batch also carries HEALTHY subscriptions, deliberately: those are the
+        # decoys, and their whole purpose is to sit alongside the halted ones looking
+        # similar. ADR-042.
+        active = [s for s in batch.subscriptions if s["status"] == "active"]
+        assert active, "the demo profile must plant healthy-subscription decoys"
+        assert len(batch.subscriptions) == len(halted) + len(active)
 
     def test_every_defect_type_is_planted(self, batch) -> None:
         """The demo profile must exercise every type the generator knows about,
-        so no defect type ships with its engine behaviour unverified."""
+        so no defect type ships with its engine behaviour unverified.
+
+        Decoy types are excluded from the REAL-defect set by construction: a decoy is
+        planted with is_real_defect=False precisely so the scorer treats it as a trap
+        rather than as something to find. They are asserted separately below.
+        """
+        decoy_types = {DefectType.HEALTHY_SUBSCRIPTION_DECOY}
         planted = {d.defect_type for d in batch.ground_truth.real_defects}
-        assert planted == set(DefectType.ALL)
+        assert planted == set(DefectType.ALL) - decoy_types
+        assert not (planted & decoy_types), "a decoy must never be a real defect"
+
+    def test_every_decoy_type_is_planted(self, batch) -> None:
+        """A decoy that is never planted guards nothing. ADR-042."""
+        planted = {d.defect_type for d in batch.ground_truth.decoys}
+        assert planted == {DefectType.HEALTHY_SUBSCRIPTION_DECOY}
+        assert all(not d.is_real_defect for d in batch.ground_truth.decoys)
 
     def test_impact_is_recorded_in_integer_paise(self, batch) -> None:
         for d in batch.ground_truth.defects:
@@ -140,10 +159,18 @@ class TestDefectsAreActuallyPresentInTheData:
             assert p["subscription_id"] is not None
 
     def test_halted_subscriptions_show_exhausted_retries(self, batch) -> None:
-        """auth_attempts > 0 is what distinguishes a real halt from a decoy."""
+        """auth_attempts > 0 is what distinguishes a real halt from a decoy.
+
+        Now asserted against both sides of that distinction, since the decoys exist.
+        """
         for s in batch.subscriptions:
-            assert s["auth_attempts"] > 0
-            assert s["remaining_count"] > 0   # cycles still left to lose
+            if s["status"] == "halted":
+                assert s["auth_attempts"] > 0
+                assert s["remaining_count"] > 0   # cycles still left to lose
+            else:
+                # The decoy: Razorpay has not given up, so nothing died silently.
+                assert s["status"] == "active"
+                assert s["auth_attempts"] == 0
 
     def test_fee_overcharges_exceed_the_contracted_rate(self, batch, config: Config) -> None:
         from finctl.fees import expected_fee
