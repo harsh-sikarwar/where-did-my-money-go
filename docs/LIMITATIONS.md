@@ -365,9 +365,10 @@ with the columns reordered. **What is still missing is the UI itself**: the endp
 built and tested, the picker screen is not, so today this loop is driveable by API but
 not by a merchant in a browser.
 
-**The rate card is still ours, not theirs.** Fee checking compares against
-`standard-india-2026`. Merchants negotiate away from standard pricing and enterprise
-rates are common, so for a real merchant the FEE line currently answers "was this the
-standard rate?" rather than "was this MY contracted rate?" — a materially different, and
-less useful, question.
+**~~The rate card is still ours, not theirs.~~ Closed 2026-09-03 (ADR-046).** A merchant
+can now supply their contracted rates, layered over the shipped card so they state only
+what they negotiated. On the demo batch a contracted 1.75% turns 30 fee findings worth
+₹595 into 189 worth ₹3,552 — same data, different contract, and the proof quotes their
+number. **What is still missing is the screen**: `GET/PUT/DELETE /api/rate-card` are
+built and tested, the form is not.
 

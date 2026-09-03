@@ -2017,3 +2017,81 @@ real data directory — which is also exactly how they would leak between mercha
 multi-tenant deployment. Production auth is out of scope (LIMITATIONS), but the store is
 now explicitly scoped to a data root rather than global, so that scoping is a
 configuration change rather than a rewrite.
+
+---
+
+## ADR-046 — The rate card must be the merchant's, or the fee check answers the wrong question
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** `rate_card.yaml` ships `standard-india-2026`, and every fee finding this
+engine has produced compares against it. For a merchant on standard pricing that is
+correct. For anyone else it silently answers a different question:
+
+> **"Was this the standard rate?"** — what we check
+> **"Was this MY contracted rate?"** — what a merchant is asking
+
+Merchants negotiate away from standard pricing and enterprise pricing is common. A
+merchant contracted at 1.75% who is billed 2% sees *nothing* from us, because 2% is
+exactly what our card expects. The overcharge is invisible precisely to the merchant it
+is happening to.
+
+ADR-035 already made this mistake once in the other direction: the mechanism was right
+and the shipped *value* was wrong for UPI. That was a value we could fix. This one cannot
+be fixed by picking better defaults — the right number is in a contract we have never
+seen.
+
+**Decision.** `RateCard.with_merchant_rates(overrides, source)` layers a merchant's
+contracted rates over the shipped card.
+
+**Layered, not replacing.** A contract that renegotiates UPI alone should not require
+restating GST and every other method. Each restatement is a chance to get one wrong, and
+a merchant would have no way to notice: the wrong number would simply make some fees look
+correct that are not.
+
+**Two spellings**, because the common case should be short:
+
+```yaml
+methods:
+  upi: 175                                   # "UPI is 1.75% for us"
+  card_credit: {mdr_bps: 185, note: "tier 3"}
+```
+
+**The refusal survives intact.** An override may add a method the shipped card lacks — a
+merchant may genuinely be billed for a rail we did not ship — but `rate_for` still raises
+for anything neither knows about. The config layer's whole point is that it never invents
+a rate, and layering must not become a back door to a default.
+
+**The unit error is the one worth refusing.** Someone entering `2` meaning "2%" gets 2
+basis points, or 0.02%. Every single transaction then looks overcharged, the FEE line
+explodes, and the engine confidently reports a catastrophe that is not happening. So a
+rate over 10,000 bps (100%) is refused with a message naming the unit. The *low* end
+cannot be refused — 2 bps is a legal, if tiny, rate and is indistinguishable from intent
+— but the absurd end catches the transposition that actually occurs. `fixed_fee_paise`
+gets the same treatment: `2.00` meaning ₹2 is refused, because accepting it as 2 paise
+would understate every fee.
+
+**API.** `GET /api/rate-card` returns the active card with a `source` of `merchant` or
+`standard` **per method** — a merchant reading "you were overcharged" deserves to know
+whether the comparison used their number or ours. `PUT` validates by building the card
+before writing anything, and **clears the run cache**: a cached run was scored against
+the old card, and serving it would show fee findings computed from rates the merchant has
+just replaced.
+
+**What it changes, measured.** On the demo batch with a contracted 1.75%:
+
+| card | FEE findings | total overcharge |
+|---|---|---|
+| `standard-india-2026` | 30 | ₹595.37 |
+| merchant-contracted | 189 | ₹3,552.01 |
+
+Same data, same engine, different contract. The proof reads *"charged 3391 vs contracted
+2968"* using the merchant's number, which is the sentence this product exists to produce.
+The gap identity still balances to ₹0.00 under a merchant card — a test asserts it,
+because changing what "expected" means is exactly the kind of change that breaks a
+decomposition.
+
+**A distinction worth keeping straight.** The verdict's FEE *line* is the whole fee
+Razorpay kept — a fact from the data, unchanged by any rate card. The rate card drives
+the *drill-down*: whether that fee matched the contract. Conflating them would make the
+headline gap move when a merchant edits a config file, which would be alarming and wrong.

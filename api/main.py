@@ -8,6 +8,7 @@ If a number appears only in the browser, it is not testable and does not exist.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -24,7 +25,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from finctl.classify.classifier import Classification  # noqa: E402
-from finctl.config.loader import load_config  # noqa: E402
+from finctl.config.loader import ConfigError, load_config  # noqa: E402
 from finctl.money import format_rupees  # noqa: E402
 from finctl.normalize.mappings import MappingStore, header_fingerprint  # noqa: E402
 from finctl.normalize.normalizer import (  # noqa: E402
@@ -76,7 +77,7 @@ def _load(batch: str, *, refresh: bool = False) -> PipelineResult:
         raise HTTPException(404, f"no batch {batch!r}. Available: {available}")
 
     try:
-        result = run(path, load_config())
+        result = run(path, _config())
     except Exception as exc:
         # Surface the engine's own message. Its errors are written to be read by a
         # human and name the offending column, row or key — flattening them into
@@ -165,6 +166,32 @@ def _mapping_store() -> MappingStore:
     return MappingStore(MAPPINGS_PATH)
 
 
+# The merchant's own contracted rates, if they have told us. Beside the data for the
+# same reason the mappings file is. See ADR-046.
+RATE_CARD_PATH = DATA_ROOT / "merchant-rate-card.json"
+
+
+def _merchant_rates() -> dict[str, Any] | None:
+    """What the merchant says their contract charges, or None if they have not said."""
+    if not RATE_CARD_PATH.exists():
+        return None
+    try:
+        return json.loads(RATE_CARD_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        # Same reasoning as the mapping store: a corrupt file costs the merchant their
+        # custom rates, which is visible in the verdict, rather than costing them the
+        # ability to reconcile at all.
+        return None
+
+
+def _config():
+    """The engine config, with the merchant's contracted rates layered on if set."""
+    try:
+        return load_config(merchant_rate_card=_merchant_rates())
+    except ConfigError as exc:
+        raise HTTPException(422, f"rate card: {exc}") from exc
+
+
 def _safe_batch_name(name: str) -> str:
     """Reject anything that could escape DATA_ROOT, before touching the filesystem."""
     cleaned = name.strip()
@@ -244,7 +271,7 @@ async def upload(
         (target / ".uploaded").write_text(datetime.now(UTC).isoformat())
 
         try:
-            result = run(target, load_config(), mappings=_mapping_store())
+            result = run(target, _config(), mappings=_mapping_store())
         except UnmappedColumnsError as exc:
             # The one error a merchant can FIX from the browser. Returned as structured
             # data — which columns are unmapped, and every column available to choose
@@ -389,6 +416,68 @@ async def inspect(
         # what is actually in each column rather than guessing from its name.
         "sample_rows": sample,
     }
+
+
+@app.get("/api/rate-card")
+def get_rate_card() -> dict[str, Any]:
+    """The rate card the engine is checking fees against, and whose it is."""
+    card = _config().rate_card
+    overrides = _merchant_rates() or {}
+    merchant_methods = set(overrides.get("methods") or {})
+    return {
+        "name": card.name,
+        "is_merchant_supplied": bool(overrides),
+        "gst_rate_bps": card.gst_rate_bps,
+        "fixed_fee_paise": card.fixed_fee_paise,
+        "methods": [
+            {
+                "method": name,
+                "mdr_bps": rate.mdr_bps,
+                "percent": round(rate.mdr_bps / 100, 4),
+                # Which lines are the merchant's contract and which are our shipped
+                # default. A merchant reading "you were overcharged" deserves to know
+                # whether the comparison used THEIR number or ours.
+                "source": "merchant" if name in merchant_methods else "standard",
+                "note": rate.note,
+            }
+            for name, rate in sorted(card.methods.items())
+        ],
+    }
+
+
+@app.put("/api/rate-card")
+def put_rate_card(payload: dict[str, Any]) -> dict[str, Any]:
+    """Set the merchant's contracted rates.
+
+    Layered over the shipped card, so a merchant states only what they negotiated —
+    restating every method would be several chances to get one wrong, silently.
+
+    Validated by building the card before writing anything: a rate of `2` meaning "2%"
+    is 0.02% in basis points and would flag every row as a fee discrepancy, so the
+    absurd end of that mistake is refused rather than stored.
+    """
+    if not isinstance(payload, dict) or not payload:
+        raise HTTPException(400, "expected a rate card object")
+
+    try:
+        load_config(merchant_rate_card=payload)
+    except ConfigError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    RATE_CARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RATE_CARD_PATH.write_text(json.dumps(payload, indent=2) + "\n")
+    # Every cached run was scored against the OLD card. Keeping them would show a
+    # merchant fee findings computed from rates they have just replaced.
+    _cache.clear()
+    return get_rate_card()
+
+
+@app.delete("/api/rate-card")
+def clear_rate_card() -> dict[str, Any]:
+    """Revert to the shipped standard card."""
+    RATE_CARD_PATH.unlink(missing_ok=True)
+    _cache.clear()
+    return get_rate_card()
 
 
 @app.get("/api/verdict/{batch}")

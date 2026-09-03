@@ -51,6 +51,7 @@ def client(tmp_path, monkeypatch):
     # too — otherwise remembered mappings leak between tests via the real data
     # directory, which is also how they would leak between merchants.
     monkeypatch.setattr(main, "MAPPINGS_PATH", data_root / "column-mappings.json")
+    monkeypatch.setattr(main, "RATE_CARD_PATH", data_root / "merchant-rate-card.json")
     monkeypatch.setattr(main, "_cache", {})
     return TestClient(main.app)
 
@@ -346,3 +347,77 @@ class TestColumnMappingFlow:
         assert len(listed) == 1
         assert listed[0]["source"] == "ledger"
         assert listed[0]["mapping"] == {"order_id": "a"}
+
+
+class TestMerchantRateCard:
+    """"You were charged this, your contract says that" — with THEIR number. ADR-046."""
+
+    @staticmethod
+    def _upload(client, source_batch):
+        return client.post("/api/upload", data={"batch": "b"},
+                           files=files_for(source_batch, *ALL_SLOTS))
+
+    @staticmethod
+    def _fee_findings(client) -> tuple[int, int]:
+        body = client.get("/api/detail/b/FEE").json()
+        return body["count"], body["total"]["paise"]
+
+    def test_the_default_card_is_ours_and_says_so(self, client) -> None:
+        body = client.get("/api/rate-card").json()
+        assert body["name"] == "standard-india-2026"
+        assert body["is_merchant_supplied"] is False
+        assert all(m["source"] == "standard" for m in body["methods"])
+
+    def test_setting_contracted_rates_marks_only_those_lines(self, client) -> None:
+        """A merchant must be able to see which comparison used their number."""
+        body = client.put("/api/rate-card",
+                          json={"name": "acme", "methods": {"upi": 175}}).json()
+        assert body["is_merchant_supplied"] is True
+        by_method = {m["method"]: m for m in body["methods"]}
+        assert by_method["upi"]["source"] == "merchant"
+        assert by_method["upi"]["mdr_bps"] == 175
+        assert by_method["netbanking"]["source"] == "standard"
+
+    def test_a_lower_contracted_rate_finds_more_overcharge(
+        self, client, source_batch
+    ) -> None:
+        """THE product question. Same data, different contract, different answer."""
+        self._upload(client, source_batch)
+        standard_count, standard_paise = self._fee_findings(client)
+
+        client.put("/api/rate-card", json={"methods": {
+            m: 175 for m in ("upi", "card_credit", "card_debit", "netbanking", "wallet")
+        }})
+        merchant_count, merchant_paise = self._fee_findings(client)
+
+        assert merchant_count > standard_count
+        assert merchant_paise > standard_paise
+
+    def test_changing_the_card_invalidates_cached_runs(
+        self, client, source_batch
+    ) -> None:
+        """A cached run was scored against the OLD card. Serving it would show a
+        merchant fee findings computed from rates they have just replaced."""
+        self._upload(client, source_batch)
+        before = self._fee_findings(client)
+        client.put("/api/rate-card", json={"methods": {"card_credit": 100}})
+        assert self._fee_findings(client) != before
+
+    def test_clearing_reverts_to_the_standard_card(self, client, source_batch) -> None:
+        self._upload(client, source_batch)
+        before = self._fee_findings(client)
+        client.put("/api/rate-card", json={"methods": {"card_credit": 100}})
+        client.delete("/api/rate-card")
+        assert self._fee_findings(client) == before
+        assert client.get("/api/rate-card").json()["is_merchant_supplied"] is False
+
+    def test_a_unit_error_is_refused_before_it_is_stored(self, client) -> None:
+        """"2" meaning 2% is 0.02% in bps and would flag every row. Refuse the absurd end."""
+        r = client.put("/api/rate-card", json={"methods": {"upi": 20_000}})
+        assert r.status_code == 422
+        assert "BASIS POINTS" in r.json()["detail"]
+        assert client.get("/api/rate-card").json()["is_merchant_supplied"] is False
+
+    def test_an_empty_payload_is_refused(self, client) -> None:
+        assert client.put("/api/rate-card", json={}).status_code == 400
+

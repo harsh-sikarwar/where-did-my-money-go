@@ -34,6 +34,12 @@ looks.
 profiles from YAML into validated objects. Every rate that could vary by merchant,
 payment method or contract lives here.
 
+A merchant's **contracted** rates may be layered over the shipped card, stating only what
+they negotiated, so the fee check answers *"was this MY rate?"* rather than *"was this the
+standard rate?"* — a materially different question for anyone off standard pricing
+(ADR-046). A rate over 100% is refused, naming the unit: entering `2` for "2%" yields
+0.02% and would flag every row in the file.
+
 **Refuses.** To supply a default MDR. A missing rate for a payment method is an error,
 not an assumed 2%. This is the single most likely place for the build to be quietly
 wrong (`build-spec.md` §6c), so the failure is made loud by design.

@@ -2040,3 +2040,67 @@ built" is not the same as "a merchant can do this."
 ### State
 
 **642 tests green**, ruff clean.
+
+---
+
+## 2026-09-03 — Whose rate card is it?
+
+Every fee finding this engine has ever produced compared against `standard-india-2026`.
+For a merchant on standard pricing that is correct. For anyone else it silently answers a
+different question:
+
+> *"Was this the standard rate?"* — what we check
+> *"Was this MY contracted rate?"* — what they are asking
+
+A merchant contracted at 1.75% and billed 2% sees **nothing** from us, because 2% is
+exactly what our card expects. The overcharge is invisible precisely to the merchant it is
+happening to.
+
+ADR-035 made this mistake once already, in the other direction — right mechanism, wrong
+shipped value for UPI. That one was fixable by picking a better default. This one is not:
+the right number lives in a contract we have never seen.
+
+### Layered, not replacing
+
+A contract renegotiating UPI alone should not require restating GST and every other
+method. Each restatement is a chance to get one wrong, and the failure is silent — a
+wrong restated number just makes some incorrect fees look correct.
+
+### The refusal that mattered most
+
+Someone entering `2` meaning "2%" gets 2 basis points — 0.02%. Every transaction then
+looks overcharged, and the engine confidently reports a catastrophe that is not happening.
+
+So a rate over 100% is refused with a message naming the unit. The *low* end cannot be
+refused: 2 bps is a legal, if tiny, rate and is indistinguishable from intent. But the
+absurd end catches the transposition that actually occurs. Same for `fixed_fee_paise`:
+`2.00` meaning ₹2 is refused, because reading it as 2 paise would understate every fee.
+
+### What it changes
+
+Demo batch, contracted 1.75%:
+
+| card | FEE findings | overcharge |
+|---|---|---|
+| standard | 30 | ₹595.37 |
+| merchant | 189 | ₹3,552.01 |
+
+Same data, same engine. The proof now reads *"charged 3391 vs contracted 2968"* using
+their number — which is the sentence this product exists to produce.
+
+### One distinction I kept straight
+
+The verdict's FEE **line** is the whole fee Razorpay kept: a fact from the data, unchanged
+by any rate card. The rate card drives the **drill-down** — whether that fee matched the
+contract. Conflating them would make the headline gap move when a merchant edits a config
+file, which would be alarming and wrong. A test asserts the gap still balances to ₹0.00
+under a merchant card, because changing what "expected" means is exactly the kind of
+change that breaks a decomposition.
+
+### State
+
+**665 tests green**, ruff clean.
+
+Three flows now exist end to end by API — upload, column mapping, rate card — and none of
+them has a screen. That is written into LIMITATIONS in those words, because "the endpoints
+are built and tested" is not "a merchant can do this."
