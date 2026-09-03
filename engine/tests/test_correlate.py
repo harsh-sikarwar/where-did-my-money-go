@@ -26,7 +26,7 @@ from finctl.score import score
 from finctl.stage.staging import StagedBatch, stage_from_dir
 
 
-def scenario(payments=None, subscriptions=None) -> StagedBatch:
+def scenario(payments=None, subscriptions=None, recon=None) -> StagedBatch:
     """One unmatched order, with whatever payment/subscription evidence is supplied."""
     b = StagedBatch(batch_id="t")
     b.add(Source.LEDGER, [{"order_id": "O1", "amount_paise": 100000,
@@ -35,6 +35,8 @@ def scenario(payments=None, subscriptions=None) -> StagedBatch:
         b.add(Source.PAYMENTS, payments, "p")
     if subscriptions:
         b.add(Source.SUBSCRIPTIONS, subscriptions, "s")
+    if recon:
+        b.add(Source.RECON, recon, "r")
     return b.seal()
 
 
@@ -301,4 +303,98 @@ class TestFalseAttributionAtBatchScale:
         """The guard must not depend on the merchant's settlement terms."""
         r = self._run(tmp_path, settlement_cycle_days=cycle)
         assert r.scored.decoys_claimed == []
+
+
+class TestWithholdingIsItsOwnMechanism:
+    """Three joins, not one. ADR-049.
+
+    The classifier reads `dispute_id` and `on_hold` (ADR-036, ADR-041) — but only on an
+    order it MATCHED. An order the ledger has and the matcher could not pair arrives at
+    correlation as MISSING, and those fields were never looked at. A disputed payment
+    behind a missing order came out as a generic PAYMENT_FAILED, losing the deadline.
+    """
+
+    def test_a_dispute_beats_payment_failed(self) -> None:
+        """"Retry the charge" is the wrong instruction for a chargeback."""
+        b = scenario(payments=[{
+            "id": "pay_1", "order_id": "O1", "status": "failed",
+            "dispute_id": "disp_1", "dispute_reason": "chargeback",
+        }])
+        f = classify_and_correlate(b).findings[0]
+        assert f.classification is Classification.DISPUTED
+        assert f.proof["correlation"]["dispute_id"] == "disp_1"
+        assert f.proof["correlation"]["dispute_reason"] == "chargeback"
+
+    def test_a_hold_beats_payment_failed(self) -> None:
+        b = scenario(payments=[{
+            "id": "pay_1", "order_id": "O1", "status": "failed",
+            "on_hold": True, "hold_reason": "kyc_pending",
+        }])
+        f = classify_and_correlate(b).findings[0]
+        assert f.classification is Classification.ON_HOLD
+        assert f.proof["correlation"]["hold_reason"] == "kyc_pending"
+
+    def test_a_dispute_on_a_recon_row_is_found_too(self) -> None:
+        """A real export carries dispute_id on the recon row; which file a merchant
+        uploaded should not change the answer."""
+        b = scenario(
+            payments=[{"id": "pay_1", "order_id": "O1", "status": "failed"}],
+            recon=[{"transaction_entity": "refund", "order_id": "O1",
+                    "dispute_id": "disp_9", "dispute_reason": "fraud",
+                    "amount": 0, "credit": 0, "debit": 0, "fee": 0, "tax": 0}],
+        )
+        f = classify_and_correlate(b).findings[0]
+        assert f.classification is Classification.DISPUTED
+        assert f.proof["correlation"]["dispute_id"] == "disp_9"
+
+    def test_an_ordinary_failure_is_still_payment_failed(self) -> None:
+        """The new mechanisms must not swallow the one that already worked."""
+        b = scenario(payments=[{
+            "id": "pay_1", "order_id": "O1", "status": "failed",
+            "error_reason": "incorrect_otp",
+        }])
+        assert classify_and_correlate(b).findings[0].classification is (
+            Classification.PAYMENT_FAILED
+        )
+
+    def test_a_halted_subscription_is_still_found(self) -> None:
+        b = scenario(
+            payments=[{"id": "pay_1", "order_id": "O1", "status": "failed",
+                       "subscription_id": "sub_1"}],
+            subscriptions=[{"id": "sub_1", "status": "halted", "auth_attempts": 3}],
+        )
+        assert classify_and_correlate(b).findings[0].classification is (
+            Classification.HALTED_SUBSCRIPTION
+        )
+
+    def test_a_dispute_outranks_a_halted_subscription(self) -> None:
+        """Both are true; only one has a deadline. Order of precedence is the claim."""
+        b = scenario(
+            payments=[{"id": "pay_1", "order_id": "O1", "status": "failed",
+                       "subscription_id": "sub_1", "dispute_id": "disp_1"}],
+            subscriptions=[{"id": "sub_1", "status": "halted", "auth_attempts": 3}],
+        )
+        assert classify_and_correlate(b).findings[0].classification is (
+            Classification.DISPUTED
+        )
+
+    def test_no_dispute_and_no_hold_changes_nothing(self) -> None:
+        """THE false-attribution guard for the new mechanisms.
+
+        A payment record with neither field must not acquire one. Same discipline as
+        the halted/active distinction: resemblance is not evidence.
+        """
+        b = scenario(payments=[{"id": "pay_1", "order_id": "O1", "status": "failed",
+                                "dispute_id": None, "on_hold": False}])
+        f = classify_and_correlate(b).findings[0]
+        assert f.classification is Classification.PAYMENT_FAILED
+
+    def test_the_action_list_gets_a_usable_reason(self) -> None:
+        """A correlated cause with no `error_reason` leaves the action list blank."""
+        b = scenario(payments=[{"id": "pay_1", "order_id": "O1", "status": "failed",
+                                "dispute_id": "disp_1", "dispute_reason": "chargeback"}])
+        from finctl.actions import build
+
+        groups = build(classify_and_correlate(b).findings)
+        assert groups[0].items[0].reason == "chargeback"
 

@@ -2229,3 +2229,66 @@ generator has no contact fields. Razorpay's real payments export has `email` and
 
 **702 tests green**, ruff clean, tsc clean. Demo batch: 17 items worth ₹68,317 across
 three groups, with the six headline customers named.
+
+---
+
+## 2026-09-03 — Three joins, and which one wins
+
+Correlation is the differentiator and LIMITATIONS said the quiet part: it had **one
+mechanism**. The halted-subscription join, plus a failed-payment fallback that is really
+the same join stopping one hop earlier. *"We found a clever join"* and *"we built a
+correlation layer"* are different claims and only the first was true.
+
+Disputes and holds were already classified — but only on an order the matcher *paired*.
+An order the ledger has and the matcher could not pair arrives as MISSING, and those
+fields were never looked at on that path:
+
+```
+payment: {status: failed, dispute_id: disp_1, dispute_reason: chargeback}
+-> PAYMENT_FAILED, "resolved: payment failed"
+```
+
+A chargeback reported as a payment failure. The action list then says *"retry or ask for
+another payment method"* — on money a customer has formally contested, with a response
+window running. Not merely unhelpful: following the instruction wastes the deadline.
+
+### The decision is the precedence, not the joins
+
+The joins themselves are three lines each. What took thinking is that a disputed payment
+on a halted subscription is **both things**, and the engine has to lead with one.
+
+Withholding wins. Not because it is more likely, but because the two answers imply
+different actions and only one has a clock on it: "email them a new payment link" is wrong
+for money under dispute, while "submit evidence" is never wrong for a disputed payment
+that also happens to sit on a dead subscription. Ordering by consequence rather than by
+which rule happens to run first. There is a test for it.
+
+### Both places, because a real export has it in both
+
+`dispute_id` appears on the recon row *and* the payment record. Which one we have depends
+on which files a merchant uploaded, and which file they happened to send should not change
+the answer. So both are checked.
+
+### What I did not do
+
+`_withholding` returns `None` when neither field is present, so the payment path runs
+exactly as before. A test asserts a payment carrying `dispute_id: None` and
+`on_hold: False` does not acquire either label — same discipline as the halted/active
+distinction the decoys guard. Resemblance is not evidence.
+
+### The honest bit
+
+These mechanisms are **not measured by the matrix**. The generator produces no batch where
+a disputed payment sits behind an unmatched order, so the residual is zero on every
+profile — which is a property of the generator, not proof the correlator is complete.
+
+The new joins have unit coverage of the shapes real exports produce. That is a weaker
+claim than the recall numbers and it is written into LIMITATIONS as such. I could have
+planted the defect and reported a bigger number; the number would have been measuring my
+own imagination again.
+
+### State
+
+**710 tests green**, ruff clean. Matrix re-run: 0 missed, 0 false positives, 2,246 decoys
+resisted, 0 claimed. The action list now shows `chargeback` and `kyc_pending` where it
+previously had a blank reason column.

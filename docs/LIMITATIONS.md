@@ -384,7 +384,14 @@ upstream attaches a reason to them; and the customer column shows an id rather t
 email, because our generator has no contact fields — Razorpay's real payments export
 does, and the code reads them when present, but that path is unexercised by our data.
 
-**Correlation still has one mechanism.** Halted subscriptions, plus failed payments.
-Disputes and on-hold settlements are now *classified* (ADR-036, ADR-041) but are not
-correlator inputs, so the "correlation layer" claim rests on one join.
+**~~Correlation still has one mechanism.~~ Three as of 2026-09-03 (ADR-049).** Halted
+subscriptions, disputes and withholding, plus the failed-payment fallback — with an
+explicit order of precedence, since a disputed payment on a halted subscription is both
+things and only one has a deadline.
+
+The honest limit: these joins are **not measured by the matrix**. The generator produces
+no batch where a disputed payment sits behind an unmatched order, so the residual is zero
+on every profile — a property of the generator, not proof the correlator is complete. The
+new mechanisms have unit coverage of the shapes real exports produce, which is a weaker
+claim than the recall figures and should be read as such.
 

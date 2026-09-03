@@ -2230,3 +2230,71 @@ by name with their amounts and `subscription_halted` as the reason.
 because nothing upstream attaches one. The instruction covers it, but the per-row "why"
 column is empty where the other groups have `subscription_halted` or `incorrect_otp`.
 Worth stating rather than papering over with a generic string.
+
+---
+
+## ADR-049 — Correlation gets two more mechanisms, and an order of precedence
+
+**Date:** 2026-09-03 · **Phase:** real-data
+
+**Context.** Correlation is the stated differentiator, and `LIMITATIONS.md` recorded the
+weakness plainly: it had **one mechanism**. The halted-subscription join, plus the
+failed-payment fallback that is really the same join stopping one hop earlier. *"We found
+a clever join"* and *"we built a correlation layer"* are different claims, and only the
+first was supported.
+
+Disputes and holds were already *classified* (ADR-036, ADR-041) — but only on an order
+the matcher **paired**. An order the ledger has and the matcher could not pair arrives at
+correlation as `MISSING`, and `dispute_id` / `on_hold` were never looked at on that path.
+
+Reproduced before fixing:
+
+```
+ledger: O1
+payment: {status: failed, dispute_id: disp_1, dispute_reason: chargeback}
+-> PAYMENT_FAILED, "resolved: payment failed"
+```
+
+A chargeback reported as a payment failure. The action list then tells the merchant to
+*"retry or ask for another payment method"* — on money a customer has formally contested,
+with a response deadline running. The instruction is not merely unhelpful; following it
+wastes the window.
+
+**Decision.** `_withholding()` runs **before** the payment-failure path.
+
+Two joins, both reading fields Razorpay's own export carries:
+
+| field | mechanism | what it means |
+|---|---|---|
+| `dispute_id` | chargeback | there is a deadline; evidence must be submitted |
+| `on_hold` | withheld | pending KYC or a risk review; a dashboard action |
+
+Both are checked on the recon rows **and** on the payment record, because a real export
+carries `dispute_id` in both places and which one we have depends on which files the
+merchant uploaded. Which file they happened to send should not change the answer.
+
+**Precedence is the substance of this ADR.** A disputed payment on a halted subscription
+is *both* things, and the engine must pick one to lead with. Withholding wins, because
+the two answers imply different actions and only one has a clock on it: "email them a new
+payment link" is wrong for money under dispute, while "submit evidence" is never wrong for
+a disputed payment that also sits on a dead subscription. Ordering by consequence rather
+than by which rule happens to run first is the whole decision, and a test asserts it.
+
+**The refusal is unchanged.** `_withholding` returns `None` when neither field is present,
+so the payment path runs exactly as before. A test asserts that a payment record carrying
+`dispute_id: None` and `on_hold: False` does not acquire either label — the same
+discipline as the halted/active distinction that the decoys exist to guard (ADR-042).
+Resemblance is not evidence.
+
+**Consequences.** 8 tests. Three mechanisms now: halted subscription, dispute,
+withholding — plus the failed-payment fallback. Matrix re-run: **0 missed, 0 false
+positives, 2,246 decoys resisted, 0 claimed**, gap residual ₹0.00 on `demo`, `chaos` and
+`scale`. The action list picks up `chargeback` and `kyc_pending` as per-row reasons where
+it previously had none.
+
+**Stated honestly.** These mechanisms are not *measured* by the matrix, because the
+generator has no batch where a disputed payment sits behind an unmatched order — the
+residual is zero on every profile, which is a property of the generator rather than proof
+the correlator is complete. What the new joins have is unit coverage of the shapes real
+exports produce. That is the same limit as everything else in `METRICS.md`, and it is why
+the hand-edited rounds and the real sample files exist alongside it.

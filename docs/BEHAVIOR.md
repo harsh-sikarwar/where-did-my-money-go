@@ -169,10 +169,16 @@ then works on.
 
 ## Stage: `correlate` — the differentiator
 
-**Promises.** For every `UNEXPLAINED` row, looks up the payment record and the
-subscription record:
-- payment `status: failed` → `error_reason` explains the gap
+**Promises.** For every `UNEXPLAINED` row, follows the identifier chain into the payment,
+subscription and settlement records. Three mechanisms, in this order of precedence:
+- recon/payment `dispute_id` → a chargeback, with a response deadline
+- recon/payment `on_hold` → the PSP is withholding, pending KYC or a review
 - subscription `halted` → invoice generated, charge never attempted = silent revenue death
+- payment `status: failed` → `error_reason` explains the gap (the fallback)
+
+**Ordered by consequence, not by rule order.** A disputed payment on a halted
+subscription is both things, and the two answers imply different actions — only one has a
+clock on it. "Email them a new payment link" is wrong for money under dispute (ADR-049).
 
 Reports **unexplained ₹ before vs after**. That delta is the headline metric.
 

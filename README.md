@@ -189,7 +189,7 @@ predates any code in this repo, deliberately.
 
 ## Status
 
-**Engine, API and UI are built and measured.** 702 tests green. The full pipeline runs
+**Engine, API and UI are built and measured.** 710 tests green. The full pipeline runs
 end to end: generate → normalize → stage → match → classify → correlate → rank → verdict,
 with an audit trail behind every figure.
 
@@ -205,12 +205,11 @@ a statement about the engine rather than about data where every gap had a real c
 Five bugs were found by *running* the adversarial cases rather than reasoning about the
 code ([docs/METRICS.md](docs/METRICS.md)), two more by hand-editing blind batches, and
 four more by reading Razorpay's own sample exports — all of them shapes the generator
-structurally cannot produce (ADR-031, ADR-033, ADR-037 – ADR-048). That story is in
+structurally cannot produce (ADR-031, ADR-033, ADR-037 – ADR-049). That story is in
 [docs/JOURNAL.md](docs/JOURNAL.md); what it means for the accuracy claims is in
 [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 **Known open items** — the live-API fee convention is unresolved (ADR-007/ADR-012), the
-correlation rests on one mechanism (halted subscriptions plus failed payments — disputes
-and holds are classified but are not correlator inputs), and two action-list groups have
-no per-row reason. All are stated in
+correlation's two newest mechanisms (disputes, withholding) have unit coverage but are
+not exercised by the matrix, and two action-list groups have no per-row reason. All are stated in
 [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
