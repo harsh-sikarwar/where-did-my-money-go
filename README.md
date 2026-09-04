@@ -218,7 +218,19 @@ structurally cannot produce (ADR-031, ADR-033, ADR-037 – ADR-049). That story 
 [docs/JOURNAL.md](docs/JOURNAL.md); what it means for the accuracy claims is in
 [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
-**Known open items** — the live-API fee convention is unresolved (ADR-007/ADR-012), the
+**The limitation that matters most: no real merchant batch has ever been reconciled.**
+Every figure above is measured against data this project generated, where the generator
+defines truth — a closed loop, and one that cannot report a defect class nobody thought to
+generate. The engine's arithmetic does agree with Razorpay's own published sample rows
+(ADR-056), and that contact alone found two parsing bugs the suite could not. But ten
+sample rows are not a merchant's month. The claim this repository is entitled to make is
+*"measured, reproducible accuracy on synthetic Razorpay-shaped data, with arithmetic that
+agrees with Razorpay's own sample"* — not *"it works on production data"*. That second
+sentence needs one real merchant export, with the unexplained residual published whatever
+it turns out to be; no live account was available for this build. It is the first item in
+[the future scope](docs/LIMITATIONS.md#future-scope), and it is not development work.
+
+**Other known open items** — the live-API fee convention is unresolved (ADR-007/ADR-012), the
 correlation's two newest mechanisms (disputes, withholding) have unit coverage but are
 not exercised by the matrix, and two action-list groups have no per-row reason. All are stated in
 [docs/LIMITATIONS.md](docs/LIMITATIONS.md).

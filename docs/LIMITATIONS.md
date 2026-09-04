@@ -483,8 +483,65 @@ truth, exactly as METRICS.md says. What it establishes is narrower and worth sta
 exactly: the arithmetic agrees with numbers nobody here chose, and two parsing defects
 that only real data exposes are fixed.
 
-The credibility step that remains is one real merchant's export, with the unexplained
-residual reported honestly whatever it turns out to be. That needs a live account.
+### THE limitation: no real merchant batch was ever reconciled
+
+Stated first among the limitations because it is the one a reader should weigh hardest,
+and because every accuracy number in this repository inherits it.
+
+**What was not done.** The engine has never run against a real merchant's real settlement
+data — a month of genuine orders, genuine fees, genuine failures, with the residual
+reported honestly whatever it came to. No live Razorpay account with real transaction
+history was available for this build, and no merchant could be found willing to hand over
+their settlement export. The ten rows in `sample-settlements-recon-report.xlsx` are
+Razorpay's own published sample, which is a real *document* but a synthetic *batch*: ₹1.00
+test transactions from a demo account, not a business's money.
+
+**Why that matters more than it sounds.** The headline claims — 0 defects missed, 0 false
+positives, 100% correlation gain — are true statements about a closed loop. The generator
+plants the defects and the scorer looks for exactly those defects. Nothing in that loop can
+report a defect *class nobody thought to generate*, and the whole history of this build is
+evidence that such classes exist:
+
+| Found by | What it was |
+|---|---|
+| Reading Razorpay's pricing page | UPI billed at 0 when a ~2% platform fee applies (ADR-035) |
+| Reading Razorpay's sample export | Excel serials and DD/MM/YYYY in one column (ADR-044, ADR-056) |
+| An outsider running the engine | The action list disagreeing with the verdict (ADR-049) |
+| Running the arithmetic on a real file | A timezone off-by-one on settlement dates (ADR-056) |
+
+Not one of those came from the test suite. Every one came from contact with something the
+project did not author. A real batch is more of that, and there is no reason to assume the
+supply of such defects is exhausted — the honest expectation is that a real month would
+find more.
+
+**What it would take.** A merchant with a Razorpay account exporting: the settlement recon
+report, the payments report, and their own order ledger, for one month. Nothing else. The
+engine reads all three shapes today and needs no code change to accept them; upload,
+column mapping and the rate card are already built for exactly this.
+
+**What the run would have to report to count.** Not a green tick. The residual — the money
+the engine cannot explain — printed as a number, whatever it is. A real batch that
+reconciles to ₹0 unexplained on the first attempt would be *suspicious*, not impressive;
+the plausible outcome is a non-zero residual that names a mechanism nobody modelled. The
+engine already computes and displays that figure rather than absorbing it, which is the
+one design decision that makes the test meaningful.
+
+**What stands in for it, and how far that goes.** Three things, none a substitute:
+
+- Razorpay's own sample exports, which are authoritative for *schema and format* and
+  caught two real parsing bugs.
+- Blind testing — batches whose planted defects the engine's author cannot see — which
+  removes the author's knowledge from the result but not the generator's authorship.
+- 2,254 planted decoys across 26 runs, 0 claimed, which tests false attribution against
+  confusions *we designed*. As `METRICS.md` says: it does not prove resistance to one we
+  did not imagine.
+
+Each removes a different bias. None removes the generator.
+
+**The claim this repository is entitled to make.** "The engine reconciles synthetic
+Razorpay-shaped data with a measured, reproducible accuracy, and its arithmetic agrees
+with Razorpay's own published sample rows." Not "it works on production data." The second
+sentence needs a merchant, and this build did not have one.
 
 ### The holiday calendar is fixed-date only
 
@@ -507,3 +564,87 @@ No coverage threshold, deliberately: cli.py sat at 0% while core logic sat at 95
 a single repo-wide percentage would have been satisfied by the wrong work. Coverage is
 reported per module and read that way. `ruff format --check` is non-blocking — 41 files
 would reformat, and that commit would bury the history this project keeps readable.
+
+---
+
+## Future scope
+
+What comes next, in the order it would actually be built. Ordered by what each buys, not
+by how hard it is — and the first item is worth more than the rest combined.
+
+### 1. One real merchant batch
+
+**The single highest-value thing this project does not have.** Everything below is a
+feature; this is the difference between a very careful build and a demonstrated product.
+
+A merchant with a Razorpay account, one month of exports: settlement recon report, payments
+report, and their own order ledger. The engine reads all three shapes today — upload,
+column mapping and the rate card were built for exactly this — so it is not development
+work. It is an introduction to one merchant.
+
+The output that matters is the **unexplained residual**, published whatever it turns out
+to be. A first real batch reconciling to ₹0 would be suspicious rather than impressive;
+the plausible result is a non-zero number naming a mechanism nobody modelled. That number
+is what converts *"100% on our synthetic data"* into *"it works"* — and if it is large,
+that is a finding worth more than a green tick, because it is the first thing this project
+has been told by something it did not author.
+
+Every defect class this build did not anticipate came from outside contact: Razorpay's
+pricing page, Razorpay's sample export, and an outsider running the engine. There is no
+reason to think that source is exhausted.
+
+*Not done because no live merchant account or willing merchant could be found during the
+build. Not a technical blocker.*
+
+### 2. Webhooks — the production path
+
+Batch reconciliation is the demonstrable loop and the right one to build first: it is what
+a merchant does on Monday morning, and it is testable. But the production shape of this
+product is event-driven — `payment.failed`, `subscription.halted` and `settlement.processed`
+arriving as they happen, so a halted subscription is caught the day it halts rather than
+the Monday after.
+
+The engine is already shaped for it: `pipeline.run()` is a pure function over staged
+sources, and correlation is a join rather than a scan. What is missing is ingestion,
+signature verification, idempotency, and a store that accumulates rather than reconciling a
+batch at a time.
+
+The one genuinely hard part is **row-level dedup across batches**, which is already named
+as a gap above: content-hash dedup catches an identical file twice and does not catch
+overlapping rows. Webhooks make that mandatory rather than optional.
+
+### 3. Multi-currency, TDS and partial settlements
+
+Three separate arithmetic problems, each needing its own correctness testing rather than an
+extension of the existing paths:
+
+- **Multi-currency.** Settlement in INR against orders in USD introduces an FX rate and a
+  conversion timestamp, and the question "which rate applied" is genuinely contested.
+- **Section 194-O TDS.** Marketplace deduction is different arithmetic from MDR and GST,
+  not more of it. Already listed as a deliberate cut.
+- **Partial-settlement netting.** A settlement that pays part of an order and nets the rest
+  against a refund. The matcher handles split settlements; netting is a different shape.
+
+Each would follow the same discipline as the fee work: model it from real exports, test the
+arithmetic against an external worked example rather than against our own output.
+
+### 4. The moving-holiday calendar
+
+`tolerances.yaml` carries fixed-date national holidays; Diwali, Holi, Eid and Good Friday
+are absent because they move annually and vary by state (ADR-053). The right fix is not a
+hardcoded list but an **annual import** of the RBI/Maharashtra settlement holiday
+publication, with the year it was fetched recorded beside it — so an out-of-date calendar
+announces itself rather than silently mis-flagging a Diwali settlement.
+
+### 5. Things deliberately left alone
+
+Named so their absence reads as a decision:
+
+- **An LLM anywhere near the arithmetic.** The explanation stage writes prose and is
+  forbidden a single figure (ADR-050). That boundary should not move. A reconciliation
+  engine that hallucinates is worse than no engine.
+- **AI column mapping.** Determinism does the job, and it would weaken the AI-usage
+  argument rather than strengthen it.
+- **A dashboard.** The product is four lines and a verdict. Every feature request that
+  begins "could it also show" should be weighed against the thing that makes it useful:
+  one answer, not a chart of many.
