@@ -234,17 +234,32 @@ export function Card({
 }
 
 /** An uppercase section marker. Used to separate bands of a long screen. */
+/**
+ * A section label.
+ *
+ * Renders as a heading by default. The visual design already establishes the document
+ * hierarchy correctly — "WHAT NEEDS YOU", "Your rates", "How do I know this is true?"
+ * all read as section titles — but every one of them was a styled `div`, so the
+ * analysis page contained no h1–h6 at all and a screen-reader user had no way to
+ * navigate it. The look is unchanged; only the tag is.
+ *
+ * `as="div"` remains available for the places this is genuinely a label rather than a
+ * heading, so the fix cannot create a second problem — a heading outline full of
+ * things that do not head anything.
+ */
 export function Eyebrow({
   children,
   className = "",
+  as: Tag = "h2",
 }: {
   children: ReactNode;
   className?: string;
+  as?: "h2" | "h3" | "div";
 }) {
   return (
-    <div className={`text-label text-[var(--color-ink-faint)] ${className}`}>
+    <Tag className={`text-label font-normal text-[var(--color-ink-faint)] ${className}`}>
       {children}
-    </div>
+    </Tag>
   );
 }
 
@@ -332,6 +347,10 @@ export function NumberInput({
   return (
     <input
       type="number"
+      // Stated rather than inferred: `type=number` usually gets a numeric keypad, but
+      // `inputMode` is what actually decides it on mobile, and a decimal step needs the
+      // decimal pad rather than the integer one. F18.
+      inputMode={step && step < 1 ? "decimal" : "numeric"}
       value={value}
       min={min}
       max={max}

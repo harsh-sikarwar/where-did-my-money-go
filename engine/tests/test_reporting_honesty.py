@@ -155,3 +155,74 @@ class TestDecoysAppearInTheAnswerKey:
         # as PAYMENT_FAILED, so counting them would reintroduce the mismatch.
         expected = gt.decoy_findings()
         assert sum(expected.values()) == len(gt.decoys)
+
+
+class TestGeneratedCopyReadsAsEnglish:
+    """F17 — "One thing needs you this week: 2 no record at Razorpay at all." """
+
+    def test_the_headline_puts_a_count_in_front_of_a_noun(
+        self, tmp_path: Path
+    ) -> None:
+        """A label is a descriptive phrase; a headline needs a countable noun.
+
+        The two are different parts of speech, and using the label for both produced
+        "2 no record at Razorpay at all".
+        """
+        from finctl.rank.ranker import LINE_NOUN
+
+        r = run(_batch(tmp_path))
+        headline = r.verdict.headline()
+        actionable = r.verdict.actionable_lines
+        if not actionable:
+            assert "Nothing needs you" in headline
+            return
+
+        top = max(actionable, key=lambda line: line.amount_paise)
+        if top.classification is Classification.HALTED_SUBSCRIPTION:
+            assert "those" in headline and "customers" in headline
+        else:
+            noun = LINE_NOUN.get(top.classification)
+            assert noun is not None, f"no countable noun for {top.classification}"
+            assert f"{top.count} {noun}" in headline
+
+    def test_every_displayable_classification_has_a_noun(self) -> None:
+        """A new classification must not silently fall back to the clumsy shape."""
+        from finctl.rank.ranker import _DISPLAY_ORDER, LINE_NOUN
+
+        missing = [c for c in _DISPLAY_ORDER if c not in LINE_NOUN]
+        assert not missing, f"no countable noun for {missing}"
+
+    def test_the_summary_does_not_name_one_line_twice(self, tmp_path: Path) -> None:
+        """"The largest line is X ...; what needs you this week is X." """
+        from finctl.explain.render import explain
+
+        r = run(_batch(tmp_path))
+        summary, _ = explain(r.verdict)
+
+        actionable = r.verdict.actionable_lines
+        if not actionable:
+            return
+        top = max(actionable, key=lambda line: line.amount_paise)
+        assert summary.count(top.label) <= 1, summary
+
+
+class TestErrorsDoNotLeakTheServer:
+    """F12 — absolute paths and a Python list literal rendered into the browser."""
+
+    def test_paths_are_reduced_to_filenames(self) -> None:
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from api.main import _client_error
+
+        exc = ValueError(
+            "ledger: /home/someone/projects/thing/engine/../engine/data/x/ledger.csv "
+            "has no header row."
+        )
+        message = _client_error(exc)
+        assert "ledger.csv" in message
+        assert "/home/" not in message
+        assert ".." not in message
+        # The useful half of the message survives — that is why the path is trimmed
+        # here rather than the whole message being replaced.
+        assert "has no header row" in message

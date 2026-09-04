@@ -9,6 +9,7 @@ If a number appears only in the browser, it is not testable and does not exist.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -82,8 +83,16 @@ def _load(batch: str, *, refresh: bool = False) -> PipelineResult:
 
     path = DATA_ROOT / batch
     if not path.is_dir():
+        # A sentence, not a Python repr. This used to render the raw list literal of
+        # every batch on disk straight into the browser — the one screen in the app
+        # that looked unfinished next to everything around it.
         available = sorted(p.name for p in DATA_ROOT.iterdir() if p.is_dir()) if DATA_ROOT.is_dir() else []
-        raise HTTPException(404, f"no batch {batch!r}. Available: {available}")
+        detail = f"There is no run called {batch!r}."
+        if available:
+            shown = ", ".join(available[:6])
+            more = f", and {len(available) - 6} more" if len(available) > 6 else ""
+            detail += f" Recent runs: {shown}{more}."
+        raise HTTPException(404, detail)
 
     try:
         # Remembered mappings are needed HERE too, not only on upload. Any cache miss
@@ -96,10 +105,22 @@ def _load(batch: str, *, refresh: bool = False) -> PipelineResult:
         # Surface the engine's own message. Its errors are written to be read by a
         # human and name the offending column, row or key — flattening them into
         # "internal error" would discard the most useful part.
-        raise HTTPException(422, f"{type(exc).__name__}: {exc}") from exc
+        raise HTTPException(422, _client_error(exc)) from exc
 
     _cache[batch] = result
     return result
+
+
+# Absolute server paths, with an un-normalised `../` in them, were being handed to the
+# browser inside otherwise good error messages. The engine is right to name the file it
+# choked on — a CLI user needs it — so the path is trimmed to a basename here, at the
+# boundary where the reader stops being the operator.
+_PATH_IN_MESSAGE = re.compile(r"(?:/[^\s/]+)*/([^\s/]+\.(?:csv|json|xlsx|xls))")
+
+
+def _client_error(exc: Exception) -> str:
+    """The engine's message, with server paths reduced to filenames."""
+    return _PATH_IN_MESSAGE.sub(r"\1", f"{type(exc).__name__}: {exc}")
 
 
 def _money(paise: int) -> dict[str, Any]:
@@ -362,7 +383,7 @@ def generate_batch(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             result = run(target, _config(), mappings=_mapping_store())
         except Exception as exc:
-            raise HTTPException(422, f"{type(exc).__name__}: {exc}") from exc
+            raise HTTPException(422, _client_error(exc)) from exc
     except Exception:
         # Same reasoning as upload: a half-written batch would reconcile a partial
         # scenario on the next request.
@@ -596,7 +617,7 @@ async def upload(
             # surfaced verbatim rather than flattened into "bad file".
             raise HTTPException(422, str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(422, f"{type(exc).__name__}: {exc}") from exc
+            raise HTTPException(422, _client_error(exc)) from exc
 
     except Exception:
         # A half-written batch would be staged on the next request and silently
@@ -623,10 +644,26 @@ async def upload(
     }
 
 
+def _missing_sources(result: Any) -> list[str]:
+    """Sources absent from a staged batch, in the order Source declares them."""
+    staged = set(result.batch.sources)
+    return [s.value for s in Source if s not in staged]
+
+
 def _missing_note(missing: list[str]) -> str | None:
     if not missing:
         return None
     notes = []
+    if "recon" in missing:
+        # The severe case, and the one that was silent. With no settlement file every
+        # order is unmatched, so the verdict reads "0 of N orders reached Razorpay" and
+        # a 100% gap — describing the absent file, not the merchant's money.
+        notes.append(
+            "No Razorpay settlement file, so there is nothing to reconcile the ledger "
+            "against: every order is reported as never having reached Razorpay, and "
+            "the whole of your revenue is reported as the gap. That is a description "
+            "of the missing file rather than of your money."
+        )
     if "bank" in missing:
         notes.append(
             "No bank statement, so this is a two-way reconciliation: money Razorpay has "
@@ -843,6 +880,7 @@ def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
     """The four lines and a verdict. The default screen."""
     result = _load(batch, refresh=refresh)
     v = result.verdict
+    missing_sources = _missing_sources(result)
 
     # The one place a language model touches this product. It writes the summary prose
     # and nothing else: every figure below is rendered by `_money` from an integer the
@@ -870,6 +908,11 @@ def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
         "unexplained": _money(v.unexplained_paise),
         "unexplained_count": v.unexplained_count,
         "residual": _money(v.residual_paise),
+        # Which files this batch did NOT have, on every read of the verdict rather than
+        # only in the upload response. A ledger-only upload produces a confident 100%
+        # gap, and the analysis page is where anyone actually reads it.
+        "missing_sources": missing_sources,
+        "missing_note": _missing_note(missing_sources),
         # Detected late settlements. Gap-neutral — the money arrived, so it is already
         # inside `received` — but 213 late payouts on a 2,500-order run is a
         # working-capital fact the engine knew and never said.

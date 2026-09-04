@@ -70,23 +70,26 @@ export function RateCard() {
 
   return (
     <section className="mb-14">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-baseline justify-between border-b border-[var(--color-line-strong)] pb-3 text-left"
-      >
-        <span className="text-title">Your rates</span>
-        <span className="text-xs font-medium text-[var(--color-ink-faint)]">
-          {card.is_merchant_supplied ? "your contract" : "standard pricing"}
-          {" · "}
-          <span className="inline-flex items-center gap-1 text-[var(--color-accent)]">
-            {open ? "hide" : "edit"}
-            <ChevronDownIcon
-              size={12}
-              className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`}
-            />
+      {/* Heading wraps the control, never the other way round — see Audit.tsx. */}
+      <h2 className="text-title">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex w-full items-baseline justify-between border-b border-[var(--color-line-strong)] pb-3 text-left font-[inherit] text-[inherit]"
+        >
+          Your rates
+          <span className="text-xs font-medium text-[var(--color-ink-faint)]">
+            {card.is_merchant_supplied ? "your contract" : "standard pricing"}
+            {" · "}
+            <span className="inline-flex items-center gap-1 text-[var(--color-accent)]">
+              {open ? "hide" : "edit"}
+              <ChevronDownIcon
+                size={12}
+                className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+              />
+            </span>
           </span>
-        </span>
-      </button>
+        </button>
+      </h2>
 
       {!open && !card.is_merchant_supplied && (
         <p className="text-body mt-4 max-w-md text-[var(--color-ink-soft)]">

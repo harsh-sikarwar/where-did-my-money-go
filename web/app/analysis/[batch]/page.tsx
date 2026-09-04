@@ -73,6 +73,16 @@ export default function AnalysisPage({
 
   return (
     <main className="mx-auto max-w-[700px] px-6 pt-16 pb-32 sm:pt-[88px]">
+      {/* The document had no h1 — nor any heading at all. Every section title on this
+          page was a styled div, so a screen-reader user had no way to navigate it and
+          the page carried no title-level semantics. This one is visually hidden
+          because the design deliberately leads with the figures rather than a title,
+          and inventing a visible one to satisfy the outline would change the design
+          to fix an accessibility bug that does not require it. F11. */}
+      <h1 className="sr-only">
+        Where did my money go? Reconciliation for {batch}
+      </h1>
+
       <div className="mb-11 flex flex-wrap items-center justify-between gap-4">
         <Link href="/">
           <BackLink />

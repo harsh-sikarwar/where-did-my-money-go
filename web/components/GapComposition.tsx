@@ -68,6 +68,12 @@ export function GapComposition({ segments }: { segments: GapSegment[] }) {
             <Swatch severity={s.severity} />
             {s.label}
             <span className="money text-[var(--color-ink)]">{s.amount}</span>
+            {/* "of the bar", not "of the gap" — the denominator here is the sum of the
+                POSITIVE parts, which is what the track actually draws. The rows below
+                announce share of NET gap, and the two legitimately differ whenever an
+                offset line is present. Naming the denominator in the text is what keeps
+                a screen-reader user from hearing two different percentages for one line
+                and concluding one of them is wrong. F9. */}
             <span className="sr-only">
               , {Math.round((s.paise / drawn) * 100)} percent of the bar
             </span>

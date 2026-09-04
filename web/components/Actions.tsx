@@ -102,9 +102,12 @@ export function Actions({ batch }: { batch: string }) {
     <section className="mt-14">
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-4">
         <Eyebrow>What needs you</Eyebrow>
+        {/* 20px tall, under the 24px WCAG 2.2 AA target minimum — the only element on
+            the page that missed it. Padded rather than enlarged, so the type stays put
+            and only the hit area grows. F18. */}
         <a
           href={api.actionsCsvUrl(batch)}
-          className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--color-ink-soft)] transition-colors hover:text-[var(--color-ink)]"
+          className="-mx-1.5 inline-flex min-h-6 items-center gap-1.5 px-1.5 text-[13px] font-semibold text-[var(--color-ink-soft)] transition-colors hover:text-[var(--color-ink)]"
         >
           <DownloadIcon size={13} /> Download as CSV
         </a>
@@ -236,7 +239,7 @@ function Group({
               longer where you start. */}
           {reviewed ? (
             <span
-              className="shrink-0 rounded-[5px] border border-[var(--color-line)] px-[7px] py-[3px] text-[10.5px] font-extrabold tracking-[0.06em] text-[var(--color-ink-faint)]"
+              className="shrink-0 rounded-[5px] border border-[var(--color-line)] px-[7px] py-[3px] text-[11px] font-extrabold tracking-[0.06em] text-[var(--color-ink-faint)]"
             >
               DONE
             </span>
@@ -244,7 +247,7 @@ function Group({
             top &&
             !offset && (
               <span
-                className="shrink-0 rounded-[5px] px-[7px] py-[3px] text-[10.5px] font-extrabold tracking-[0.06em] text-[var(--color-ground)]"
+                className="shrink-0 rounded-[5px] px-[7px] py-[3px] text-[11px] font-extrabold tracking-[0.06em] text-[var(--color-ground)]"
                 style={{ background: tone, animation: "ring 2.6s ease-out infinite" }}
               >
                 TOP

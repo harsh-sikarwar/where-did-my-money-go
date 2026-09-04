@@ -54,8 +54,40 @@ export function Verdict({
     severity: severityOf(line),
   }));
 
+  // The settlement file is what a ledger is reconciled AGAINST. Without it every order
+  // is unmatched by construction, so the page reports a 100% gap and "0 of N orders
+  // reached Razorpay" — both true of the upload, neither true of the merchant's money.
+  const cannotReconcile = data.missing_sources.includes("recon");
+
   return (
     <>
+      {data.missing_note && (
+        <section
+          aria-label="What this run could not see"
+          className="mb-7 rounded-xl border px-5 py-4"
+          style={{
+            borderColor: cannotReconcile
+              ? toneAlpha("urgent", 0.35)
+              : "var(--color-line)",
+            background: cannotReconcile
+              ? toneAlpha("urgent", 0.06)
+              : "transparent",
+          }}
+        >
+          <div className="text-[14.5px] font-bold">
+            {cannotReconcile
+              ? "This run had nothing to reconcile against"
+              : `Reconciled without ${data.missing_sources.length} of the five files`}
+          </div>
+          <p className="mt-1.5 max-w-[62ch] text-[12.5px] leading-relaxed text-[var(--color-ink-soft)]">
+            {data.missing_note}
+          </p>
+          <p className="mt-2 text-[12px] text-[var(--color-ink-faint)]">
+            Missing: {data.missing_sources.join(", ")}
+          </p>
+        </section>
+      )}
+
       {/* The three numbers that frame everything else. Gap is the hero — it is the
           question the whole page exists to answer. */}
       <section className="mb-7 grid grid-cols-2 items-end gap-5 sm:grid-cols-[1fr_1fr_1.3fr]">
@@ -276,7 +308,11 @@ function Line({
             </span>
             <span className="text-[12.5px] text-[var(--color-ink-faint)]">
               {line.count} {line.count === 1 ? "order" : "orders"} ·{" "}
-              {Math.round(share * 100)}% of gap
+              {/* Share of the NET gap — the honest denominator, since a refund line
+                  legitimately goes negative and narrows it. The bar's legend uses the
+                  positive-parts sum instead, because that is what the track draws; both
+                  now name their denominator rather than both saying "%". F9. */}
+              {Math.round(share * 100)}% of the gap
               {/* The row stays benign — the fee itself is the contracted cost of
                   taking payments and there is nothing to chase. But an actionable
                   overcharge hiding inside a collapsed benign row is the same defect

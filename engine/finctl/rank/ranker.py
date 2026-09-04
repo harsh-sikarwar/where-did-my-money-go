@@ -107,6 +107,34 @@ LINE_COPY: dict[Classification, tuple[str, str]] = {
     ),
 }
 
+# A countable plural noun for each classification, for the sentences that put a NUMBER
+# in front of a line.
+#
+# `LINE_COPY`'s label is a descriptive phrase — "no record at Razorpay at all" — which
+# reads correctly as a row label and produces "One thing needs you this week: 2 no
+# record at Razorpay at all." when a count is placed in front of it. A label and a
+# countable noun are different parts of speech and the templates need both.
+#
+# Absent from this map, `headline()` falls back to a shape that needs no noun, so a new
+# classification degrades to clumsy rather than to ungrammatical.
+LINE_NOUN: dict[Classification, str] = {
+    Classification.TIMING: "payouts still on their way",
+    Classification.ON_HOLD: "payments Razorpay is holding",
+    Classification.FEE: "orders charged a fee",
+    Classification.TAX_ON_FEE: "orders charged tax on the fee",
+    Classification.REFUND: "refunds Razorpay paid out anyway",
+    Classification.ROUNDING: "rounding differences",
+    Classification.DUPLICATE: "duplicated orders",
+    Classification.UNEXPECTED_SETTLEMENT: "settlements not in your ledger",
+    Classification.UNRECORDED_REFUND: "unrecorded refunds",
+    Classification.DISPUTED: "disputed payments",
+    Classification.HALTED_SUBSCRIPTION: "halted subscriptions",
+    Classification.PAYMENT_FAILED: "failed payments",
+    Classification.MISSING: "orders with no record at Razorpay",
+    Classification.NEEDS_REVIEW: "orders needing review",
+}
+
+
 # Display order for the verdict. Benign lines first, largest-first within each group,
 # so the eye lands on "this is mostly fine" before "this needs you".
 _DISPLAY_ORDER = (
@@ -277,7 +305,12 @@ class Verdict:
         top = max(actionable, key=lambda line: line.amount_paise)
         if top.classification is Classification.HALTED_SUBSCRIPTION:
             return f"One thing needs you this week: those {top.count} customers."
-        return f"One thing needs you this week: {top.count} {top.label}."
+        noun = LINE_NOUN.get(top.classification)
+        if noun:
+            return f"One thing needs you this week: {top.count} {noun}."
+        # No noun for this classification: use a shape that does not need one rather
+        # than concatenating a count onto a descriptive phrase.
+        return f"One thing needs you this week: {top.label} ({top.count})."
 
     def as_dict(self) -> dict[str, Any]:
         return {

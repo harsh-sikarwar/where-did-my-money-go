@@ -69,6 +69,9 @@ export interface Verdict {
   unexplained_count: number;
   /** Integrity check on the decomposition: lines + this == gap. Must be zero. */
   residual: Money;
+  /** Sources this batch did not have. A ledger-only batch cannot be reconciled. */
+  missing_sources: string[];
+  missing_note: string | null;
   /** Settlements that arrived late. Gap-neutral: the money is already in `received`. */
   late: {
     count: number;

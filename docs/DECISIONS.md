@@ -3145,3 +3145,107 @@ unnamed early refunds (F13), and the polish items (F14–F18). F5's separate not
 `caught` being inflated by non-findings on `qa-split` — 20 split settlements the engine
 correctly ignored, recorded as 20 caught — is untouched and needs its own decision about
 what "catching" a non-defect should mean.
+
+---
+
+## ADR-060 — The remaining eleven, and the two that are worth more than a patch
+
+Nine of the QA dossier's remaining findings are fixed here. Two are documented in
+LIMITATIONS instead, because both need engine-wide changes disproportionate to what they
+change on screen, and a hurried version of either would be worse than an honest note.
+
+### F8 — a ledger-only upload was analysed as if every file were present
+
+Uploading a ledger with no settlement, bank, payments or subscriptions file produced a
+confident analysis: a 100% gap, "every rupee of that difference is accounted for below",
+and "0 of 2 orders reached Razorpay". All three describe the missing file rather than the
+merchant's money — nothing reached Razorpay because no Razorpay file was supplied.
+
+The backend knew. `missing_sources` was computed at upload time and returned in the
+upload response, then never surfaced again — and the analysis page is where anyone
+actually reads a verdict. It is now computed on every read of the verdict, with the
+`recon` case (which had no copy at all) named as the severe one, and rendered ABOVE the
+figures. Below them it would be a footnote on a number the reader has already believed.
+
+This is also the first-run path for anyone bringing their own data.
+
+### F12 — the error page dumped internals
+
+`/analysis/does-not-exist` rendered the backend string verbatim, including a Python list
+literal of every batch on disk. Upload errors leaked absolute server paths with an
+un-normalised `../` in them.
+
+The 404 is now a sentence that names a few recent runs. The paths are trimmed to
+basenames at the API boundary — not in the engine, which is right to name the file it
+choked on, because a CLI user is the operator and needs it. The trimming happens where
+the reader stops being the operator, and the rest of the message survives: "ledger.csv
+has no header row. Refusing to read positionally." is still the fix instruction.
+
+### F11 — no headings anywhere on the analysis page
+
+Zero `h1`–`h6` elements. "WHAT NEEDS YOU", "Your rates", "How do I know this is true?"
+were all styled `div`s, so a screen-reader user had no way to navigate the document.
+
+`Eyebrow` now renders `h2` by default, which fixes most of the page in one edit, with
+`as="div"` still available where it is genuinely a label — a heading outline full of
+things that head nothing would be a new problem, not a fix. Two collapsible sections had
+their headings INSIDE the button; a heading nested in a button is invalid and assistive
+tech may drop it from the outline, so the heading now wraps the control instead.
+
+The page `h1` is visually hidden. The design deliberately leads with the figures rather
+than a title, and inventing a visible one to satisfy the outline would change the design
+to fix an accessibility bug that does not require it.
+
+### F17 — "One thing needs you this week: 2 no record at Razorpay at all."
+
+`LINE_COPY`'s label is a descriptive phrase. It reads correctly as a row label and
+ungrammatically with a count in front of it. A label and a countable noun are different
+parts of speech, so `LINE_NOUN` now supplies the second: "2 orders with no record at
+Razorpay". A classification absent from that map falls back to a shape needing no noun,
+so a future addition degrades to clumsy rather than to broken — and a test asserts every
+displayable classification has one.
+
+The summary named the same line twice — "The largest line is X and it needs you; what
+needs you this week is X" — whenever the largest line was also the actionable one and
+there were no benign lines to take the other branch. That case now has its own clause.
+
+### F9 — two percentages, forty pixels apart
+
+The bar legend announced share of the positive-parts sum; the rows announce share of the
+net gap. The dossier read this as a bug. It is not: the code documents why the bar uses
+the positive sum — a signed denominator makes segments exceed the track they are drawn
+in — and share of net gap is the honest figure for a row, since a refund line
+legitimately goes negative.
+
+Two correct percentages with two denominators and one word is still a defect, though. The
+fix is to name the denominator in both places ("of the bar", "of the gap"), not to force
+one number. Worth noting the bar's figure is `sr-only`: the reader hearing both was
+always the screen-reader user, which is who this fix is for.
+
+### F15, F16, F18, F14
+
+The seed input reserves `11ch` so its own eight-digit default stops rendering as
+"2026090". The volume error moved onto the field — it was already displayed, but at the
+foot of a long form beside the disabled button, thirty rows from the input it was about.
+The CSV download link is padded to the 24px WCAG 2.2 AA minimum (it was the only element
+on the page that missed it), and `NumberInput` states `inputMode` rather than relying on
+`type=number` to imply it.
+
+For F14, the accessibility half only: `text-label` goes 11px → 12px and two badges 10.5px
+→ 11px. The dossier also proposes collapsing fourteen type steps to six. That is a
+restyle of every component for a cosmetic gain on a page whose contrast already passes at
+139 of 139 text nodes, so it is not done here.
+
+### Deferred to LIMITATIONS, with reasons
+
+**F13 (early refunds have no line)** needs a new classification threaded through the
+classifier, ranker, decomposition, scorer and golden files — with a rule that decides
+early-vs-ordinary from settlement dates rather than the generator's label, since the
+engine must reach it from data it would have in production. The arithmetic is already
+correct; the line is honestly labelled, just less specific than it could be.
+
+**F10 (a saved rate card rewrites sealed runs)** needs config hashing, manifest pinning,
+and a decision about what re-analysis under a new card *is*. Our position is that it
+should be a new evaluation with both visible rather than an overwrite — which makes batch
+identity "the sources plus the config that read them" rather than the folder name. That
+is a data-model change and deserves better than a patch.

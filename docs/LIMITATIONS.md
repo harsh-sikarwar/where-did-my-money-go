@@ -648,3 +648,44 @@ Named so their absence reads as a decision:
 - **A dashboard.** The product is four lines and a verdict. Every feature request that
   begins "could it also show" should be weighed against the thing that makes it useful:
   one answer, not a chart of many.
+
+### 6. Two QA findings deferred deliberately
+
+An external QA pass produced eighteen findings (ADR-058, ADR-059). Sixteen are fixed.
+These two are real, and are deferred rather than dismissed — both need engine-wide
+changes disproportionate to what they alter on screen.
+
+**Early refunds have no name of their own (F13).** A refund settling *before* the payment
+it belongs to is generated as a distinct defect type and offered on the generate screen,
+but the engine has no `EARLY_REFUND` classification: those rows are folded into the
+general `REFUND` line. On one QA run, 10 one-sided refunds and 5 early refunds surfaced
+as a single 15-order row. So a user can deliberately plant something the analysis will
+never name back to them.
+
+The debit landing before the credit is a distinct operational signal, not a refund
+variant, and it deserves its own line. Doing it properly means a new classification
+threaded through the classifier, the ranker's copy and display order, the gap
+decomposition, the scorer's type map and the golden files — with a rule that decides
+early-vs-ordinary from settlement dates rather than from the generator's label, since the
+engine must reach the conclusion from data it would have in production. The arithmetic
+does not change: these rupees are already counted correctly, in the right direction, in a
+line that is honestly labelled if less specific than it could be.
+
+**A saved rate card silently rewrites sealed runs (F10).** The rate card is global and
+retroactive. Setting UPI to a negotiated 1.50% changed the fee analysis of a batch
+reconciled an hour earlier — `manifest.sealed` still `true`, source hashes unchanged, and
+no record of which rate card produced which number. Restoring the standard card restored
+the original figures exactly, so nothing is lost; but a figure that changes retroactively
+without appearing in the audit trail sits badly beside this project's other headline
+claim, an immutable hash-stamped record.
+
+The fix is not a patch. It means hashing the resolved config, pinning that hash into the
+manifest beside the source hashes, and deciding what re-analysis under a new card *is* —
+our position is that it should be a new evaluation with both visible, not an overwrite,
+which means batch identity stops being "the folder name" and becomes "the sources plus
+the config that read them". That is a data-model change, and the honest version of it is
+worth more than a hurried one.
+
+Both are recorded here rather than in a backlog because the same principle governs the
+rest of this document: a known limitation that announces itself is a different thing from
+a defect nobody has noticed.
