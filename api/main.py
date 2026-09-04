@@ -864,7 +864,26 @@ def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
         "summary_source": summary_source,
         "actionable_total": _money(v.actionable_paise),
         "benign_total": _money(v.benign_paise),
+        # Money no rule could account for, after correlation. Not the decomposition's
+        # residual, which is an integrity check that must be zero — returned beside it
+        # as `residual` so the distinction is visible rather than implied.
         "unexplained": _money(v.unexplained_paise),
+        "unexplained_count": v.unexplained_count,
+        "residual": _money(v.residual_paise),
+        # Detected late settlements. Gap-neutral — the money arrived, so it is already
+        # inside `received` — but 213 late payouts on a 2,500-order run is a
+        # working-capital fact the engine knew and never said.
+        "late": (
+            {
+                "count": v.late.count,
+                "value": _money(v.late.value_paise),
+                "median_days_late": v.late.median_days_late,
+                "max_days_late": v.late.max_days_late,
+                "cycle_days": v.late.cycle_days,
+            }
+            if v.late
+            else None
+        ),
         "lines": [
             {
                 "classification": str(line.classification),

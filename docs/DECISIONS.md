@@ -3018,3 +3018,130 @@ refunds (F13), and the polish items (F14–F18).
 
 **Numbering note.** Two entries above both claim ADR-054. Left as they are — renumbering
 existing decisions would break every reference to them.
+
+---
+
+## ADR-059 — Four things the product said about itself that were not true
+
+The second pass over the QA dossier. ADR-058 took the two findings it ranked first;
+these are the next four, and they share a shape with those: the engine was right every
+time, and the layer reporting on it said something else.
+
+### F2 — a check that could not fail
+
+The waterfall's closing row read "Unexplained — nothing in the data accounts for this —
+₹0.00". It read that on every run ever made, including 2,500 orders with 849 planted
+defects. Scroll down the same page and the correlation section said ₹2,480.00 was still
+unexplained, and named the order.
+
+`Verdict.unexplained_paise` was `GapDecomposition.residual_paise` — gap minus the sum of
+the components. The components are *constructed* so as to close the gap, and `check()`
+raises when they do not, so that number is structurally incapable of being non-zero. It
+was decoration presented as a check, on a page whose whole promise is that every rupee is
+accounted for.
+
+Two different quantities had one name. They now have two:
+
+* `unexplained_paise` / `unexplained_count` — the CORRELATION residual. Money that IS in
+  the lines above but which no rule could attribute to a cause, after the payments and
+  subscriptions files were brought in. It can be non-zero, and on `blind` it is.
+* `residual_paise` — the decomposition's own residual. Still computed, still asserted,
+  no longer displayed as though it were a finding.
+
+**The bar had to change too.** `unexplained` was appended as a segment to the stacked
+bar. That was harmless while it was structurally zero — it drew nothing. As the
+correlation residual it is money already inside the lines, so drawing it would paint the
+same rupees twice and the bar would no longer be the gap. The bar is now the lines, and
+only the lines.
+
+**Nine tests asserted `sum(lines) + unexplained == gap`.** That identity is real and
+worth keeping — it just belongs to `residual_paise`. The test names already said
+"residual", which is what the assertion was always reaching for. Only two of the nine
+failed, on the batches where the correlation residual happens to be non-zero; the other
+seven would have kept passing while asserting the wrong field.
+
+### F4 — 213 late payouts detected, never mentioned
+
+The engine classifies late settlements with full working — captured date, expected date,
+actual date, working days late — and writes every one to the audit log. 41 on `qa-A`,
+213 on `qa-D`. No TIMING line appears in any verdict, and the words "late" or "T+2"
+appear nowhere in the analysis UI outside the collapsed audit trail.
+
+There is a good reason for the missing line and it is worth stating, because it is why
+this was never simply an oversight: money that settled late but HAS arrived is already
+inside `received`. Its contribution to the gap is zero, and counting it again was the
+original double-count `gap.py` was written to prevent. It cannot go in the waterfall.
+
+Zero gap impact is not zero information. A merchant financing operations on money that
+lands two days after it was promised has a working-capital problem whether or not it
+nets out by the end of the cycle. So `LatePayouts` reports count, value delayed, median
+and worst delay, and the cycle it was measured against — beside the waterfall, in a
+panel that says in as many words that it is not part of the gap. No rupee is
+double-counted, and nothing the engine detected is silently discarded.
+
+Every figure is aggregated from proof the classifier already wrote. Nothing is
+recomputed, for the same reason the fee overcharge is not recomputed downstream
+(ADR-058).
+
+### F5 — 1.00 recall on a run that found 612 of 849
+
+`recall` is `caught / (caught + missed)`, which drops `below_tolerance` from the
+denominator. That is defensible on its own terms: those are defects config declares
+immaterial — a timing lag inside `grace_days` — and an engine is not wrong to stay
+silent about them. But it makes the figure incapable of falling below 1.00 on any run
+whose only misses are sub-threshold, and 1.00 is what it reported on every run tested.
+
+Both are now reported, with strict as the primary. `recall_strict` is `caught /
+planted`, forgiving nothing:
+
+```
+qa-D   strict 0.72   lenient 1.00   612 caught, 237 below tolerance
+qa-A   strict 0.85   lenient 1.00   341 caught,  59 below tolerance
+qa-C   strict 0.87   lenient 1.00   104 caught,  15 below tolerance
+```
+
+The tolerance window is printed alongside, because a recall figure without its
+threshold cannot be argued with. The lenient figure is kept rather than deleted — it
+answers a real question ("of what we were asked to report, how much did we get?") and
+the two together say more than either alone. A judge who sees 1.00 everywhere concludes
+the scorer is decorative; 72.1% beside a stated grace window is the more persuasive
+number, and the only one that can go down when the engine gets worse.
+
+### F6 — the answer key disagreed with a correct analysis
+
+`healthy_subscription_decoy` plants orders with genuinely failed payments on
+still-active subscriptions. They are not defects — the engine is supposed to decline to
+claim them as halted subscriptions, and it does, on every run. But they produce real
+`PAYMENT_FAILED` findings, and the key listed nothing at all for them: `defect_count: 0`
+against 20 correct findings.
+
+So the loop this product invites — generate a scenario, check whether we caught it —
+reported phantom over-reporting on every run containing decoys.
+
+Decoys now declare the findings they should legitimately produce. On `qa-decoy` the key
+and the analysis now reconcile exactly: 20 reported = 0 real defects + 20 decoys.
+
+**Scoped to decoys deliberately.** The obvious generalisation — counting
+`expected_classification` across all planted defects — produces a number that is wrong
+in a new way. A real defect's `expected_classification` is what the CLASSIFIER should
+say, before correlation runs, and correlation then legitimately promotes some of them: a
+MISSING order whose payment failed is reported as PAYMENT_FAILED, which is the entire
+point of the correlation pass. Counting those would swap one misleading number for
+another. With decoys accounted for, the remaining difference on `qa-C` and `qa-D` is
+exactly the MISSING → PAYMENT_FAILED promotion:
+
+```
+qa-C   engine 18 = 6 decoys + 12 promoted from MISSING   (engine MISSING = 0)
+qa-D   engine 100 = 50 decoys + 50 promoted from MISSING (engine MISSING = 0)
+```
+
+Nothing is unexplained, and the engine was correct in all three runs.
+
+### Still open
+
+Eleven findings remain: missing-source gating (F8), two percentages per line (F9),
+rate-card retroactivity (F10), heading semantics (F11), the raw error page (F12),
+unnamed early refunds (F13), and the polish items (F14–F18). F5's separate note about
+`caught` being inflated by non-findings on `qa-split` — 20 split settlements the engine
+correctly ignored, recorded as 20 caught — is untouched and needs its own decision about
+what "catching" a non-defect should mean.

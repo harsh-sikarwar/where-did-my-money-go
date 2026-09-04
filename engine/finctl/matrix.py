@@ -38,6 +38,7 @@ class RunResult:
     match_rate_pass1: float
     match_rate_pass2: float
     recall: float
+    recall_strict: float = 0.0
     defects_caught: int
     defects_missed: int
     defects_below_tolerance: int
@@ -105,7 +106,7 @@ def run_cell(
         return RunResult(
             volume=volume, archetype=archetype, payment_mix=payment_mix,
             cycle_days=cycle_days, defect_profile=defect_profile,
-            match_rate_pass1=0.0, match_rate_pass2=0.0, recall=0.0,
+            match_rate_pass1=0.0, match_rate_pass2=0.0, recall=0.0, recall_strict=0.0,
             defects_caught=0, defects_missed=0, defects_below_tolerance=0,
             false_positives=0, error=str(exc)[:120],
         )
@@ -128,6 +129,7 @@ def run_cell(
         match_rate_pass1=round(result.matches.pass1_match_rate, 4),
         match_rate_pass2=round(result.matches.pass2_match_rate, 4),
         recall=round(s.recall, 4) if s else 0.0,
+        recall_strict=round(s.recall_strict, 4) if s else 0.0,
         defects_caught=s.total_caught if s else 0,
         defects_missed=s.total_missed if s else 0,
         defects_below_tolerance=s.total_below_tolerance if s else 0,

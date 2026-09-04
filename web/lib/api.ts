@@ -64,7 +64,19 @@ export interface Verdict {
   summary_source?: "model" | "template";
   actionable_total: Money;
   benign_total: Money;
+  /** Money no rule could account for, after correlation. Already inside `lines`. */
   unexplained: Money;
+  unexplained_count: number;
+  /** Integrity check on the decomposition: lines + this == gap. Must be zero. */
+  residual: Money;
+  /** Settlements that arrived late. Gap-neutral: the money is already in `received`. */
+  late: {
+    count: number;
+    value: Money;
+    median_days_late: number;
+    max_days_late: number;
+    cycle_days: number;
+  } | null;
   lines: VerdictLine[];
   match: { pass1: PassSummary; pass2: PassSummary };
   performance: {

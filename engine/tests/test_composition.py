@@ -119,10 +119,30 @@ class TestTheLinesAddUp:
         result, _ = scenario
         v = result.verdict
         total = sum(line.amount_paise for line in v.lines)
-        assert total + v.unexplained_paise == v.gap_paise, (
-            f"lines sum to {total} + residual {v.unexplained_paise}, "
+        assert total + v.residual_paise == v.gap_paise, (
+            f"lines sum to {total} + residual {v.residual_paise}, "
             f"but the gap is {v.gap_paise}"
         )
+
+    def test_unexplained_is_the_correlation_residual_not_the_decomposition_one(
+        self, scenario
+    ) -> None:
+        """The row a merchant reads must be capable of being non-zero.
+
+        It used to show `GapDecomposition.residual_paise`, which is structurally always
+        zero — the components are built to close the gap, and `check()` raises if they
+        do not. So the screen said "Unexplained: nothing in the data accounts for this,
+        ₹0.00" on every run ever made, while the correlation section on the same page
+        named real money still outstanding.
+        """
+        result, _ = scenario
+        v = result.verdict
+        c = result.correlated
+
+        assert v.unexplained_paise == sum(f.amount_paise for f in c.still_unexplained)
+        assert v.unexplained_count == len(c.still_unexplained)
+        # And the integrity check it used to be conflated with still holds separately.
+        assert v.residual_paise == 0
 
     def test_actionable_plus_benign_equals_the_lines(self, scenario) -> None:
         """Both totals are displayed. They must partition the same set."""
@@ -388,7 +408,7 @@ class TestAdversarialInputsStillBalance:
         p.write_text("\n".join(lines + lines[1:6]) + "\n")
 
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
         from finctl.classify.classifier import Classification
         dup = next(
@@ -445,7 +465,7 @@ class TestAdversarialInputsStillBalance:
             w.writerows(rows[: len(rows) // 2])
 
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
     def test_renamed_columns_produce_the_same_answer(self, batch_dir: Path) -> None:
         """Mapping must be by name, and must not change any number."""
@@ -488,7 +508,7 @@ class TestAdversarialInputsStillBalance:
         """Two-way reconciliation: everything settled is in-flight by definition."""
         (batch_dir / "bank.csv").unlink()
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
 
 class TestSplitSettlementsAndEarlyRefunds:
@@ -578,7 +598,7 @@ class TestSplitSettlementsAndEarlyRefunds:
         left the bank, and something must account for it."""
         pipeline, _ = result
         v = pipeline.verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
     def test_both_refund_mechanisms_merge_into_one_line(self, result) -> None:
         """A one-sided refund (negative) and a settled refund (positive) are both
@@ -626,7 +646,7 @@ class TestHandEditedLedger:
     def test_deleting_ledger_rows_still_balances(self, batch_dir: Path) -> None:
         self._delete_ledger_rows(batch_dir, [10, 19])
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
     def test_a_deleted_order_becomes_an_unexpected_settlement(
         self, batch_dir: Path
@@ -734,7 +754,7 @@ class TestHandEditedLedger:
         p.write_text("\n".join(lines) + "\n")
 
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
 
 class TestMoreHandEdits:
@@ -801,7 +821,7 @@ class TestMoreHandEdits:
         )
         assert line.amount_paise == round(float(amount) * 100)
         assert line.amount_paise > 0
-        assert sum(x.amount_paise for x in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(x.amount_paise for x in v.lines) + v.residual_paise == v.gap_paise
         assert order_id  # the duplicated order is identifiable
 
     def test_a_zero_ledger_amount_is_not_called_a_refund(self, batch_dir: Path) -> None:
@@ -851,4 +871,4 @@ class TestMoreHandEdits:
         p.write_text("\n".join(lines) + "\n")
 
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise

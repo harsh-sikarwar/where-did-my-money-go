@@ -39,23 +39,20 @@ export function Verdict({
   const benign = data.lines.filter((l) => !l.actionable);
   const actionable = data.lines.filter((l) => l.actionable);
   const gapPaise = data.gap.paise;
+  const unexplainedPaise = data.unexplained.paise;
 
-  const segments: GapSegment[] = [
-    ...data.lines.map((line) => ({
-      id: line.classification,
-      label: line.label,
-      amount: line.amount.display,
-      paise: line.amount.paise,
-      severity: severityOf(line),
-    })),
-    {
-      id: "__unexplained",
-      label: "Unexplained",
-      amount: data.unexplained.display,
-      paise: data.unexplained.paise,
-      severity: "neutral" as const,
-    },
-  ];
+  // The bar is the LINES, and only the lines. `unexplained` used to be appended as a
+  // segment, which was harmless while it was the decomposition residual — structurally
+  // always zero, so it drew nothing. It is now the correlation residual: money that is
+  // already inside the lines above and could not be attributed to a cause. Adding it
+  // here would draw the same rupees twice and the bar would no longer be the gap.
+  const segments: GapSegment[] = data.lines.map((line) => ({
+    id: line.classification,
+    label: line.label,
+    amount: line.amount.display,
+    paise: line.amount.paise,
+    severity: severityOf(line),
+  }));
 
   return (
     <>
@@ -80,6 +77,8 @@ export function Verdict({
           items below answer neither question. */}
       {timeline && <GapByDay data={timeline} />}
 
+      {data.late && <LatePayouts late={data.late} />}
+
       {/* Benign first — the eye should land on "mostly fine" — then what needs a
           decision, which is washed in its severity so scanning slows down there. */}
       <section aria-label="What explains the gap">
@@ -87,16 +86,38 @@ export function Verdict({
           <Line key={line.classification} line={line} gapPaise={gapPaise} index={i} />
         ))}
 
+        {/* The honest residual: money that IS in the lines above but which no rule
+            could attribute to a cause, after the payments and subscriptions files were
+            brought in. It used to show the decomposition residual instead — a figure
+            that cannot be non-zero, since the components are built to close the gap —
+            so it read ₹0.00 on every run ever made while the correlation section
+            further down this page named real money outstanding. F2. */}
         <div className="flex items-center justify-between gap-4 p-4">
           <div>
-            <div className="text-[14.5px] italic text-[var(--color-ink-soft)]">
-              Unexplained
+            <div
+              className="text-[14.5px] italic"
+              style={{
+                color: unexplainedPaise
+                  ? "var(--color-ink)"
+                  : "var(--color-ink-soft)",
+              }}
+            >
+              Still unexplained
             </div>
             <div className="mt-1 text-[12.5px] text-[var(--color-ink-faint)]">
-              nothing in the data accounts for this
+              {unexplainedPaise
+                ? `${data.unexplained_count} ${
+                    data.unexplained_count === 1 ? "order" : "orders"
+                  } no rule could account for — already counted above`
+                : "every rupee above has a cause behind it"}
             </div>
           </div>
-          <div className="money text-[15.5px] text-[var(--color-ink-soft)]">
+          <div
+            className="money text-[15.5px]"
+            style={{
+              color: unexplainedPaise ? TONE.action : "var(--color-ink-soft)",
+            }}
+          >
             {data.unexplained.display}
           </div>
         </div>
@@ -355,5 +376,49 @@ function Provenance({ data }: { data: VerdictData }) {
       orders reached Razorpay · {rows_processed.toLocaleString("en-IN")} rows processed
       in {Math.round(elapsed_seconds * 1000)}ms
     </p>
+  );
+}
+
+/**
+ * Payouts that arrived, later than the cycle promised.
+ *
+ * Beside the waterfall, deliberately never in it. This money HAS arrived, so it is
+ * already inside `received` and contributes nothing to the gap — putting it in the
+ * composition would double-count the exact rupees `gap.py` was written to stop
+ * double-counting. That is why it had no line, and why 213 detected late payouts on a
+ * 2,500-order run were never mentioned anywhere in the product. F4.
+ *
+ * Zero gap impact is not zero information: a merchant financing operations on money
+ * that lands two days after it was promised has a working-capital problem, whether or
+ * not it nets to zero by the end of the cycle. So it gets a panel that states the
+ * count, the value delayed and how late, and says plainly that it is not part of the
+ * gap — rather than a line implying it is.
+ */
+function LatePayouts({
+  late,
+}: {
+  late: NonNullable<VerdictData["late"]>;
+}) {
+  return (
+    <section
+      aria-label="Payouts that arrived late"
+      className="mb-9 rounded-xl border border-[var(--color-line)] px-5 py-4"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1.5">
+        <span className="text-[14.5px] font-bold">
+          {late.count} {late.count === 1 ? "payout" : "payouts"} arrived late
+        </span>
+        <span className="money text-[15.5px] font-bold">{late.value.display}</span>
+      </div>
+      <p className="mt-1.5 max-w-[56ch] text-[12.5px] leading-relaxed text-[var(--color-ink-faint)]">
+        Typically {late.median_days_late}{" "}
+        {late.median_days_late === 1 ? "working day" : "working days"} past the
+        {late.cycle_days ? ` T+${late.cycle_days} ` : " "}cycle
+        {late.max_days_late > late.median_days_late &&
+          `, at worst ${late.max_days_late}`}
+        . This money arrived, so it is not part of the gap above — but it was money you
+        could not use when you expected to.
+      </p>
+    </section>
   );
 }

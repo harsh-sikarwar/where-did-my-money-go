@@ -206,7 +206,9 @@ def run(
         }, order_id=f.order_id)
     log.record("correlate", "before_after", correlated.summary())
 
-    verdict = Ranker(cfg.tolerances).rank(correlated.findings, matches)
+    verdict = Ranker(cfg.tolerances).rank(
+        correlated.findings, matches, correlated.still_unexplained,
+    )
     for line in verdict.lines:
         log.record("rank", "verdict_line", {
             "classification": str(line.classification),

@@ -190,6 +190,37 @@ class VerdictLine:
 
 
 @dataclass
+class LatePayouts:
+    """Settlements that arrived, but later than the cycle promised.
+
+    Deliberately NOT a verdict line. Money that settled late but HAS arrived is already
+    inside `received`, so its contribution to the gap is zero — counting it again was
+    the original double-count that `gap.py` exists to prevent, and it is why this has
+    no line despite the engine detecting 213 of them on a 2,500-order run.
+
+    Zero gap impact is not zero information. A merchant with 213 late payouts has a
+    working-capital problem worth naming, and the engine already knows the count, the
+    value and how late each one was. So it is reported beside the waterfall rather than
+    inside it: no rupee is double-counted and nothing is silently discarded.
+    """
+
+    count: int = 0
+    value_paise: int = 0
+    median_days_late: int = 0
+    max_days_late: int = 0
+    cycle_days: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "count": self.count,
+            "value_paise": self.value_paise,
+            "median_days_late": self.median_days_late,
+            "max_days_late": self.max_days_late,
+            "cycle_days": self.cycle_days,
+        }
+
+
+@dataclass
 class Verdict:
     """The whole four-lines-and-a-verdict output."""
 
@@ -197,7 +228,29 @@ class Verdict:
     received_paise: int
     gap_paise: int
     lines: list[VerdictLine] = field(default_factory=list)
+    # Money no rule could account for, from the CORRELATION pass — the honest residual,
+    # and the only one worth showing a merchant.
+    #
+    # This used to be the decomposition's residual, which is a different thing entirely
+    # and is now `residual_paise` below. The components are constructed so as to close
+    # the gap, so that number is structurally incapable of being non-zero: it read
+    # "Unexplained — nothing in the data accounts for this — ₹0.00" on every run,
+    # including 2,500 orders with 849 defects, on a page whose whole promise is that
+    # every rupee is accounted for. Worse, the correlation section further down the
+    # SAME page named ₹2,480.00 still unexplained, and the order it belonged to.
+    #
+    # A check that cannot fail proves nothing. This one can.
     unexplained_paise: int = 0
+    # How many orders that residual spans, so the row can say "one order" rather than
+    # leaving a bare figure to be taken on faith.
+    unexplained_count: int = 0
+    # The decomposition's own residual: gap minus the sum of the components. It MUST be
+    # zero and `GapDecomposition.check()` raises when it is not, so it is kept as an
+    # integrity signal rather than displayed as a finding.
+    residual_paise: int = 0
+    # Detected late settlements, summarised. Gap-neutral, so it sits beside the
+    # waterfall rather than in it — see LatePayouts.
+    late: LatePayouts | None = None
 
     @property
     def actionable_lines(self) -> list[VerdictLine]:
@@ -232,6 +285,9 @@ class Verdict:
             "received_paise": self.received_paise,
             "gap_paise": self.gap_paise,
             "unexplained_paise": self.unexplained_paise,
+            "unexplained_count": self.unexplained_count,
+            "residual_paise": self.residual_paise,
+            "late": self.late.as_dict() if self.late else None,
             "actionable_paise": self.actionable_paise,
             "benign_paise": self.benign_paise,
             "headline": self.headline(),
@@ -333,10 +389,37 @@ class Ranker:
             findings=mine,
         )
 
+    def _late_payouts(self, findings: list[Finding]) -> LatePayouts | None:
+        """Summarise the TIMING findings the waterfall cannot carry.
+
+        Every figure here comes from proof the classifier already wrote — the delay is
+        not recomputed, only aggregated, for the same reason the fee overcharge is not
+        recomputed downstream.
+        """
+        late = [f for f in findings if f.classification is Classification.TIMING]
+        if not late:
+            return None
+
+        days = sorted(
+            int(f.proof.get("working_days_late", 0) or 0) for f in late
+        )
+        return LatePayouts(
+            count=len(late),
+            value_paise=sum(f.amount_paise for f in late),
+            median_days_late=days[len(days) // 2],
+            max_days_late=days[-1],
+            # The cycle the delay was measured against, so the panel can say "T+2"
+            # rather than leaving "late" undefined. Taken from the findings themselves
+            # because the cycle may have been OBSERVED from the data rather than
+            # configured, and the two can differ.
+            cycle_days=int(late[0].proof.get("cycle_days", 0) or 0),
+        )
+
     def rank(
         self,
         findings: list[Finding],
         matches: MatchResult,
+        still_unexplained: list[Finding] | None = None,
     ) -> Verdict:
         """Build the verdict from the GAP DECOMPOSITION, not from finding amounts.
 
@@ -381,10 +464,19 @@ class Ranker:
                 classification, label, explanation, component, counts, findings,
             ))
 
+        # The residual a merchant is shown comes from the CORRELATION pass: money no
+        # rule could account for, after the payments and subscriptions files were
+        # brought in. `d.residual_paise` is a different quantity — an integrity check
+        # on the decomposition that must be zero — and showing it as though it were
+        # this one meant the row could never say anything.
+        outstanding = list(still_unexplained or [])
         return Verdict(
             expected_paise=d.expected_paise,
             received_paise=d.received_paise,
             gap_paise=d.gap_paise,
             lines=lines,
-            unexplained_paise=d.residual_paise,
+            unexplained_paise=sum(f.amount_paise for f in outstanding),
+            unexplained_count=len(outstanding),
+            residual_paise=d.residual_paise,
+            late=self._late_payouts(findings),
         )
