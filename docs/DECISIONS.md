@@ -2646,3 +2646,206 @@ carries a negative total. The UI still handles one — magnitude-based bar width
 `offsets the gap` legend entry rather than a dropped segment — because a future
 classification could be both negative and actionable, and the previous behaviour was to
 render `width: -74.2%` and silently draw nothing.
+
+---
+
+## ADR-053 — The holiday calendar was empty, which is not the same as neutral
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** `tolerances.yaml` shipped `holidays: []`, with a comment arguing that a short
+known-correct list beats a guessed-at full one. The argument is right. The empty list was
+not the conclusion it implies — it makes the engine treat every bank holiday as a working
+day, so a payout that was never going to arrive is judged late and a merchant is told to
+chase money the bank is closed for. Diwali week is precisely when a merchant most wants to
+know where their money is.
+
+**Decision.** Populate the fixed-date national holidays on which Indian banks close under
+the Negotiable Instruments Act, for 2025 and 2026: Republic Day, Independence Day, Gandhi
+Jayanti, Christmas.
+
+**What is deliberately absent, and why that is the honest half.** Most Indian bank
+holidays are lunar or state-declared. Diwali, Holi, Eid and Good Friday move every year
+and differ by state, and Maharashtra's list — the one that governs settlement, since the
+clearing houses sit there — is published annually rather than derived.
+
+Guessing them would produce a calendar confidently wrong on the dates that matter most,
+and the asymmetry decides it: **a missing holiday makes one settlement look a day late,
+while a wrong holiday makes a real delay look benign.** This engine's argument is that it
+does not quietly explain money away, so it errs toward flagging.
+
+A merchant running a real batch across Diwali pastes that year's RBI list into the config.
+That is an edit to a YAML file, not a code change, which is what the config layer is for.
+
+`test_the_list_is_deliberately_fixed_date_only` asserts the absence, so adding a moving
+feast is a decision someone makes on purpose with a published list in hand, rather than a
+lint someone silences.
+
+**No effect on the accuracy figures.** The generator and the classifier share one
+`WorkingCalendar` — deliberately, so a generator bug cannot hide behind a matching
+classifier bug — so both moved together and the matrix is unchanged: 26 runs, 0 missed,
+0 false positives, balance identity holding. Only the timing fields in
+`matrix-results.json` differ, and those measure the machine.
+
+---
+
+## ADR-054 — 488 statements at 0%, in the interface everything else reaches around
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** `cli.py` had no tests at all. `pipeline.run()` was exercised from a dozen
+angles; `finctl checkpoint` — the command the README tells a reader to type first — from
+none. The suite tested the engine through the door the tests use, not the one a person
+uses.
+
+The cost is not hypothetical. Twice during this session a wrong option name (`--cycle-days`
+for `--cycle`, a positional argument for `--amount`) produced a usage error that no test
+would ever have caught, because nothing typed these commands.
+
+**Decision.** Smoke tests over every subcommand, asserting the contract a CLI actually
+has rather than re-testing the engine underneath it:
+
+- exit 0 on the happy path, non-zero on the sad one
+- no traceback, ever
+- the numbers printed are the engine's, not a second copy
+- a command that refuses says what to do instead
+
+`catch_exceptions=False`, so a crash fails loudly rather than passing as a deliberate
+refusal — which is the distinction these tests exist to draw.
+
+**What they found immediately.** Two commands were leaking internal exceptions to the
+terminal as eighteen lines of Rich traceback:
+
+```
+ConfigError: unknown archetype 'not_an_archetype'. Known: ['d2c_ecommerce', …]
+ValueError: defect profile 'demo' demands 34 defects but the batch has only 5 orders …
+```
+
+Both messages are excellent — they name the fix, not just the fault, which is this
+engine's stated standard for errors. The CLI was taking the best thing about its own error
+handling and burying it under a stack dump. The critique flagged "two leaked internal
+exceptions"; these are they.
+
+`_Refuse` turns those into the message alone plus exit 1. Deliberately narrow —
+`ConfigError`, `MoneyError`, `NormalizationError`, `ValueError` — because a blanket
+`except Exception` would hide the next real bug behind a tidy one-liner. **A traceback is
+the right output for a bug and the wrong one for a refusal.**
+
+**Coverage moved where it should.** cli.py 0% → 70%, blind.py 0% → 91%, overall 75% → 89%.
+
+The blind tests assert the property that matters there, which is what the command does
+*not* print: no defect type names, no archetype, no configuration values, and no bare
+integers. A first version asserted on the bare word "defect" and failed on the sentence
+explaining that nothing is printed — an assertion about prose describing the guarantee
+rather than about a breach of it.
+
+**Still uncovered, and named.** 148 statements: the `probe --live` path (needs Razorpay
+credentials and a network), and Rich table rendering in the deeper drill-downs. Both are
+presentation over data that is tested where it is produced.
+
+---
+
+## ADR-055 — CI, and the one number it refuses to gate on
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** Every check in this project ran by hand. The evidence for "it works" was that
+it worked on one laptop — and two of the four defects fixed in ADR-049..052 were found by
+an outsider running the engine, which is what CI is: an outsider with no context and no
+muscle memory.
+
+**Decision.** Four jobs on every push: `engine` (ruff, pytest, coverage), `metrics` (the
+accuracy matrix), `web` (tsc, next build), `secrets`.
+
+**The matrix job is the one worth having.** It re-derives the headline claim on every push
+and fails the build if the summary stops saying `defects missed: 0`, `false positives: 0`,
+`balance identity: holds in every run`. A claim that is only ever regenerated by hand is a
+claim that can quietly stop being true between regenerations.
+
+It also checks `docs/matrix-results.json` against a fresh run, **excluding `seconds` and
+`rows_per_second`.** That exclusion is the whole design: those measure the machine, not
+the engine, and they differ on every run. A byte-for-byte diff would fail on a slow runner,
+and a check that cries wolf on hardware noise is one people learn to re-run until green —
+worse than no check, because then a real accuracy regression looks like the usual flake.
+Caught by running the check locally before committing it, where it failed immediately.
+
+**No coverage threshold, deliberately.** cli.py sat at 0% while the classifier, correlator,
+matcher, gap and ranker sat at 95–100%. A single repo-wide percentage would have been
+satisfied by the wrong work — and the honest reading was always per-module. Coverage is
+reported, not gated.
+
+**Format check is non-blocking.** 41 files would reformat, and a reformat commit that
+large would bury the history this project keeps deliberately readable. The check runs so
+the number is visible and shrinking rather than unknown.
+
+**No API key in CI.** The explanation stage falls back to its template without one, and
+`tests/conftest.py` disables it for every test regardless. A suite that reaches a
+third-party endpoint has red builds that must be diagnosed before they can be trusted.
+
+**The secrets job enforces a rule that predates the code.** `.env` has been gitignored
+since commit one; this fails the build if it is ever tracked, and greps for key *shapes*
+rather than running a generic entropy scan — a false positive here trains people to ignore
+the job.
+
+---
+
+## ADR-056 — Running the arithmetic against Razorpay's own file, and the two bugs it found
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** METRICS.md says it plainly at the top: every accuracy figure is measured
+against data this project generated, where the generator defines truth. A closed loop.
+The critique named breaking that loop as the single highest-value change available —
+"one real batch converts *100% on our synthetic data* into *it works*."
+
+A live merchant account was not available. What was available is
+`razorpay-sample-files/`: Razorpay's own exports, not written by us and not written for
+us. `test_normalize.py` already proved they were READABLE. It did not prove the money
+arithmetic agreed with them, and those are different claims.
+
+**Decision.** Run the engine's central identity over Razorpay's own settlement recon
+export:
+
+    credit - debit == amount - fee - tax
+
+on every payment row, in integer paise through `money.py` — not in float, since the
+reason that module exists is that this is where binary floating point drifts.
+
+**It holds on all nine payment rows.** The tenth is the refund, where it correctly does
+NOT hold: a refund is a debit that nets negative against a positive amount, which is why
+`gap.py` books refunds as their own signed component. Asserting the exception is what
+makes the rule meaningful.
+
+**Two real bugs, neither of which the generator could have produced.**
+
+**1. There were two date parsers and only one was good.** `to_date` reached only
+`date.fromisoformat`, so it raised a bare `ValueError: Invalid isoformat string:
+'29/06/2022 07:34:39'` — a string taken verbatim from Razorpay's export, in the very
+column `_parse_timestamp`'s docstring cites. That function has read DD/MM/YYYY correctly
+since ADR-044. The matcher and classifier were calling the weaker one. It now delegates,
+so a bad date also gets the engine's own message ("Accepted: Excel serial date, epoch
+seconds, YYYY-MM-DD…") instead of a stack trace.
+
+The generator writes one timestamp format per column, because nobody would think to
+generate a column that mixes two. Razorpay's file mixes them — a spreadsheet writes
+whichever the cell format dictates.
+
+**2. A naive datetime was shifted by the machine's timezone.** `openpyxl` returns naive
+datetimes for every date cell in an .xlsx, and `.astimezone(UTC)` interprets a naive value
+as LOCAL time. On an IST machine (+5:30) a settlement stamped 02:00 read as the PREVIOUS
+DAY. A silent, machine-dependent off-by-one on a settlement date — precisely the class of
+error this engine exists to find in other people's systems, and it would have made the
+same batch reconcile differently in Mumbai and in London.
+
+The sample rows are afternoon timestamps, so the bug was latent even there: it needed a
+value near midnight to surface. It was found by checking the parsing directly rather than
+by the row happening to trip it, which is the argument for asserting on a real file rather
+than eyeballing its output.
+
+**What this does and does not establish.** Ten rows is not a merchant's month. The honest
+claim is: **the engine's core identity holds on real Razorpay-authored rows, and two
+parsing bugs that only real data exposes are now fixed.** It is not "it works on
+production data" — that still needs a live account, and LIMITATIONS.md keeps saying so.
+
+The value was never the ten rows. It is that two hours against a file we did not write
+found two defects that 825 tests against a file we did write did not.

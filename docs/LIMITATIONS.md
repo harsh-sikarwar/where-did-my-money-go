@@ -463,3 +463,47 @@ own data.
 
 Neither was found by 721 tests, because the suite sent well-formed hostile data and these
 are malformed hostile data. The blind rounds plant *defects*; they do not plant *garbage*.
+
+---
+
+### What the real Razorpay files did and did not establish
+
+`razorpay-sample-files/` holds Razorpay's own exports. The engine's central identity —
+`credit - debit == amount - fee - tax` — now runs over the settlement recon report's ten
+rows in integer paise and holds on all nine payments, with the refund correctly inverting
+the sign.
+
+Two bugs came out of it, both invisible to the generator (ADR-056): `to_date` could not
+read the DD/MM/YYYY strings Razorpay's own file mixes into a datetime column, and naive
+datetimes from `openpyxl` were being shifted a day backward by the machine's timezone.
+
+**Ten rows is not a merchant's month.** This does not make the accuracy claims
+open-loop — they are still measured against generated data where the generator defines
+truth, exactly as METRICS.md says. What it establishes is narrower and worth stating
+exactly: the arithmetic agrees with numbers nobody here chose, and two parsing defects
+that only real data exposes are fixed.
+
+The credibility step that remains is one real merchant's export, with the unexplained
+residual reported honestly whatever it turns out to be. That needs a live account.
+
+### The holiday calendar is fixed-date only
+
+Populated with the national holidays banks close for under the Negotiable Instruments Act
+(ADR-053). Diwali, Holi, Eid and Good Friday are absent because they are lunar or
+state-declared: they move annually and differ by state, and Maharashtra's list — the one
+governing settlement — is published each year rather than derived.
+
+A merchant reconciling across Diwali should paste that year's RBI list into
+`tolerances.yaml`. Until they do, a settlement delayed by a moving holiday reads as
+genuinely late. That is the deliberate direction: a missing holiday makes one settlement
+look a day late, while a wrong one makes a real delay look benign.
+
+### CI gates the accuracy claim, not the coverage number
+
+Four jobs on every push (ADR-055). The matrix job re-derives the headline claim and fails
+the build if it stops reading 0 missed / 0 false positives / identity holds.
+
+No coverage threshold, deliberately: cli.py sat at 0% while core logic sat at 95-100%, so
+a single repo-wide percentage would have been satisfied by the wrong work. Coverage is
+reported per module and read that way. `ruff format --check` is non-blocking — 41 files
+would reformat, and that commit would bury the history this project keeps readable.
