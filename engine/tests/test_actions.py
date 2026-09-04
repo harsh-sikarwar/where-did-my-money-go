@@ -53,7 +53,7 @@ class TestItNamesWhatTheVerdictCounts:
         besides. Asserting the coarse rule required the action list to carry rows the
         verdict called benign, so the two screens disagreed about whether ₹2,244 of
         DUPLICATE needed the merchant this week — the exact class of disagreement
-        ADR-049 exists to prevent.
+        ADR-053 exists to prevent. ADR-054.
 
         What must hold is that nothing the verdict counts as work is dropped here.
         """
@@ -75,7 +75,7 @@ class TestItNamesWhatTheVerdictCounts:
         delta for FEE, a whole order for HALTED_SUBSCRIPTION, and a magnitude whose sign
         is negative for REFUND. So the test passed while the action list and the verdict
         screen showed different numbers for the same batch. The test was enforcing the
-        bug. See ADR-049.
+        bug. See ADR-053.
         """
         verdict_by_class = {
             line.classification: line.amount_paise for line in result.verdict.lines
@@ -93,7 +93,7 @@ class TestItNamesWhatTheVerdictCounts:
         """The headline number a merchant acts on, from both screens.
 
         The docstring on `actions.py` claims this module "cannot disagree with the
-        verdict it accompanies". Until ADR-049 that was aspirational. This is the
+        verdict it accompanies". Until ADR-053 that was aspirational. This is the
         assertion that makes it true.
         """
         actionable = {
@@ -118,7 +118,7 @@ class TestItNamesWhatTheVerdictCounts:
         DISPUTED row carries a statutory response deadline, and a merchant shown ₹0.00
         closes the tab. It came from summing a netted credit; the refund groups then
         reproduced it one component further down, where the gap decomposition tracked
-        the money in aggregate and named no orders. Both are ADR-049.
+        the money in aggregate and named no orders. Both are ADR-053.
         """
         for group in result.actions:
             for item in group.items:

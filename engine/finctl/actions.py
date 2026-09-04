@@ -10,7 +10,7 @@ stage already resolved `customer_id`, `subscription_id` and `error_reason` on th
 labelling the gap. This module is a projection, not an analysis, which is why it cannot
 disagree with the verdict it accompanies.
 
-THAT CLAIM WAS FALSE UNTIL ADR-049. This module summed `finding.amount_paise`, which is
+THAT CLAIM WAS FALSE UNTIL ADR-053. This module summed `finding.amount_paise`, which is
 precisely the mistake `gap.py` exists to prevent: that field is not a contribution to
 the gap, it means something different per classification. So the action list and the
 verdict screen reported different totals for the same batch — DISPUTED at ₹8,693.87 on
@@ -21,7 +21,7 @@ The amounts now come from the same `GapDecomposition` the verdict is built from,
 `test_actions.py` asserts the two agree. A docstring claiming a property is not the same
 as a test enforcing one.
 
-ADR-048, ADR-049.
+ADR-048, ADR-053.
 """
 
 from __future__ import annotations
@@ -247,8 +247,8 @@ def build(
     recreate the dashboard this product exists not to be.
 
     `actionable` is the set the VERDICT ranked as needing a human, and it is the
-    authority on that question when supplied. Filtering on `BENIGN` alone is a coarser
-    rule than the one the verdict applies: `tolerances.yaml` also lists REFUND and
+    authority on that question when supplied (ADR-054). Filtering on `BENIGN` alone is
+    a coarser rule than the one the verdict applies: `tolerances.yaml` also lists REFUND and
     DUPLICATE as `always_benign` ("a bookkeeping divergence to reconcile, not a
     this-week action"), and materiality thresholds can demote a small finding besides.
     With only the `BENIGN` check, this list showed DUPLICATE as work to chase on a
@@ -265,7 +265,7 @@ def build(
 
     `decomposition` supplies the amounts. Without it this function falls back to
     `finding.amount_paise` and the resulting totals WILL disagree with the verdict —
-    that is the ADR-049 bug, kept reachable only so unit tests can construct a group
+    that is the ADR-053 bug, kept reachable only so unit tests can construct a group
     from bare findings. Every production caller passes one.
     """
     by_order: dict[str, dict[str, Any]] = {
