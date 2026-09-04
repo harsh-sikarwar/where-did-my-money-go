@@ -44,6 +44,17 @@ finctl-answers/
 *.sqlite3
 *.db
 audit/*.jsonl
+# Coverage output is a measurement of a run, not an artefact of the project. The
+# number belongs in METRICS.md; the binary does not belong in git.
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Design handoff archives ---
+# The exported zip from the design tool. Its CONTENTS are adopted into web/ and
+# committed there; the archive itself is a several-megabyte duplicate of work that
+# already lives in the tree as code.
+*handoff*.zip
 
 # --- OS / editor ---
 .DS_Store

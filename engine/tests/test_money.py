@@ -150,3 +150,48 @@ class TestFormatRupees:
     def test_rejects_non_int(self) -> None:
         with pytest.raises(MoneyError):
             format_rupees(1234.5)  # type: ignore[arg-type]
+
+
+class TestNonFiniteValues:
+    """NaN and Infinity are not money, and must not escape as internal exceptions.
+
+    Found by external critique: `Decimal("nan")` constructs fine and only raises
+    `InvalidOperation` later at `int()`, so the error escaped `parse_money` and reached
+    the API as a bare `InvalidOperation: []` — a stack trace wearing a 422, in a module
+    whose other messages tell a merchant exactly how to fix their file.
+
+    Both forms come from real exports: pandas writes "nan" for an empty cell, Excel
+    emits "inf" from a division by zero.
+    """
+
+    @pytest.mark.parametrize(
+        "value",
+        ["nan", "NaN", "-NaN", "inf", "-inf", "Infinity", "-Infinity", "sNaN"],
+    )
+    def test_rejects_non_finite_strings(self, value: str) -> None:
+        with pytest.raises(MoneyError):
+            parse_money(value, allow_negative=True)
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_rejects_non_finite_floats(self, value: float) -> None:
+        with pytest.raises(MoneyError):
+            parse_money(value, allow_negative=True)
+
+    def test_error_names_the_cause_and_the_fix(self) -> None:
+        """Every other message here is a fix instruction. This one must be too."""
+        with pytest.raises(MoneyError) as exc:
+            parse_money("nan")
+        message = str(exc.value)
+        assert "finite" in message
+        assert "nan" in message.lower()
+
+    def test_negative_infinity_is_refused_on_its_own_merits(self) -> None:
+        """Not merely because it is negative.
+
+        Before the fix, "-inf" passed only by accident: the negative check caught it
+        while "inf" sailed through. A finiteness check must reject it even where
+        negatives are explicitly permitted.
+        """
+        with pytest.raises(MoneyError) as exc:
+            parse_money("-inf", allow_negative=True)
+        assert "finite" in str(exc.value)
