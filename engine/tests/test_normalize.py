@@ -418,3 +418,184 @@ class TestRazorpaysOwnExports:
             parsed = _parse_timestamp(row["entity_created_at"], "recon", i)
             assert parsed is None or parsed.year != 1970
 
+
+
+class TestTheArithmeticAgainstRazorpaysOwnFile:
+    """Not just readable — RECONCILED. ADR-056.
+
+    `test_every_sample_export_is_readable` proves the parser survives Razorpay's real
+    export. It does not prove the money arithmetic agrees with it, and those are
+    different claims: every accuracy figure in METRICS.md is measured against data this
+    project generated, where the generator defines truth. That is a closed loop, stated
+    plainly at the top of METRICS.md.
+
+    These tests break the loop as far as the available files allow. `sample-settlements-
+    recon-report.xlsx` is Razorpay's own document, ten rows, not written by us and not
+    written for us. The identity below is the engine's central claim, checked against
+    numbers nobody here chose.
+
+    Ten rows is not a merchant's month. The honest description is: the engine's core
+    identity holds on real Razorpay-authored rows, and nothing larger has been tested.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def real_rows() -> list[dict]:
+        from finctl.normalize.normalizer import _read_tabular
+
+        # `_read_tabular` already yields dicts keyed by the file's own headers.
+        _headers, rows = _read_tabular(
+            SAMPLES / "sample-settlements-recon-report.xlsx", "settlements-recon"
+        )
+        return list(rows)
+
+    def test_the_file_is_razorpays_not_ours(self, real_rows: list[dict]) -> None:
+        """Guard against this silently becoming a test of our own fixtures."""
+        assert len(real_rows) == 10
+        assert all(str(r["entity_id"]).startswith(("pay_", "rfnd_")) for r in real_rows)
+
+    def test_net_equals_amount_less_fee_and_tax_on_every_payment(
+        self, real_rows: list[dict]
+    ) -> None:
+        """The identity the whole engine rests on, on rows we did not write.
+
+        credit - debit == amount - fee - tax, for every payment row. Checked in integer
+        paise through the engine's own parser, not in float: the reason `money.py` exists
+        is that this arithmetic is where binary floating point drifts, and checking it in
+        float would be checking the wrong thing.
+        """
+        from finctl.money import parse_money
+
+        payments = [r for r in real_rows if r["transaction_entity"] == "payment"]
+        assert payments, "the sample file must contain payment rows"
+
+        for row in payments:
+            amount = parse_money(row["amount"])
+            fee = parse_money(row["fee (exclusive tax)"])
+            tax = parse_money(row["tax"])
+            credit = parse_money(row["credit"])
+            debit = parse_money(row["debit"])
+
+            assert credit - debit == amount - fee - tax, (
+                f"{row['entity_id']}: net {credit - debit} != "
+                f"{amount} - {fee} - {tax} = {amount - fee - tax}"
+            )
+
+    def test_a_refund_row_inverts_the_sign(self, real_rows: list[dict]) -> None:
+        """The one row where the identity does NOT hold, and must not.
+
+        A refund is a DEBIT: money leaving the settlement to go back to a customer. It
+        nets negative against an amount that is positive, which is exactly why gap.py
+        books refunds as their own signed component rather than folding them in with
+        payments. Asserting the exception is what makes the rule above meaningful.
+        """
+        from finctl.money import parse_money
+
+        refunds = [r for r in real_rows if r["transaction_entity"] == "refund"]
+        assert len(refunds) == 1, "row 10 of Razorpay's sample is the refund"
+
+        row = refunds[0]
+        assert parse_money(row["debit"]) > 0
+        assert parse_money(row["credit"]) == 0
+        assert not row.get("order_id"), (
+            "this refund carries no order_id — the fact ADR-039 was written for"
+        )
+
+    def test_the_engine_parses_both_date_formats_in_one_column(
+        self, real_rows: list[dict]
+    ) -> None:
+        """Razorpay's own file mixes them, in the same column.
+
+        `entity_created_at` holds real datetimes on some rows and the string
+        '29/06/2022 07:34:39' on others — DD/MM/YYYY, which a naive parser reads as
+        29 June or as an error, and a US-defaulting one reads as neither. This is the
+        kind of thing no generator produces because nobody would think to generate it.
+        """
+        from finctl.normalize.normalizer import to_date
+
+        parsed = [to_date(r["entity_created_at"]) for r in real_rows]
+        assert all(d is not None for d in parsed), (
+            "a date in Razorpay's own export failed to parse"
+        )
+        # All ten rows are from 2022; a DD/MM read as MM/DD would still land in 2022,
+        # so the year alone proves little — the day-of-month is what separates them.
+        assert {d.year for d in parsed} == {2022}
+
+    def test_fees_are_a_plausible_rate_of_the_amount(self, real_rows: list[dict]) -> None:
+        """A sanity check on real numbers, not a rate-card assertion.
+
+        These rows are ₹1.00 test transactions with a ₹0.01 fee — 1%, which is not any
+        published Razorpay rate and is an artefact of the sample being a test account.
+        So this asserts only that the fee is a SANE fraction of the amount: the check
+        that would catch a parser reading paise as rupees, which is the actual risk when
+        ingesting a file whose amounts are written in rupees with decimals.
+        """
+        from finctl.money import parse_money
+
+        for row in real_rows:
+            amount = parse_money(row["amount"])
+            fee = parse_money(row["fee (exclusive tax)"])
+            if amount and fee:
+                assert 0 < fee < amount, (
+                    f"{row['entity_id']}: fee {fee} is not a sane fraction of {amount}"
+                )
+
+    def test_a_naive_datetime_is_not_shifted_by_the_machines_timezone(self) -> None:
+        """openpyxl returns NAIVE datetimes, and they are already UTC. ADR-056.
+
+        `.astimezone(UTC)` interprets a naive value as LOCAL time, so on an IST machine
+        (+5:30) a settlement stamped 02:00 read as the PREVIOUS day. Silent, machine-
+        dependent, and an off-by-one on a settlement date — the exact class of error this
+        engine exists to find in other people's systems.
+
+        The sample file's own rows are afternoon timestamps, so the bug was latent there:
+        it needed a value near midnight to surface, which is why it survived until the
+        arithmetic was run against a real file and the parsing was checked directly.
+        """
+        from finctl.normalize.normalizer import to_date
+
+        for hour in (0, 2, 5, 12, 23):
+            naive = datetime(2022, 6, 29, hour, 0)
+            assert to_date(naive) == date(2022, 6, 29), (
+                f"a naive {hour:02d}:00 datetime moved off 2022-06-29"
+            )
+
+    def test_an_aware_datetime_is_still_converted(self) -> None:
+        """The fix must not stop honouring a timezone that IS declared."""
+        from datetime import timedelta, timezone
+
+        from finctl.normalize.normalizer import to_date
+
+        ist = timezone(timedelta(hours=5, minutes=30))
+        # 02:00 IST is 20:30 UTC the previous day, and that conversion is correct.
+        assert to_date(datetime(2022, 6, 29, 2, 0, tzinfo=ist)) == date(2022, 6, 28)
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("29/06/2022 07:34:39", date(2022, 6, 29)),   # verbatim from the real file
+            ("29-06-2022", date(2022, 6, 29)),
+            ("2022-06-29", date(2022, 6, 29)),
+            ("1656460800", date(2022, 6, 29)),            # epoch seconds
+        ],
+    )
+    def test_to_date_reads_every_format_the_real_parser_does(
+        self, raw: str, expected: date
+    ) -> None:
+        """There were two date parsers and only one of them was good. ADR-056.
+
+        `to_date` reached only `date.fromisoformat`, so it raised a bare ValueError on
+        '29/06/2022 07:34:39' — a string taken verbatim from Razorpay's own settlement
+        export, in the very column `_parse_timestamp`'s docstring cites. It now delegates.
+        """
+        from finctl.normalize.normalizer import to_date
+
+        assert to_date(raw) == expected
+
+    def test_an_unreadable_date_still_says_how_to_fix_it(self) -> None:
+        """A bare ValueError is a stack trace; this engine's errors are instructions."""
+        from finctl.normalize.normalizer import NormalizationError, to_date
+
+        with pytest.raises(NormalizationError) as exc:
+            to_date("not-a-date")
+        assert "Accepted" in str(exc.value)

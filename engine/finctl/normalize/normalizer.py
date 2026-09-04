@@ -538,17 +538,47 @@ def load_collection(path: Path, source_name: str) -> list[dict[str, Any]]:
 
 
 def to_date(value: Any) -> date | None:
-    """Coerce a timestamp-ish value to a UTC date. Used by the matcher and classifier."""
+    """Coerce a timestamp-ish value to a UTC date. Used by the matcher and classifier.
+
+    Delegates the string case to `_parse_timestamp`, which is the engine's real date
+    parser — Excel serials, epoch seconds, ISO, DD/MM/YYYY and DD-MM-YYYY, with an error
+    that names the accepted formats.
+
+    This function used to do its own parsing and reached only `date.fromisoformat`, so
+    it raised a bare `ValueError: Invalid isoformat string: '29/06/2022 07:34:39'` on a
+    string taken verbatim from Razorpay's own settlement export — a format
+    `_parse_timestamp` has read correctly since ADR-044, in the very column its docstring
+    cites. Two date parsers, one of them good.
+
+    Found by running the arithmetic tests against `sample-settlements-recon-report.xlsx`
+    rather than against generated data: the generator writes one timestamp format per
+    column because nobody would think to generate a column that mixes two. See ADR-056.
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
+        # A NAIVE datetime is already UTC and is stamped as such, not converted.
+        # `openpyxl` returns naive datetimes for every date cell in an .xlsx, and
+        # `.astimezone(UTC)` interprets a naive value as LOCAL time — so on an IST
+        # machine (+5:30) a settlement stamped 02:00 became the previous day, and the
+        # engine reported a settlement a day earlier than the file says. Silent, machine-
+        # dependent, and exactly the off-by-one on a settlement date that this engine
+        # exists to catch in other people's systems.
+        #
+        # The rest of the engine treats Razorpay timestamps as UTC (`_parse_timestamp`
+        # stamps `tzinfo=UTC` rather than converting), so this is consistency, not a
+        # new assumption. ADR-056.
+        if value.tzinfo is None:
+            return value.date()
         return value.astimezone(UTC).date()
     if isinstance(value, date):
         return value
-    if isinstance(value, int):
+    if isinstance(value, int) and not isinstance(value, bool):
         return datetime.fromtimestamp(value, tz=UTC).date()
-    if isinstance(value, str) and value.isdigit():
-        return datetime.fromtimestamp(int(value), tz=UTC).date()
     if isinstance(value, str):
-        return date.fromisoformat(value)
+        # `_parse_timestamp` wants a source and row for its message; this function is
+        # called from the matcher and classifier, which have neither. The value itself
+        # is what a reader needs to find the offending cell.
+        parsed = _parse_timestamp(value, f"date value {value!r}", 0)
+        return parsed.date() if parsed else None
     raise NormalizationError(f"cannot interpret {value!r} as a date")
