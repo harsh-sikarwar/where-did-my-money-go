@@ -395,3 +395,71 @@ on every profile — a property of the generator, not proof the correlator is co
 new mechanisms have unit coverage of the shapes real exports produce, which is a weaker
 claim than the recall figures and should be read as such.
 
+
+---
+
+### The explanation stage is not built, and the README claimed it was
+
+Found by an external critique, not by us — which is itself the finding.
+
+`finctl/explain/__init__.py` is a one-line stub. There is no LLM call anywhere in this
+codebase: not in the engine, not in the API, not in the web app. `ANTHROPIC_API_KEY` and
+`FINCTL_LLM_MODEL` sit in `.env.example` reserved for a stage that was never written.
+
+Two claims in the README were false as a result:
+
+| Claimed | Actual |
+|---|---|
+| `\| Explanation \| **Yes** \|` in the AI-usage table | Deterministic hand-written copy |
+| `\| Recommended action \| **Yes** \|` | A fixed `dict[Classification, str]` in `actions.py` |
+| "the LLM stage falls back to a deterministic templated explanation" | There is nothing to fall back *from*. The template is the only path |
+
+The explanations themselves are good, and they are honest work — the objection is not to
+the copy but to describing it as something it is not. In a project whose entire argument
+is *measured rather than asserted*, an unearned capability claim in the headline table is
+the most expensive kind of error available to us: it invites a reader to discount the 721
+tests that **are** real.
+
+Corrected in the README rather than defended: the table read **Not built** for a day.
+
+**Then built** (ADR-050), which is why this entry stays rather than being deleted — the
+record of the claim being wrong is worth more than a tidy file. Explanation now reads
+**Yes** honestly: one model writes the summary prose, is never shown a figure, and any
+response containing one is discarded whole. Recommended action still reads **No**, and
+should: `NEXT_STEP` is deterministic copy that is already right.
+
+What this does *not* change: the decision to keep an LLM away from matching, fee
+arithmetic, classification and correlation stands, and remains the right one. A
+reconciliation engine that hallucinates is worse than no engine. The gap was never that
+the model was missing from the arithmetic — it is that it was missing from the prose
+while the README said otherwise.
+
+---
+
+### Two hostile inputs the suite never sent
+
+Both found by external critique, both reachable from a real merchant CSV.
+
+**`nan` and `Infinity` crashed the upload.** `Decimal("nan")` constructs without error and
+only raises at `int()`, so the exception escaped `parse_money` and surfaced as
+`InvalidOperation: []` — a 422 with a stack trace in it. `"inf"` did the same via
+`OverflowError`. The contrast is what makes it a real defect rather than a rough edge:
+every other parse error in this engine is a fix instruction ("cannot parse timestamp
+'not-a-date'. Accepted: Excel serial date, epoch seconds, YYYY-MM-DD…"). These two were
+noise. pandas writes `nan` for an empty cell and Excel emits `inf` from a division by
+zero, so neither is exotic.
+
+`-inf` passed before the fix only by accident — the negative-amount check caught it while
+`inf` sailed past. A test now asserts it is refused *with `allow_negative=True`*, so the
+finiteness check is what rejects it.
+
+**The CSV export was formula-injectable.** `to_csv` wrote `order_id`, `email` and `reason`
+through untouched, and a value starting `=`, `+`, `-` or `@` executes when the file is
+opened. The docstring's entire argument is that a merchant opens this in a spreadsheet,
+which is what turns a generic weakness into this file's specific one. Leading whitespace
+counts too: Excel skips it before reading the sigil, so `"\t=SUM(A1)"` was live. Values
+are prefixed with `'` and left otherwise unedited — defusing must not alter the merchant's
+own data.
+
+Neither was found by 721 tests, because the suite sent well-formed hostile data and these
+are malformed hostile data. The blind rounds plant *defects*; they do not plant *garbage*.

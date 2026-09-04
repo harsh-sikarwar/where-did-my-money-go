@@ -2298,3 +2298,273 @@ residual is zero on every profile, which is a property of the generator rather t
 the correlator is complete. What the new joins have is unit coverage of the shapes real
 exports produce. That is the same limit as everything else in `METRICS.md`, and it is why
 the hand-edited rounds and the real sample files exist alongside it.
+
+---
+
+## ADR-049 — The action list disagreed with the verdict, and a test held it in place
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** An external critique ran the engine and put the two screens side by side:
+
+| Classification | Verdict | Action list |
+|---|---|---|
+| DISPUTED | ₹8,693.87 | ₹0.00 |
+| ON_HOLD | ₹14,734.85 | ₹0.00 |
+| REFUND | −₹18,988.00 | ₹22,334.00 |
+
+Same product, same batch, two answers, differing by ₹1,094.72 in total — and the REFUND
+line differing in **sign**, which is worse than differing in size.
+
+ADR-048 claimed this could not happen. `actions.py` opens by saying the module "cannot
+disagree with the verdict it accompanies". It did, on every batch, from the day it was
+written.
+
+**Cause.** `actions.py` summed `finding.amount_paise`. That is precisely the mistake
+`gap.py` exists to prevent, and its docstring says so in as many words: the field means
+the *overcharge* for FEE, the *whole order* for HALTED_SUBSCRIPTION, and a *magnitude
+whose sign is negative* for REFUND. Those are not commensurable and adding them was never
+going to equal anything.
+
+The lesson was learned in `gap.py` and not carried into `actions.py`, because
+`actions.py` was written later. A fix applied in one module is not an invariant.
+
+**What makes this the worse kind of bug.** `test_the_totals_match_the_findings` asserted
+that the action totals equalled `sum(finding.amount_paise)`. It passed. It was pinning
+the defect in place: the test encoded the buggy quantity as the expected answer, so the
+suite would have rejected the correct behaviour. A green suite was evidence of
+consistency with the bug, not of correctness.
+
+**Decision.**
+
+1. `build()` takes the `GapDecomposition` and reads its amounts from it. Both screens now
+   derive from one computation instead of agreeing by inspection.
+2. `ActionGroup.total_paise` returns the **component** total, not a re-sum of its items,
+   so a component the decomposition tracks in aggregate cannot report zero.
+3. Components that were tracked in aggregate now carry their `order_ids`: the refund
+   debits, the settled-above-ledger excess, and the shortfall. Without this the group
+   total was right and every row beneath it read ₹0.00 — the same defect as the
+   chargeback, one component further down.
+4. An unrecorded refund has no `order_id` on either side; that absence is what makes it
+   unrecorded. Those rows are keyed by refund `entity_id` instead.
+5. The test was replaced by three that assert the property ADR-048 only claimed: every
+   group equals its verdict line, the actionable totals match, and **no actionable row
+   reads zero**.
+
+**On the ₹0.00 chargeback specifically.** The critique proposed sourcing the amount from
+`proof["amount_disputed_paise"]`. That field is computed by
+
+```python
+amount = sum(r.get("credit", 0) or 0 for r in disputed) or sum(...)
+```
+
+and `X or Y` falls through only when the left side is exactly zero. A clawed-back
+chargeback has a *negative* credit sum, which is truthy, so it is kept — that is the
+third of the three conflicting figures for one dispute, not a fix for the other two.
+Taking the amount from the decomposition avoids the falsy-fallback chain entirely.
+
+**Verified.** The demo batch now reports ₹8,693.87 / ₹14,734.85 / −₹18,988.00 on both
+screens, sign intact; items sum exactly to their group in every group; no row reads zero;
+and the matrix still holds the balance identity across all 22 runs with 0 defects missed
+and 0 false positives.
+
+**What this cost the project's own argument.** The failure record is the strongest thing
+here, and this is the entry that tests it: the engine's numbers were right and the screen
+was assembling them wrongly — the identical sentence that opens `gap.py`. Twice is a
+pattern, and the response to a pattern is an invariant, not a third fix. Hence the
+assertion rather than the correction.
+
+---
+
+## ADR-050 — The explanation stage, and where a model is allowed to be wrong
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** ADR-049's sibling finding: the README claimed an LLM wrote the explanations
+and the recommended actions. Neither was true — `finctl/explain/` was a one-line stub and
+there was no model call anywhere in the codebase. The claim was corrected first (the
+table read **Not built** for a day), because a false capability claim in a project whose
+argument is *measured rather than asserted* costs more than a missing capability.
+
+This ADR is the other resolution: build it, so the claim is true.
+
+**Decision.** One model call, per batch, writing the two-sentence summary above the
+verdict lines. It is given facts that are already resolved and asked only to phrase them.
+
+**Where the model is NOT.** Unchanged from the original argument, and worth restating
+because building the stage is exactly when it would erode: matching, fee arithmetic,
+classification, correlation and ranking are all deterministic. An LLM must never decide
+whether two numbers are equal. A reconciliation engine that hallucinates is worse than no
+engine.
+
+**The rule that makes it safe: no figure a merchant reads comes from a model.**
+
+The model is never shown a number. `_facts` describes lines by RANK — "largest line",
+"needs action" — so there is no figure in the prompt to echo back. `guard` then discards
+any response containing a digit or a number word, and the caller falls back to the
+template. Every amount on screen is rendered by `format_rupees` from an integer the model
+never touched.
+
+*One numeral discards the whole response*, not just the offending sentence. Salvaging the
+clean half is tempting and wrong: the surviving sentence was written believing the
+invented figure was true, so "act now" would follow from a shortfall the engine never
+found. It is also the rule a reviewer can check in one pass.
+
+**Fallback is the default path, not the error path.** No key, no network, a timeout, an
+empty response, or prose that fails the guard all produce the deterministic template. The
+demo runs offline exactly as before. `explain()` returns `(prose, source)` and the API
+returns `summary_source`, because a product that cannot say whether a model wrote
+something is not one you can audit — the verdict screen says so to the merchant too.
+
+**Provider is configuration, not a dependency.** Any OpenAI-compatible endpoint;
+`urllib` rather than a vendor SDK, so the engine still installs with zero LLM
+dependencies. Default: Groq serving GPT-OSS-20B (Apache 2.0, open weights).
+
+**Three things found by running it, all of which would have shipped silently:**
+
+1. **GPT-OSS is a reasoning model.** At default effort it spent its entire token budget on
+   hidden reasoning and returned `content: ""` with `finish_reason: "length"` — a blank
+   explanation on the verdict screen. Fixed with `reasoning_effort: "low"` and
+   `max_completion_tokens`; an empty response is now treated as a failure, not an answer.
+
+2. **Groq rejects `Python-urllib`.** HTTP 403, Cloudflare `error code: 1010`, no mention
+   of a user agent in the response — while the identical request through curl succeeded.
+   The obvious reading of that 403 is a bad key, which is the wrong place to look. An
+   explicit `User-Agent` fixes it.
+
+3. **The model invented a direction.** The first working run produced *"You have a net
+   gain this week"* over a batch where the merchant received ₹78,720 **less** than
+   expected. The prompt gave line labels and rankings but never said which way the money
+   went, so it guessed. The guard catches numbers; it cannot catch a wrong direction. **A
+   fact the model needs and is not given is a fact it will invent** — the prompt now
+   states the direction in words and forbids the opposite framing.
+
+The third is the one worth keeping. The guard is a backstop against a model that
+misbehaves; the prompt is what stops it needing to. Neither alone is sufficient, and the
+failure was silent, plausible, and about the single most important thing on the screen.
+
+**The suite stays hermetic.** `tests/conftest.py` disables the stage for every test.
+A developer with `GROQ_API_KEY` exported was otherwise running a different, slower,
+network-dependent suite (9.4s against 4s on the API tests alone) — a suite whose result
+depends on whose laptop it runs on is not evidence. `test_explain.py` covers both paths
+with a stub client, including a model that returns a hallucinated amount.
+
+**What is still not claimed.** The recommended actions are still deterministic copy, and
+the table says **No**. `NEXT_STEP` is a fixed string per classification, and it is good
+copy; routing it through a model would add a failure mode to a sentence that is already
+right.
+
+---
+
+## ADR-051 — The scorer graded against a cycle the engine never used
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** `cycle.py` exists because the classifier once judged every batch against a
+configured T+2 regardless of what the batch actually did. That fix gave the **classifier**
+an observed cycle. It never gave one to the **scorer**.
+
+So on any batch settling slower than T+2, `score()` read `config.tolerances.cycle_days`
+— the stale configured value — while the engine had correctly detected the real cycle and
+classified those orders RECONCILED. Every late-but-within-cycle order the engine got right
+was counted as a MISS.
+
+Measured on a 400-order demo batch:
+
+| cycle | caught | missed | below tolerance | reported recall |
+|---|---|---|---|---|
+| T+1 | 24 | 0 | 16 | 1.000 |
+| T+2 | 24 | 0 | 16 | 1.000 |
+| T+3 | 24 | **16** | **0** | **0.600** |
+| T+7 | 24 | **16** | **0** | **0.600** |
+
+The engine was right at every cycle. Its own report card said 0.600 at T+3 and above.
+
+**Why this is the rarer direction.** A measurement bug that *overstates* accuracy is the
+one everybody looks for. This one understated it: the project was reporting itself as
+worse than it was, on an axis nobody was sampling.
+
+**Why 22 green matrix runs never saw it.** The matrix ran T+1 and T+2 only. At those
+values the configured and observed cycles are close enough that the wrong baseline still
+produces the right answer. **An axis that samples only where two values agree cannot
+detect that it is reading the wrong one.**
+
+**Decision.**
+
+1. `score()` and `_is_below_tolerance()` take an optional `cycle_days`, defaulting to the
+   configured value so an unaware caller still works.
+2. Both callers — `pipeline.run()` and `finctl checkpoint` — pass
+   `classifier.cycle_days`, the exact number the classifier judged against. The CLI was
+   discarding its classifier; it now keeps it.
+3. The matrix gains T+3 and T+7 rows on both archetypes: **26 runs, up from 22.** T+7 is
+   not hypothetical — it is the international and high-risk-category settlement cycle,
+   and the merchant most likely to be confused about where their money is.
+
+**Verified by reverting.** With the fix backed out, the extended matrix reports **48
+defects missed**; with it, **0**. The new rows genuinely detect the bug rather than merely
+passing beside it.
+
+**The invariant, stated so the next stage inherits it.** Any stage that judges timing must
+be handed the same cycle the classifier used.
+`test_the_scorer_uses_the_cycle_the_classifier_used` asserts the two are equal, and
+asserts the batch actually disagrees with config — a test where they happen to match
+proves nothing.
+
+---
+
+## ADR-052 — The action list said "email these customers" and had no email
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** ADR-048 built the action list so the verdict's *"One thing needs you this
+week: those 6 customers"* could name them. It named them with `cust_DnvzvP0lIu`.
+
+Every actionable row carried `email: null` and `contact: null`. The product's single most
+important instruction — "Email these customers a new payment link. Razorpay stopped
+attempting charges and will not restart on its own." — could not be carried out from what
+the product handed over. That is the same gap ADR-048 set out to close, one step further
+in: a list of ids is an insight; a list you can act on is a tool.
+
+**Cause: three layers, none of them the join.** `actions._LOOKUPS` was already looking for
+`email`, `customer_email`, `contact` and `customer_contact` — the correct names. Nothing
+upstream produced them:
+
+1. the generator emitted no contact fields at all;
+2. `writer.py` writes a fixed ledger header, so a new field would not have reached disk;
+3. `LEDGER_COLUMNS` did not list them, so the normalizer dropped them at staging.
+
+The lookup was right and had nothing to find.
+
+**Decision.** Produce the data at every layer, modelled on the real exports:
+
+- **Generator.** `_contact()` derives an address and an Indian mobile from `customer_id`,
+  so one customer has one address in the ledger, the payments feed and the subscriptions
+  feed. A customer whose email differed per source would make a correct join look wrong.
+  Addresses end `@example.invalid` — reserved by RFC 2606, can never route. Demo data
+  that could reach a real inbox is one accidental send away from a problem, and this
+  file gets handed to people.
+- **Column names follow Razorpay.** `email`/`contact` on the payments rows,
+  `customer_email`/`customer_contact` on the subscriptions rows — confirmed against
+  `sample-payments-report.xlsx` and `sample-subsciptions-report.xlsx`.
+- **Recon rows deliberately get neither.** Razorpay's settlement recon export carries no
+  contact columns, and inventing one produces a batch only this engine can read. A
+  first patch added them there by pattern-matching on `"currency": "INR"`; caught by
+  checking each insertion against the real file rather than the diff.
+- **Schema.** `email` and `contact` join `LEDGER_COLUMNS` and stay out of
+  `LEDGER_REQUIRED`. A real merchant export may lack them, and making them mandatory
+  would turn a nice-to-have into a reason the tool cannot be used at all. Aliases are
+  deliberately narrow: mapping the wrong column into an address a merchant then writes
+  to is worse than having no address.
+
+**Golden files.** Four regenerated. The diff was read first, as `test_golden.py` instructs:
+**two fields added, none removed, none changed** — every id, amount and total byte-identical,
+confirming the RNG sequence was not perturbed. That was the real risk, and it is why the
+diff is read rather than the file rewritten.
+
+**The frontend needed no change.** `Actions.tsx` already rendered
+`item.email ?? item.customer_id ?? "—"`. It had been falling through to the id for every
+row since it was written.
+
+**What is still empty, correctly.** `UNRECORDED_REFUND` rows have no customer and no
+contact, because they have no order on either side — that absence is what makes them
+unrecorded (ADR-039). Filling those would be inventing a customer.

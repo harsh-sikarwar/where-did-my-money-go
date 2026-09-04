@@ -60,10 +60,10 @@ engine/                   the project. Python, uv-managed, no web dependencies.
     classify/             deterministic rules, proof on every row
     correlate/            ← the differentiator
     rank/                 materiality: benign vs actionable
-    explain/              the only stage that calls an LLM
+    explain/              the only stage that calls an LLM — prose only, never a number
     adapters/             live Razorpay API (timeboxed, cuttable)
     audit/                JSONL decision log
-  tests/                  547 tests, including golden-file tests
+  tests/                  797 tests, including golden-file tests
 
 api/                      FastAPI — thin wrapper over the engine
 web/                      Next.js + Tailwind, one page
@@ -158,14 +158,23 @@ Or piecewise:
 cd engine
 uv sync --group dev
 uv run finctl doctor                      # verify the environment
-uv run pytest                             # 547 tests
+uv run pytest                             # 797 tests
 
 uv run finctl generate --volume 200 --out data/demo
 uv run finctl checkpoint --data data/demo # the engine's own scorecard
 ```
 
-The verdict screen renders with no API key — the LLM stage falls back to a deterministic
-templated explanation. That is deliberate: the demo cannot depend on a network call.
+The verdict screen renders with no API key: the explanation stage falls back to a
+deterministic template, and the demo runs offline. That fallback is the default path
+rather than an error path — no key, no network, a timeout, or prose that fails the
+numeral guard all produce the same template.
+
+With a key, one language model writes the two-sentence summary above the lines. It is
+given resolved facts and asked only to phrase them; **any response containing a figure is
+discarded whole** and the template used instead, so no number a merchant reads can come
+from a model. The response says which produced it (`summary_source`), and the screen says
+so too. Default is Groq serving GPT-OSS (Apache 2.0, open weights); any OpenAI-compatible
+endpoint works by changing two environment variables. See ADR-050.
 
 Secrets: copy `.env.example` to `.env` and fill it in. `.env` is gitignored — that rule
 predates any code in this repo, deliberately.
@@ -182,20 +191,20 @@ predates any code in this repo, deliberately.
 | Classification | **No** | Rules with proof on every row |
 | Correlation | **No** | It's a join, not a judgment |
 | Materiality ranking | Borderline | Rules-based first |
-| Explanation | **Yes** | The one thing rules genuinely cannot do |
-| Recommended action | **Yes** | Reasoning over already-resolved facts |
+| Explanation | **Yes** | The one thing rules genuinely cannot do — prose only, never a figure |
+| Recommended action | **No** | Deterministic copy, one fixed next step per classification (`actions.py`) |
 
 ---
 
 ## Status
 
-**Engine, API and UI are built and measured.** 710 tests green. The full pipeline runs
+**Engine, API and UI are built and measured.** 797 tests green. The full pipeline runs
 end to end: generate → normalize → stage → match → classify → correlate → rank → verdict,
 with an audit trail behind every figure.
 
-Measured across 22 configurations (volume × archetype × payment mix × settlement cycle):
-**0 defects missed, 0 false positives, 0 balance-identity failures**, ~63,000 rows/sec
-flat from 50 to 50,000 rows. Those runs also plant **2,246 deliberate decoys** — failed
+Measured across 26 configurations (volume × archetype × payment mix × settlement cycle,
+T+1 through T+7): **0 defects missed, 0 false positives, 0 balance-identity failures**,
+~63,000 rows/sec flat from 50 to 50,000 rows. Those runs also plant **2,254 deliberate decoys** — failed
 payments on *healthy* subscriptions, which look exactly like the halted ones the engine
 is built to find — and **none was claimed**. That is what makes the false-positive column
 a statement about the engine rather than about data where every gap had a real cause

@@ -4,8 +4,10 @@ Measured results. Every number here was produced by `uv run finctl matrix` and r
 `docs/matrix-results.json` — none is transcribed by hand, and re-running the command
 regenerates all of it.
 
-**Run on 2026-09-03.** 22 runs across volume × archetype × payment mix × settlement
-cycle, plus two edge profiles.
+**Run on 2026-09-04.** 26 runs across volume × archetype × payment mix × settlement
+cycle, plus two edge profiles. Cycles span T+1 to T+7 — the slow rows were added in
+ADR-051, after a scorer bug survived 22 green runs precisely because the matrix only
+sampled T+1 and T+2, where the configured and observed cycles agree.
 
 ---
 
@@ -40,7 +42,7 @@ one (failed payment, `subscription_id`, a gap) and differ in one field — `stat
 `auth_attempts=0`. The engine must report `PAYMENT_FAILED` and must **not** claim
 `HALTED_SUBSCRIPTION`.
 
-**Result: 2,246 decoys planted across the 22 runs, 0 claimed. False-attribution rate
+**Result: 2,254 decoys planted across the 26 runs, 0 claimed. False-attribution rate
 0.0000.** That is the number to push on, because a false attribution is worse than a
 miss: a miss is a gap in coverage, a false attribution is the engine telling a merchant
 to chase a customer whose subscription is working fine (ADR-042).
@@ -103,14 +105,25 @@ harness rather than the product.
 
 | archetype | unexplained before | after | resolved |
 |---|---|---|---|
-| d2c_ecommerce | ₹1,41,390.00 | ₹0.00 | 100.0% |
-| saas_subscription | ₹2,63,706.00 | ₹0.00 | 100.0% |
+| d2c_ecommerce | ₹10,55,728.20 | ₹0.00 | 100.0% |
+| saas_subscription | ₹20,91,021.40 | ₹0.00 | 100.0% |
 
-## Totals across 22 runs
+## What the slow-cycle rows established
 
-- defects caught: **26564**
+T+3 and T+7 were added because their absence hid a bug, so it is worth saying what they
+now show rather than only that they pass. At both cycles the engine detects the observed
+settlement cycle, disagrees with the configured T+2, judges timing against the observed
+value, and scores **0 missed** — the same recall it reports at T+1 and T+2.
+
+Before ADR-051 the same matrix reported **48 defects missed** on those rows. That number
+was produced by reverting the fix and re-running, rather than inferred: a regression test
+nobody has watched fail is a regression test with no evidence behind it.
+
+## Totals across 26 runs
+
+- defects caught: **29070**
 - defects missed: **0**
-- below tolerance (planted, correctly not flagged): **10094**
+- below tolerance (planted, correctly not flagged): **10192**
 - false positives: **0**
 - balance identity failures: **0**
 
