@@ -171,6 +171,22 @@ def default_matrix() -> list[dict[str, Any]]:
                     "cycle_days": cycle, "defect_profile": "demo",
                 })
 
+    # Slow cycles. The matrix ran T+1 and T+2 only, which is precisely why the scorer's
+    # stale-cycle bug survived 22 green runs: below T+3 the configured and observed cycles
+    # never diverged far enough for the scorer's baseline to matter, so a scorecard that
+    # graded against the wrong number still read 100%. An axis that only samples where
+    # two values agree cannot detect that it is reading the wrong one. See ADR-051.
+    #
+    # T+7 is not hypothetical either: it is the international and high-risk-category
+    # settlement cycle, and the merchant most likely to be confused about where their
+    # money is.
+    for archetype in ("saas_subscription", "d2c_ecommerce"):
+        for cycle in (3, 7):
+            cells.append({
+                "volume": 200, "archetype": archetype, "payment_mix": "even",
+                "cycle_days": cycle, "defect_profile": "demo",
+            })
+
     for volume in (50, 500, 5_000, 50_000):
         for archetype in ("saas_subscription", "d2c_ecommerce"):
             cells.append({

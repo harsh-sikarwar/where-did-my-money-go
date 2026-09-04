@@ -566,9 +566,16 @@ def checkpoint(
     cfg = load_config()
     batch = stage_from_dir(d)
     matches = match(batch)
-    classified = Classifier(cfg).classify(matches)
+    # Keep the classifier: it holds the settlement cycle it actually judged against, and
+    # the scorer needs the same number or it grades against a baseline nothing used.
+    # See ADR-051.
+    classifier = Classifier(cfg)
+    classified = classifier.classify(matches)
     correlated = Correlator(batch).correlate(classified)
-    report = score(GroundTruth.read(gt_path), correlated, matches, cfg)
+    report = score(
+        GroundTruth.read(gt_path), correlated, matches, cfg,
+        cycle_days=classifier.cycle_days,
+    )
 
     before = report.unexplained_before_paise
     after = report.unexplained_after_paise

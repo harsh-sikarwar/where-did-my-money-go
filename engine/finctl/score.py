@@ -139,17 +139,23 @@ def _is_below_tolerance(
     config: Config,
     matches: MatchResult,
     index: dict[str, Any] | None = None,
+    cycle_days: int | None = None,
 ) -> bool:
     """Is this planted defect one the config deliberately declines to flag?
 
     Only timing has a tolerance that can swallow a whole defect: `grace_days`. Fee and
     amount tolerances are one paise, far below any planted magnitude.
+
+    `cycle_days` is the cycle the ENGINE judged against — observed where the data
+    disagreed with config. It must be the same number, or the scorer grades the engine
+    against a baseline the engine never used. See `score`.
     """
     if defect.defect_type != DefectType.TIMING_LAG:
         return False
 
     tol = config.tolerances
     cal = WorkingCalendar(tol.weekend_days, tol.holidays)
+    effective_cycle = tol.cycle_days if cycle_days is None else cycle_days
 
     # Indexed lookup, not a scan. This was the engine's worst hot spot at 50k rows:
     # a linear scan through every order match, once per planted timing defect, is
@@ -170,7 +176,7 @@ def _is_below_tolerance(
     if not captured or not settled:
         return False
 
-    due = cal.add_working_days(captured, tol.cycle_days)
+    due = cal.add_working_days(captured, effective_cycle)
     return cal.working_days_between(due, max(settled)) <= tol.grace_days
 
 
@@ -179,8 +185,24 @@ def score(
     correlated: CorrelationResult,
     matches: MatchResult,
     config: Config,
+    cycle_days: int | None = None,
 ) -> ScoreReport:
-    """Compare what the engine found against what was actually planted."""
+    """Compare what the engine found against what was actually planted.
+
+    `cycle_days` is the settlement cycle the CLASSIFIER judged against — the observed
+    one where the data disagreed with config (`CycleObservation.effective_days`). Pass it
+    or the scorer grades the engine against a baseline the engine never used.
+
+    This was wrong until ADR-051. `cycle.py` exists because the classifier once judged
+    every batch against a configured T+2 regardless of what the batch actually did; that
+    fix gave the classifier an observed cycle and never gave one to the scorer. On a
+    T+3-or-slower batch the engine correctly classified late-but-within-cycle orders as
+    RECONCILED, and the scorecard counted each one as a MISS — reporting 0.600 recall for
+    work that was 1.000 correct. The engine was right and its own report card understated
+    it, which is the rarer and more embarrassing direction for a measurement bug.
+
+    Defaults to the configured value so a caller without an observation still works.
+    """
     report = ScoreReport(
         unexplained_before_paise=correlated.unexplained_before_paise,
         unexplained_after_paise=correlated.unexplained_after_paise,
@@ -225,7 +247,7 @@ def score(
 
         if assigned & acceptable:
             s.caught.append(defect.defect_id)
-        elif _is_below_tolerance(defect, config, matches, order_index):
+        elif _is_below_tolerance(defect, config, matches, order_index, cycle_days):
             s.below_tolerance.append(defect.defect_id)
         else:
             s.missed.append(defect.defect_id)
