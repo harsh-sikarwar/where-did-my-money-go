@@ -6,7 +6,6 @@ import { GapComposition, type GapSegment } from "@/components/GapComposition";
 import {
   ArrowRightIcon,
   Card,
-  Dot,
   Eyebrow,
   severityOf,
   toneAlpha,
@@ -24,6 +23,18 @@ import { api, type Verdict } from "@/lib/api";
  */
 
 const RECENT_LIMIT = 4;
+
+/**
+ * How a batch arrived, when the engine actually recorded it. The marker files are
+ * written on upload and on generate; a batch seeded from the CLI (`demo`, the one the
+ * README tells you to open) carries neither, and calling that "yours" claimed the
+ * merchant had uploaded files they never touched. Saying nothing is the honest option.
+ */
+function originOf(b: Batch): string | null {
+  if (b.generated) return "generated";
+  if (b.uploaded) return "yours";
+  return null;
+}
 
 type Batch = {
   name: string;
@@ -43,7 +54,13 @@ export default function Landing() {
       .batches()
       .then(async (r) => {
         if (cancelled) return;
-        const done = r.batches.filter((b) => b.uploaded || b.generated);
+        // Every batch the API returns already has a readable ledger — that is the
+        // condition it lists them under. The `.uploaded` / `.generated` marker files
+        // record HOW a batch arrived, and filtering on them hid every batch that
+        // predates those markers or was seeded from the CLI: `demo`, the batch
+        // `./scripts/demo.sh` creates and the one the README tells you to open, never
+        // appeared here. A run you can open is a run worth listing.
+        const done = r.batches;
         setRuns(done.slice(0, RECENT_LIMIT));
 
         // The glance card is only worth showing with real figures behind it. If the
@@ -120,11 +137,24 @@ export default function Landing() {
                 href={`/analysis/${encodeURIComponent(b.name)}`}
                 className="pressable flex items-center gap-2.5 rounded-full border border-[var(--color-line)] bg-[var(--color-raised)] px-4 py-2.5 text-[13.5px] text-[var(--color-ink-soft)] transition-[border-color,transform,color] duration-200 hover:-translate-y-0.5 hover:border-[oklch(1_0_0/0.2)] hover:text-[var(--color-ink)]"
               >
-                <Dot severity={b.generated ? "benign" : "action"} />
+                {/* Amber and green say something about MONEY (globals.css). Where a
+                    batch came from is not a severity, so the marker is structural
+                    violet for a dialled scenario and a plain hairline otherwise. */}
+                <span
+                  aria-hidden
+                  className="h-[7px] w-[7px] shrink-0 rounded-full"
+                  style={{
+                    background: b.generated
+                      ? "var(--color-accent)"
+                      : "var(--color-ink-faint)",
+                  }}
+                />
                 {b.name}
-                <span className="text-xs text-[var(--color-ink-faint)]">
-                  {b.generated ? "generated" : "yours"}
-                </span>
+                {originOf(b) && (
+                  <span className="text-xs text-[var(--color-ink-faint)]">
+                    {originOf(b)}
+                  </span>
+                )}
               </Link>
             ))}
           </div>

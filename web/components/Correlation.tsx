@@ -20,15 +20,22 @@ export function Correlation({ data }: { data: CorrelationData }) {
   const afterWidth = before > 0 ? Math.max((after / before) * 100, after > 0 ? 1.5 : 0) : 0;
   const gain = before > 0 ? Math.round((data.resolved.paise / before) * 100) : 0;
 
+  // "Resolves most of it" is a claim, and on a batch where nothing resolved it is a
+  // false one. The commonest way to get here is an upload with no payments or
+  // subscriptions file: correlation had nothing to join against, so the residual is
+  // unchanged. Saying so is more useful than a sentence contradicted by the two
+  // identical bars directly beneath it.
+  const resolvedNothing = data.resolved.paise === 0;
+
   return (
     <section className="mt-16 border-t border-[var(--color-line)] pt-10">
       <h2 className="mb-1 text-sm font-medium tracking-tight">
         What we could explain by looking wider
       </h2>
       <p className="mb-8 max-w-lg text-sm leading-relaxed text-[var(--color-ink-soft)]">
-        Reconciliation alone leaves a residual. Cross-referencing it against payment
-        failures and subscription status resolves most of it — the same batch, before and
-        after.
+        {resolvedNothing
+          ? "Reconciliation alone leaves a residual. Cross-referencing it against payment failures and subscription status resolved none of it on this batch — either nothing joined, or the payments and subscriptions files were not supplied."
+          : "Reconciliation alone leaves a residual. Cross-referencing it against payment failures and subscription status resolves most of it — the same batch, before and after."}
       </p>
 
       <div className="space-y-4">
@@ -47,16 +54,31 @@ export function Correlation({ data }: { data: CorrelationData }) {
         />
       </div>
 
+      {/* With nothing resolved, "₹0.00 resolved by joining 0 unexplained rows — 0% of
+          what was unexplained" is four ways of saying zero. State the residual that
+          actually remains instead. */}
       <p className="mt-6 text-sm">
-        <span className="font-medium">{data.resolved.display}</span>{" "}
-        <span className="text-[var(--color-ink-soft)]">
-          resolved by joining {data.resolved_count} unexplained{" "}
-          {data.resolved_count === 1 ? "row" : "rows"} to their payment records
-          {before > 0 && <> — {gain}% of what was unexplained</>}
-          {data.still_unexplained_count > 0 && (
-            <> · {data.still_unexplained_count} genuinely unexplained</>
-          )}
-        </span>
+        {resolvedNothing ? (
+          <span className="text-[var(--color-ink-soft)]">
+            <span className="font-medium text-[var(--color-ink)]">
+              {data.after.display}
+            </span>{" "}
+            still unexplained across {data.still_unexplained_count}{" "}
+            {data.still_unexplained_count === 1 ? "row" : "rows"}.
+          </span>
+        ) : (
+          <>
+            <span className="font-medium">{data.resolved.display}</span>{" "}
+            <span className="text-[var(--color-ink-soft)]">
+              resolved by joining {data.resolved_count} unexplained{" "}
+              {data.resolved_count === 1 ? "row" : "rows"} to their payment records
+              {before > 0 && <> — {gain}% of what was unexplained</>}
+              {data.still_unexplained_count > 0 && (
+                <> · {data.still_unexplained_count} genuinely unexplained</>
+              )}
+            </span>
+          </>
+        )}
       </p>
 
       {data.resolved_by_class.length > 0 && (

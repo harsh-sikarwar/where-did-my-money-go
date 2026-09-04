@@ -41,6 +41,12 @@ export interface Verdict {
   received: Money;
   gap: Money;
   headline: string;
+  /** Summary prose. Written by an LLM where one is configured, otherwise a
+   *  deterministic template. Never contains a figure — the engine renders those. */
+  summary?: string;
+  /** "model" or "template". Shown to the reader rather than hidden: a product that
+   *  cannot say whether a model wrote something is not one you can audit. */
+  summary_source?: "model" | "template";
   actionable_total: Money;
   benign_total: Money;
   unexplained: Money;
@@ -250,7 +256,11 @@ export interface ActionGroup {
 export interface Actions {
   batch: string;
   headline: string;
+  /** The signed sum across every group, offsets included. */
   total: Money;
+  /** Only the groups that ADD to the gap — the money actually worth chasing. */
+  chase_total: Money;
+  chase_count: number;
   count: number;
   groups: ActionGroup[];
 }
@@ -274,6 +284,89 @@ export interface UploadResult {
   manifest: Audit["manifest"];
 }
 
+/* ------------------------------------------------------------------ synthetic generator */
+
+export interface Archetype {
+  name: string;
+  description: string;
+  stresses: string;
+  expected_correlation_gain: string;
+  ticket_min_paise: number;
+  ticket_max_paise: number;
+  default_mix: Record<string, number>;
+}
+
+export interface PaymentMix {
+  name: string;
+  description: string;
+  mix: Record<string, number>;
+}
+
+export interface DefectProfile {
+  name: string;
+  description: string;
+  defects: Record<string, { count?: number; rate?: number; [k: string]: unknown }>;
+}
+
+export interface DefectTypeOption {
+  name: string;
+  label: string;
+  hint: string;
+  is_defect: boolean;
+}
+
+export interface GenerateOptions {
+  archetypes: Archetype[];
+  payment_mixes: PaymentMix[];
+  defect_profiles: DefectProfile[];
+  defect_types: DefectTypeOption[];
+  defaults: {
+    archetype: string;
+    payment_mix: string | null;
+    defect_profile: string;
+    volume: number;
+    cycle_days: number;
+    seed: number;
+  };
+  limits: { max_volume: number; min_volume: number };
+}
+
+export interface GenerateRequest {
+  batch: string;
+  archetype: string;
+  payment_mix?: string | null;
+  volume: number;
+  cycle_days?: number | null;
+  seed: number;
+  defect_profile?: string;
+  defects?: Record<string, { count?: number; rate?: number }>;
+}
+
+export interface GenerateResult {
+  batch: string;
+  generated: true;
+  rows_processed: number;
+  missing_sources: string[];
+  note: string | null;
+  headline: string;
+  manifest: Audit["manifest"];
+  files: Record<string, { filename: string; rows: number }>;
+  scenario: {
+    archetype: string;
+    payment_mix: string;
+    volume: number;
+    settlement_cycle_days: number;
+    defect_profile: string;
+    seed: number;
+    gross: Money;
+    expected_fees: Money;
+    defect_count: number;
+    decoy_count: number;
+    adjusted: { type: string; label: string; asked: number; planted: number }[];
+    planted: { type: string; label: string; count: number; impact: Money }[];
+  };
+}
+
 export const api = {
   verdict: (batch: string) => get<Verdict>(`/api/verdict/${batch}`),
   detail: (batch: string, classification: string) =>
@@ -281,7 +374,12 @@ export const api = {
   correlation: (batch: string) => get<Correlation>(`/api/correlation/${batch}`),
   batches: () =>
     get<{
-      batches: { name: string; has_ground_truth: boolean; uploaded: boolean }[];
+      batches: {
+        name: string;
+        has_ground_truth: boolean;
+        uploaded: boolean;
+        generated: boolean;
+      }[];
     }>("/api/batches"),
   audit: (batch: string, stage?: string) =>
     get<Audit>(`/api/audit/${batch}${stage ? `?stage=${stage}` : ""}`),
@@ -326,4 +424,13 @@ export const api = {
     }),
 
   clearRateCard: () => send<RateCard>("/api/rate-card", { method: "DELETE" }),
+
+  generateOptions: () => get<GenerateOptions>("/api/generate/options"),
+
+  generate: (req: GenerateRequest) =>
+    send<GenerateResult>("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    }),
 };

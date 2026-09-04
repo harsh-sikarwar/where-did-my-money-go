@@ -29,7 +29,10 @@
      These carry counts, ids and timestamps — small text a merchant has to actually
      read, so they hold the contrast floor rather than the mockup's exact value. */
   --color-ink-faint: oklch(0.595 0.015 90);
-  --color-ink-dim: oklch(0.56 0.015 90);
+  /* The provenance line ("189 / 200 orders reached Razorpay") is 12.5px normal-weight
+     body text, so it owes 4.5:1. At 0.56 it measured 3.97 on `raised` — below the
+     floor `ink-faint` was explicitly lifted to clear. Raised to match. */
+  --color-ink-dim: oklch(0.60 0.015 90);
 
   /* Hairlines, as alpha over the ground rather than fixed greys, so a rule reads the
      same weight on `raised` and on `well`. */

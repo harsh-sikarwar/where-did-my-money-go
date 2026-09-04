@@ -112,9 +112,36 @@ export function Verdict({ data }: { data: VerdictData }) {
         >
           !
         </span>
-        <p className="text-base leading-relaxed font-semibold text-pretty">
-          {data.headline}
-        </p>
+        <div className="min-w-0">
+          <p className="text-base leading-relaxed font-semibold text-pretty">
+            {data.headline}
+          </p>
+
+          {/*
+            The summary sits UNDER the headline, never replacing it. The headline is
+            engine output and always correct; this paragraph is prose that may have been
+            written by a model, and the ordering says which one to trust if they ever
+            read differently. It carries no figures at all — the engine strips any the
+            model emits — so nothing here can contradict the numbers above.
+          */}
+          {data.summary ? (
+            <p className="mt-2.5 text-[14.5px] leading-relaxed text-[var(--color-ink-soft)] text-pretty">
+              {data.summary}
+            </p>
+          ) : null}
+
+          {/*
+            Attribution, not a badge. A merchant deciding how much to trust a sentence
+            deserves to know a model wrote it, and the same honesty that put "Not built"
+            in the README applies to the thing that replaced it.
+          */}
+          {data.summary && data.summary_source === "model" ? (
+            <p className="mt-2 text-[12px] font-medium tracking-wide text-[var(--color-ink-faint)]">
+              Summary written by a language model. Every figure on this page is computed
+              by the engine.
+            </p>
+          ) : null}
+        </div>
       </section>
 
       <Provenance data={data} />

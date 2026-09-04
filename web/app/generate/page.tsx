@@ -84,6 +84,22 @@ export default function GeneratePage() {
       );
   }, []);
 
+  // Both bounds come from `/api/generate/options`. The guard was `volume < 1`, a
+  // hardcoded floor that ignored the ceiling the same payload supplies — so 6,000
+  // orders left the button enabled and failed on a round-trip with an error banner
+  // for something the form already knew was out of range.
+  const volumeError = useMemo(() => {
+    if (!options) return null;
+    const { min_volume, max_volume } = options.limits;
+    if (!Number.isFinite(volume) || volume < min_volume) {
+      return `Order count must be at least ${min_volume.toLocaleString("en-IN")}.`;
+    }
+    if (volume > max_volume) {
+      return `Order count tops out at ${max_volume.toLocaleString("en-IN")} here — larger runs are a CLI job.`;
+    }
+    return null;
+  }, [options, volume]);
+
   const activeArchetype = useMemo(
     () => options?.archetypes.find((a) => a.name === archetype) ?? null,
     [options, archetype],
@@ -331,9 +347,15 @@ export default function GeneratePage() {
             </div>
           )}
 
+          {volumeError && (
+            <p className="mt-8 text-[13px] font-medium text-[var(--color-urgent)]">
+              {volumeError}
+            </p>
+          )}
+
           <Button
             onClick={submit}
-            disabled={busy || !batchName.trim() || volume < 1}
+            disabled={busy || !batchName.trim() || volumeError !== null}
             size="lg"
             full
             className="mt-9"
@@ -499,18 +521,36 @@ function GeneratedDone({
         · seed {scenario.seed}
       </p>
 
+      {/* Not an error: the generator did its job and is reporting what it changed.
+          `ErrorNote` is urgent red and role="alert", which announced a successful
+          generation as a failure. This is a note, so it looks like one. */}
       {scenario.adjusted.length > 0 && (
-        <div className="mb-6">
-          <ErrorNote>
-            Some counts were larger than the batch could hold and were clamped:{" "}
+        <div
+          className="mb-6 rounded-xl border px-4 py-3"
+          style={{
+            borderColor: "color-mix(in oklch, var(--color-accent) 30%, transparent)",
+            background: "color-mix(in oklch, var(--color-accent) 7%, transparent)",
+          }}
+        >
+          <p className="text-[13px] leading-relaxed text-[var(--color-ink-soft)]">
+            Some counts were larger than the batch could hold, so they were reduced to
+            fit:{" "}
             {scenario.adjusted
               .map((a) => `${a.label} (asked ${a.asked}, planted ${a.planted})`)
               .join(", ")}
             .
-          </ErrorNote>
+          </p>
         </div>
       )}
 
+      {/*
+        The answer key is deliberately UNCOLOURED. Amber and red say something about
+        money needing a decision (globals.css), and "biggest thing planted" is not that
+        judgement: the largest row here is usually `timing_lag`, which the engine ranks
+        `always_benign` — money that arrives on its own. Painting it urgent red
+        pre-empted the verdict with the opposite of its answer. What was planted is a
+        fact about the fixture; whether it matters is what the analysis screen decides.
+      */}
       <Card className="px-7 pt-2 pb-6">
         <Eyebrow className="pt-5 pb-1">The answer key</Eyebrow>
 
@@ -528,17 +568,12 @@ function GeneratedDone({
               </div>
               <ShareBar
                 fraction={p.impact.paise / largest}
-                severity={i === 0 ? "urgent" : "action"}
+                severity="neutral"
                 delay={0.2 + i * 0.09}
                 className="mt-1"
               />
             </div>
-            <div
-              className="money shrink-0 text-[15px] font-bold"
-              style={{
-                color: i === 0 ? "var(--color-urgent)" : "var(--color-action)",
-              }}
-            >
+            <div className="money shrink-0 text-[15px] font-bold">
               {p.impact.display}
             </div>
           </div>
