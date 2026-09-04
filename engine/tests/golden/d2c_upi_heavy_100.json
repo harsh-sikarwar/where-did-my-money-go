@@ -35,7 +35,9 @@
   },
   "first_ledger_row": {
     "amount": 229500,
+    "contact": "+917303821119",
     "customer_id": "cust_QX5BFEeocl",
+    "email": "qx5bfeeocl@example.invalid",
     "order_id": "order_49Ncro3jGVu9Ax",
     "payment_method": "upi",
     "timestamp": 1785751200

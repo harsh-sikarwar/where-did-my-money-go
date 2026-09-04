@@ -426,7 +426,7 @@ class TestWriter:
         """A merchant's export contains rupees. Normalize converts; nothing else may."""
         write_batch(batch, tmp_path)
         lines = (tmp_path / "ledger.csv").read_text().splitlines()
-        assert lines[0] == "order_id,amount,timestamp,customer_id,payment_method"
+        assert lines[0] == "order_id,amount,timestamp,customer_id,email,contact,payment_method"
         assert "." in lines[1].split(",")[1]
 
     def test_json_uses_razorpays_collection_envelope(self, batch, tmp_path: Path) -> None:
@@ -443,7 +443,7 @@ class TestWriter:
         batch.bank = []
         write_batch(batch, tmp_path)
         assert (tmp_path / "ledger.csv").read_text().strip() == (
-            "order_id,amount,timestamp,customer_id,payment_method"
+            "order_id,amount,timestamp,customer_id,email,contact,payment_method"
         )
 
     def test_refuses_to_write_a_batch_with_no_ground_truth(self, batch, tmp_path: Path) -> None:
@@ -457,3 +457,104 @@ class TestScale:
         batch = Generator(config, seed=9, volume=5000, defect_profile="scale").generate()
         assert len(batch.ledger) == 5000
         assert batch.ground_truth.total_gross_paise == sum(r["amount"] for r in batch.ledger)
+
+
+# --------------------------------------------------------------- inline defect profiles
+#
+# The demo generator in the UI lets a merchant dial individual defect counts rather than
+# pick a preset. That inline profile reaches the SAME code path a YAML profile does, so
+# it must be validated to the same standard: a profile that asks for a defect nobody
+# plants produces a batch whose ground truth is quietly wrong (ADR-004).
+
+
+def test_inline_defect_profile_plants_exact_counts(config: Config) -> None:
+    """A dialled-in count is planted exactly, not approximately."""
+    batch = Generator(
+        config,
+        volume=150,
+        defect_profile={
+            DefectType.HALTED_SUBSCRIPTION: {"count": 9},
+            DefectType.WRONG_FEE_RATE: {"count": 12, "overcharge_bps": 60},
+        },
+    ).generate()
+
+    gt = batch.ground_truth
+    assert gt is not None
+    assert len(gt.by_type(DefectType.HALTED_SUBSCRIPTION)) == 9
+    assert len(gt.by_type(DefectType.WRONG_FEE_RATE)) == 12
+    # Nothing the caller did not ask for.
+    assert len(gt.by_type(DefectType.TIMING_LAG)) == 0
+
+
+def test_inline_defect_profile_is_named_custom(config: Config) -> None:
+    """Ground truth records a string, never the dict — the file is read by humans."""
+    batch = Generator(
+        config, volume=50, defect_profile={DefectType.MISSING_ORDER: {"count": 2}}
+    ).generate()
+    assert batch.ground_truth is not None
+    assert batch.ground_truth.defect_profile == "custom"
+
+
+def test_inline_defect_profile_supports_rates(config: Config) -> None:
+    batch = Generator(
+        config, volume=200, defect_profile={DefectType.TIMING_LAG: {"rate": 0.1}}
+    ).generate()
+    assert batch.ground_truth is not None
+    assert len(batch.ground_truth.by_type(DefectType.TIMING_LAG)) == 20
+
+
+def test_inline_defect_profile_refuses_unknown_type(config: Config) -> None:
+    """An unknown defect type is refused by name, not silently dropped.
+
+    Silently ignoring it would plant nothing while the caller believes otherwise —
+    the exact failure the named-profile path already refuses.
+    """
+    with pytest.raises(ConfigError, match="unknown defect type"):
+        Generator(config, volume=50, defect_profile={"not_a_defect": {"count": 1}})
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {DefectType.HALTED_SUBSCRIPTION: 5},               # not an object
+        {DefectType.HALTED_SUBSCRIPTION: {}},              # neither count nor rate
+        {DefectType.HALTED_SUBSCRIPTION: {"count": -3}},   # negative
+        {DefectType.HALTED_SUBSCRIPTION: {"rate": -0.5}},
+        {DefectType.HALTED_SUBSCRIPTION: {"count": True}}, # bool is not a count
+    ],
+)
+def test_inline_defect_profile_refuses_malformed_entries(
+    config: Config, spec: dict
+) -> None:
+    with pytest.raises(ConfigError):
+        Generator(config, volume=50, defect_profile=spec)
+
+
+def test_inline_defect_profile_is_deterministic(config: Config) -> None:
+    """Same seed and same inline profile, same batch — as for a named profile."""
+    profile = {
+        DefectType.HALTED_SUBSCRIPTION: {"count": 4},
+        DefectType.MISSING_ORDER: {"count": 3},
+    }
+    a = Generator(config, seed=99, volume=80, defect_profile=dict(profile)).generate()
+    b = Generator(config, seed=99, volume=80, defect_profile=dict(profile)).generate()
+    assert a.ledger == b.ledger
+    assert a.recon == b.recon
+
+
+def test_inline_profile_over_volume_still_reports_what_it_planted(
+    config: Config,
+) -> None:
+    """Asking for more defects than the batch holds clamps, and ground truth says so.
+
+    Each order carries at most one defect, so a count above the volume cannot be met.
+    The generator clamps rather than refusing; what matters is that ground truth records
+    what was ACTUALLY planted, so the scorer is never told to look for defects that do
+    not exist. The API surfaces the difference to the caller.
+    """
+    batch = Generator(
+        config, volume=10, defect_profile={DefectType.HALTED_SUBSCRIPTION: {"count": 50}}
+    ).generate()
+    gt = batch.ground_truth
+    assert gt is not None
+    assert len(gt.by_type(DefectType.HALTED_SUBSCRIPTION)) == 10

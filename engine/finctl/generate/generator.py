@@ -64,7 +64,7 @@ class Generator:
         payment_mix: str | None = None,
         volume: int = 200,
         settlement_cycle_days: int | None = None,
-        defect_profile: str = "demo",
+        defect_profile: str | dict[str, Any] = "demo",
         start_date: date | None = None,
         fee_convention: str = "gst_inclusive",
     ) -> None:
@@ -81,7 +81,11 @@ class Generator:
         self.rng = random.Random(seed)
         self.archetype = config.archetype(archetype)   # raises, listing valid names
         self.volume = volume
-        self.defect_profile_name = defect_profile
+        # A named profile keeps its name; an inline one is renamed "custom" by
+        # `_load_defect_profile` below, so ground truth always records a string.
+        self.defect_profile_name = (
+            defect_profile if isinstance(defect_profile, str) else "custom"
+        )
 
         # An explicit payment mix overrides the archetype's own distribution, so the
         # payment-mix axis can be varied independently on test day.
@@ -106,10 +110,48 @@ class Generator:
 
     # ---------------------------------------------------------------- config
 
-    def _load_defect_profile(self, name: str) -> dict[str, dict[str, Any]]:
+    def _load_defect_profile(
+        self, name: str | dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
+        """A named profile from defects.yaml, or an inline one supplied by the caller.
+
+        The inline form exists for the demo generator in the UI, where a merchant dials
+        individual defect counts rather than picking a preset. It is validated to the
+        SAME standard as a YAML profile — an unknown defect type is refused by name
+        rather than silently ignored, because a profile that asks for a defect nobody
+        plants produces a batch whose ground truth is quietly wrong, and a wrong metric
+        is worse than no metric (ADR-004).
+        """
         import yaml
 
         from finctl.config.loader import DEFAULTS_DIR, ConfigError
+
+        if isinstance(name, dict):
+            spec = {k: v for k, v in name.items() if k != "description"}
+            unknown = sorted(set(spec) - set(DefectType.ALL))
+            if unknown:
+                raise ConfigError(
+                    f"unknown defect type(s) {unknown}. Known: {sorted(DefectType.ALL)}"
+                )
+            for defect_type, entry in spec.items():
+                if not isinstance(entry, dict) or not ({"count", "rate"} & set(entry)):
+                    raise ConfigError(
+                        f"defect {defect_type!r} must be an object with a 'count' or "
+                        f"a 'rate', got {entry!r}"
+                    )
+                for key in ("count", "rate"):
+                    value = entry.get(key)
+                    if value is not None and (
+                        not isinstance(value, int | float)
+                        or isinstance(value, bool)
+                        or value < 0
+                    ):
+                        raise ConfigError(
+                            f"defect {defect_type!r}: {key} must be a non-negative "
+                            f"number, got {value!r}"
+                        )
+            self.defect_profile_name = "custom"
+            return spec
 
         profiles = yaml.safe_load((DEFAULTS_DIR / "defects.yaml").read_text())
         if name not in profiles:
@@ -132,6 +174,33 @@ class Generator:
     def _rid(self, prefix: str, length: int = 14) -> str:
         """A Razorpay-shaped id. Drawn from the seeded RNG, so ids are reproducible."""
         return prefix + "".join(self.rng.choice(_ID_ALPHABET) for _ in range(length))
+
+    def _contact(self, customer_id: str) -> tuple[str, str]:
+        """A synthetic email and phone for one customer.
+
+        The action list tells a merchant to "email these customers a new payment link"
+        and, until ADR-052, handed them a column of `cust_…` ids and no address. The
+        instruction was not executable, which is the difference between a tool and a
+        list.
+
+        Razorpay's real exports carry these: `email` and `contact` on the payments
+        report, `customer_email` and `customer_contact` on the subscriptions report —
+        confirmed against the sample files, and already the names `actions.py` looks for.
+        The generator simply never produced them.
+
+        Derived from `customer_id` rather than drawn separately so the same customer has
+        the same address in the ledger, the payments feed and the subscriptions feed. A
+        customer whose email differed per source would make the join look wrong when it
+        was right.
+
+        `@example.invalid` is reserved by RFC 2606 and can never route. Synthetic contact
+        details that could reach a real inbox are a demo one accidental send away from a
+        problem.
+        """
+        handle = customer_id.removeprefix("cust_").lower()
+        # A stable 10-digit Indian mobile: 6-9 leading, as the numbering plan requires.
+        digits = "".join(str(ord(c) % 10) for c in handle[:9])
+        return f"{handle}@example.invalid", f"+91{6 + ord(handle[0]) % 4}{digits}"
 
     @staticmethod
     def _ts(day: date, hour: int = 10, minute: int = 0) -> int:
@@ -226,14 +295,20 @@ class Generator:
             method = self._pick_method()
             amount = self._pick_amount()
             customer_id = self._rid("cust_", 10)
+            email, contact = self._contact(customer_id)
 
             is_subscription = self.rng.random() < self.archetype.subscription_share
 
+            # A merchant's own ledger names the buyer on every row — that is what makes
+            # the action list executable for a failed payment, which has no subscription
+            # to join through. See ADR-052.
             batch.ledger.append({
                 "order_id": order_id,
                 "amount": amount,
                 "timestamp": self._ts(order_day, self.rng.randrange(9, 20)),
                 "customer_id": customer_id,
+                "email": email,
+                "contact": contact,
                 "payment_method": method,
             })
 
@@ -251,6 +326,11 @@ class Generator:
                     "entity": "subscription",
                     "plan_id": self._rid("plan_"),
                     "customer_id": customer_id,
+                    # Razorpay's subscriptions export names these `customer_email` and
+                    # `customer_contact`; the payments export uses the bare `email` and
+                    # `contact`. Both spellings are already in `actions._LOOKUPS`.
+                    "customer_email": email,
+                    "customer_contact": contact,
                     "status": "halted",
                     "auth_attempts": 3,
                     "paid_count": self.rng.randrange(2, 8),
@@ -269,6 +349,11 @@ class Generator:
                     "entity": "payment",
                     "amount": amount,
                     "currency": "INR",
+                    # Razorpay's payments export carries these on the row. They are how
+                    # a merchant actually contacts the customer behind a failed payment,
+                    # which has no subscription to join through. See ADR-052.
+                    "email": email,
+                    "contact": contact,
                     "status": "failed",
                     "order_id": order_id,
                     "invoice_id": self._rid("inv_"),
@@ -315,6 +400,11 @@ class Generator:
                     "entity": "subscription",
                     "plan_id": self._rid("plan_"),
                     "customer_id": customer_id,
+                    # Razorpay's subscriptions export names these `customer_email` and
+                    # `customer_contact`; the payments export uses the bare `email` and
+                    # `contact`. Both spellings are already in `actions._LOOKUPS`.
+                    "customer_email": email,
+                    "customer_contact": contact,
                     "status": "active",       # <- the ONLY meaningful difference
                     "auth_attempts": 0,       # <- Razorpay is still trying
                     "paid_count": self.rng.randrange(2, 8),
@@ -332,6 +422,11 @@ class Generator:
                     "entity": "payment",
                     "amount": amount,
                     "currency": "INR",
+                    # Razorpay's payments export carries these on the row. They are how
+                    # a merchant actually contacts the customer behind a failed payment,
+                    # which has no subscription to join through. See ADR-052.
+                    "email": email,
+                    "contact": contact,
                     "status": "failed",
                     "order_id": order_id,
                     "invoice_id": self._rid("inv_"),
@@ -377,6 +472,11 @@ class Generator:
                     "entity": "payment",
                     "amount": amount,
                     "currency": "INR",
+                    # Razorpay's payments export carries these on the row. They are how
+                    # a merchant actually contacts the customer behind a failed payment,
+                    # which has no subscription to join through. See ADR-052.
+                    "email": email,
+                    "contact": contact,
                     "status": "failed",
                     "order_id": order_id,
                     "invoice_id": None,
@@ -434,6 +534,8 @@ class Generator:
                 "entity": "payment",
                 "amount": amount,
                 "currency": "INR",
+                "email": email,
+                "contact": contact,
                 "status": "captured",
                 "order_id": order_id,
                 "invoice_id": self._rid("inv_") if is_subscription else None,
@@ -518,6 +620,10 @@ class Generator:
                 "credit": recon_credit,
                 "amount": amount,
                 "currency": "INR",
+                # No email or contact here on purpose. Razorpay's settlement recon export
+                # carries neither — checked against sample-settlements-recon-report.xlsx —
+                # and inventing a column the real file lacks is how a generator produces a
+                # batch that only this engine can read. Rule 1 of this module.
                 "fee": recon_fee,
                 "tax": tax_paise,
                 "on_hold": on_hold,

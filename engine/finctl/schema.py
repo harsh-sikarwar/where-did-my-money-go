@@ -90,7 +90,16 @@ class MatchStatus(StrEnum):
 
 # Canonical columns per source. Order is the on-disk order; it carries no meaning,
 # because nothing in this engine matches positionally.
-LEDGER_COLUMNS = ("order_id", "amount_paise", "captured_at", "customer_id", "payment_method")
+LEDGER_COLUMNS = (
+    "order_id", "amount_paise", "captured_at", "customer_id",
+    # Optional, and the reason they are here: the action list tells a merchant to "email
+    # these customers a new payment link". Without an address that instruction is not
+    # executable, and a list of `cust_…` ids is an insight rather than a tool. A merchant
+    # ledger names the buyer on every row; the engine simply was not reading it.
+    # See ADR-052.
+    "email", "contact",
+    "payment_method",
+)
 BANK_COLUMNS = ("utr", "credit_paise", "value_date")
 
 # Column aliases. Keys are canonical names; values are the input spellings accepted.
@@ -108,6 +117,14 @@ LEDGER_ALIASES: dict[str, tuple[str, ...]] = {
     "captured_at": ("timestamp", "captured_at", "created_at", "date", "order_date",
                     "transaction_date", "datetime"),
     "customer_id": ("customer_id", "customerid", "customer", "cust_id", "buyer_id"),
+    # Deliberately narrow. "email" and "contact" are Razorpay's own column names on the
+    # payments export, and the obvious merchant spellings sit beside them. Nothing vaguer
+    # is accepted: mapping the wrong column into an address a merchant then writes to is
+    # worse than having no address, and this file's own rule is that a missing alias
+    # raises in seconds while a wrong one is found much later, if ever.
+    "email": ("email", "customer_email", "email_address", "buyer_email"),
+    "contact": ("contact", "customer_contact", "phone", "mobile", "phone_number",
+                "contact_number"),
     "payment_method": ("payment_method", "method", "mode", "payment_mode", "rail",
                        "instrument"),
 }

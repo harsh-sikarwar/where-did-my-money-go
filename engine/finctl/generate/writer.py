@@ -63,11 +63,20 @@ def write_batch(batch: GeneratedBatch, out_dir: Path) -> dict[str, Path]:
                 "amount": f"{r['amount'] / 100:.2f}",
                 "timestamp": r["timestamp"],
                 "customer_id": r["customer_id"],
+                # A real merchant's ledger names the buyer, not just an opaque id — the
+                # action list's whole instruction is "email these customers", and until
+                # ADR-052 it handed over a column of `cust_…` and no address. Written
+                # here because this writer, not the generator, decides the on-disk shape.
+                "email": r.get("email", ""),
+                "contact": r.get("contact", ""),
                 "payment_method": r["payment_method"],
             }
             for r in batch.ledger
         ],
-        ["order_id", "amount", "timestamp", "customer_id", "payment_method"],
+        [
+            "order_id", "amount", "timestamp", "customer_id",
+            "email", "contact", "payment_method",
+        ],
     )
 
     _write_csv(

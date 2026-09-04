@@ -35,7 +35,9 @@
   },
   "first_ledger_row": {
     "amount": 143700,
+    "contact": "+919129328573",
     "customer_id": "cust_3zmGzViaQH",
+    "email": "3zmgzviaqh@example.invalid",
     "order_id": "order_c1QfhnryJPioYs",
     "payment_method": "card_credit",
     "timestamp": 1785769200

@@ -271,30 +271,36 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
     # amount. The bank received more than expected, so this NARROWS the gap. Negative.
     excess = 0
     excess_count = 0
+    excess_ids: list[str] = []
     for m in primary_rows:
         if m.matched and m.settled_gross_paise > m.ledger_amount_paise:
             excess += m.settled_gross_paise - m.ledger_amount_paise
             excess_count += 1
+            excess_ids.append(m.order_id)
     if excess:
         d.components.append(GapComponent(
             classification=Classification.REFUND,
             amount_paise=-excess,
             count=excess_count,
+            order_ids=excess_ids,
         ))
 
     # --- settled for LESS than the ledger expected -----------------------------------
     # A shortfall on an order that did settle. Widens the gap.
     shortfall = 0
     shortfall_count = 0
+    shortfall_ids: list[str] = []
     for m in primary_rows:
         if m.matched and m.settled_gross_paise < m.ledger_amount_paise:
             shortfall += m.ledger_amount_paise - m.settled_gross_paise
             shortfall_count += 1
+            shortfall_ids.append(m.order_id)
     if shortfall:
         d.components.append(GapComponent(
             classification=Classification.UNEXPLAINED,
             amount_paise=shortfall,
             count=shortfall_count,
+            order_ids=shortfall_ids,
         ))
 
     # --- refunds that Razorpay debited from a settlement ------------------------------
@@ -335,6 +341,20 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
                 classification=classification,
                 amount_paise=debits,
                 count=len(rows),
+                # Carried so the action list can show a per-order amount. Without these
+                # the group total was right and every row under it read ₹0.00 — the same
+                # defect as the ₹0.00 chargeback, one component further down. ADR-049.
+                #
+                # An UNRECORDED refund has no `order_id` on either side — that absence is
+                # what makes it unrecorded — so it is keyed by its refund `entity_id`,
+                # which the classifier also writes into the finding's proof. Falling back
+                # to the entity keeps these rows attributable instead of leaving a group
+                # whose every row reads zero.
+                order_ids=[
+                    r.get("order_id") or r["entity_id"]
+                    for r in rows
+                    if r.get("order_id") or r.get("entity_id")
+                ],
             ))
 
     # --- settlements for orders the ledger does not contain ---------------------------

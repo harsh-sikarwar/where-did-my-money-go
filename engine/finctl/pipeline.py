@@ -20,6 +20,7 @@ from finctl.classify.classifier import Classification, ClassificationResult, Cla
 from finctl.config.loader import Config, load_config
 from finctl.correlate.correlator import CorrelationResult, Correlator
 from finctl.cycle import CycleObservation
+from finctl.gap import decompose
 from finctl.generate.ground_truth import GroundTruth
 from finctl.match.matcher import MatchResult, match
 from finctl.rank.ranker import Ranker, Verdict
@@ -58,8 +59,23 @@ class PipelineResult:
         A property rather than a stored field because it is a pure projection of
         `correlated.findings` — computing it at run time and storing it would create a
         second copy that could disagree with the verdict it accompanies. See ADR-048.
+
+        The amounts come from the same gap decomposition the verdict is built from. A
+        property alone was never enough to guarantee agreement: this list summed
+        `finding.amount_paise` and disagreed with the verdict for every batch until
+        ADR-049. Being computed in one place does not make two computations equal.
         """
-        return build_actions(self.correlated.findings, list(self.batch.get(Source.LEDGER)))
+        return build_actions(
+            self.correlated.findings,
+            list(self.batch.get(Source.LEDGER)),
+            decomposition=decompose(self.matches, self.correlated.findings),
+            # The verdict has already applied the materiality policy from
+            # `tolerances.yaml`; handing its answer over is what keeps the two screens
+            # from disagreeing about whether a line needs the merchant this week.
+            actionable=frozenset(
+                line.classification for line in self.verdict.actionable_lines
+            ),
+        )
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -185,7 +201,14 @@ def run(
     scored: ScoreReport | None = None
     gt_path = data_dir / "ground_truth.json"
     if gt_path.exists():
-        scored = score(GroundTruth.read(gt_path), correlated, matches, cfg)
+        # The OBSERVED cycle, not the configured one. The classifier judged this batch
+        # against `classifier.cycle_days`; handing the scorer `cfg` alone graded the
+        # engine against a baseline it never used, and on a T+3-or-slower batch turned
+        # correctly-reconciled orders into reported misses. See ADR-051.
+        scored = score(
+            GroundTruth.read(gt_path), correlated, matches, cfg,
+            cycle_days=classifier.cycle_days,
+        )
 
     return PipelineResult(
         batch=batch,
