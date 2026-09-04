@@ -17,6 +17,20 @@ export interface Money {
   display: string;
 }
 
+/**
+ * A figure that qualifies a line without being added to it.
+ *
+ * The fee overcharge is the first: it is a subset of the fee already shown, so it can
+ * never join the gap sum, but it is the only fee figure a merchant can dispute.
+ */
+export interface LineNote {
+  label: string;
+  explanation: string;
+  count: number;
+  amount: Money;
+  actionable: boolean;
+}
+
 export interface VerdictLine {
   classification: string;
   label: string;
@@ -24,6 +38,7 @@ export interface VerdictLine {
   count: number;
   amount: Money;
   actionable: boolean;
+  note: LineNote | null;
 }
 
 export interface PassSummary {

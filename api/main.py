@@ -873,6 +873,20 @@ def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
                 "count": line.count,
                 "amount": _money(line.amount_paise),
                 "actionable": line.actionable,
+                # A figure ABOUT the line, already inside its amount. The fee
+                # overcharge is the only one so far: the portion charged above the
+                # rate card, which is the one fee number a merchant can dispute.
+                "note": (
+                    {
+                        "label": line.note.label,
+                        "explanation": line.note.explanation,
+                        "count": line.note.count,
+                        "amount": _money(line.note.amount_paise),
+                        "actionable": line.note.actionable,
+                    }
+                    if line.note
+                    else None
+                ),
             }
             for line in v.lines
         ],

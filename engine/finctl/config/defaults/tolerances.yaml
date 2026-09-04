@@ -75,6 +75,10 @@ amount:
 materiality:
   # Never needs a human, however large. These resolve themselves or are correct-by-contract.
   always_benign:
+    # The fee ITSELF, which is the contracted cost of taking payments. The part of a
+    # fee charged ABOVE the rate card is a different question and is not covered by
+    # this entry — it is carried as a note on the fee line and judged by
+    # `actionable_above_paise`, because an overcharge is money a merchant can dispute.
     - FEE                     # correct fee, verified against the rate card
     - TAX_ON_FEE              # GST on that fee
     - TIMING                  # arrives on its own, no action possible

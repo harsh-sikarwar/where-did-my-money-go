@@ -155,8 +155,21 @@ class TestCounts:
     """Counts are displayed next to every amount. A wrong count is a wrong claim."""
 
     def test_line_counts_match_the_findings_behind_them(self, scenario) -> None:
+        """A count and the amount beside it must describe the same rows.
+
+        FEE is the exception that proves the rule, and it is excluded here because it
+        is asserted properly below instead. Every order that pays a fee produces no
+        finding — a correct fee is not a discrepancy — so for FEE the finding count is
+        the OVERCHARGED orders while the amount is the whole fee. Requiring them to be
+        equal is what drove the fee line to display one population's count over
+        another's money.
+        """
+        from finctl.classify.classifier import Classification
+
         result, _ = scenario
         for line in result.verdict.lines:
+            if line.classification is Classification.FEE:
+                continue
             behind = [
                 f for f in result.correlated.findings
                 if f.classification is line.classification
@@ -166,6 +179,43 @@ class TestCounts:
                     f"{line.classification}: screen says {line.count}, "
                     f"{len(behind)} findings exist"
                 )
+
+    def test_fee_line_and_its_note_each_count_their_own_population(
+        self, scenario
+    ) -> None:
+        """The fee line counts fee-payers; its note counts the overcharged.
+
+        The regression this pins: the line once took its count from the findings and
+        its amount from the gap component, so it read "40 orders, ₹37,023.69" beside a
+        drill-down of "40 orders, ₹227.90" — 162x apart under one label.
+        """
+        from finctl.classify.classifier import Classification
+
+        result, _ = scenario
+        fee = next(
+            (line for line in result.verdict.lines
+             if line.classification is Classification.FEE), None
+        )
+        if fee is None:
+            return
+
+        over = [
+            f for f in result.correlated.findings
+            if f.classification is Classification.FEE
+        ]
+
+        # The line counts orders that paid a fee, which is at least the number
+        # overcharged and generally many more.
+        assert fee.count >= len(over)
+
+        if over:
+            assert fee.note is not None, "overcharges exist but the line does not say so"
+            assert fee.note.count == len(over)
+            assert fee.note.amount_paise == sum(f.amount_paise for f in over)
+            # The overcharge is part of the fee already shown, never additional to it.
+            assert abs(fee.note.amount_paise) <= abs(fee.amount_paise)
+        else:
+            assert fee.note is None
 
     def test_halted_count_matches_the_subscriptions_file(self, scenario) -> None:
         """'Six customers' must be six actual halted subscriptions."""

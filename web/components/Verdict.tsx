@@ -256,6 +256,18 @@ function Line({
             <span className="text-[12.5px] text-[var(--color-ink-faint)]">
               {line.count} {line.count === 1 ? "order" : "orders"} ·{" "}
               {Math.round(share * 100)}% of gap
+              {/* The row stays benign — the fee itself is the contracted cost of
+                  taking payments and there is nothing to chase. But an actionable
+                  overcharge hiding inside a collapsed benign row is the same defect
+                  in a quieter form, so the row says it is in there. */}
+              {line.note?.actionable && (
+                <>
+                  {" · "}
+                  <span style={{ color: TONE.action }} className="font-bold">
+                    {line.note.amount.display} above your rate
+                  </span>
+                </>
+              )}
             </span>
           </span>
         </span>
@@ -283,6 +295,46 @@ function Line({
           <p className="max-w-[52ch] text-[13.5px] leading-relaxed text-pretty text-[var(--color-ink-soft)]">
             {line.explanation}
           </p>
+
+          {/* A figure about the line, not another line. The fee overcharge is a subset
+              of the fee above it, so it is set inside the row rather than beside it —
+              putting it in the waterfall would double-count money and imply the two
+              amounts add up. It carries its own tone because it is the actionable half
+              of an otherwise benign line: the fee is the cost of doing business, the
+              overcharge is the part you can dispute. F3. */}
+          {line.note && (
+            <div
+              className="mt-3.5 max-w-[52ch] rounded-xl border px-3.5 py-3"
+              style={{
+                borderColor: line.note.actionable
+                  ? toneAlpha("action", 0.3)
+                  : "var(--color-line)",
+                background: line.note.actionable
+                  ? toneAlpha("action", 0.06)
+                  : "transparent",
+              }}
+            >
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-[13px] leading-snug font-bold">
+                  {line.note.count}{" "}
+                  {line.note.count === 1 ? "order" : "orders"} {line.note.label}
+                </span>
+                <span
+                  className="money shrink-0 text-[14px] font-bold"
+                  style={{
+                    color: line.note.actionable
+                      ? TONE.action
+                      : "var(--color-ink)",
+                  }}
+                >
+                  {line.note.amount.display}
+                </span>
+              </div>
+              <p className="mt-1.5 text-[12.5px] leading-relaxed text-[var(--color-ink-faint)]">
+                {line.note.explanation}
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>

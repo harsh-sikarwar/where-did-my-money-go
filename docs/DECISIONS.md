@@ -2909,3 +2909,112 @@ holds that a tall benign day never outranks a smaller day that needs a decision.
 affordance for dropping screenshots into a canvas. There is no such thing in the
 product, and inventing an upload to fill a rectangle would be building the mockup rather
 than the design.
+
+---
+
+## ADR-058 — A count and an amount that described different orders
+
+An external QA pass reconciled nine runs against the built-in answer key and found the
+maths sound: expected − received = gap = sum of lines, to the paise, in every run. What
+it found broken was the reporting layer. Three of its eighteen findings are addressed
+here; the rest are still open and listed at the end.
+
+### F3 — the fee line contradicted its own drill-down
+
+The verdict's fee row read "40 orders · ₹37,023.69" on `qa-C`. Expanding that same row
+showed "40 orders · ₹227.90". A ratio of 162x under one label.
+
+Neither number was wrong. They answered different questions:
+
+* **The gap component** books the WHOLE fee — every rupee Razorpay kept — because that
+  is money which genuinely left the merchant. 574 orders paid one.
+* **The findings** carry the OVERCHARGE — the delta against the rate card — because a
+  fee charged at the contracted rate is not a discrepancy and emits no finding. 40
+  orders were overcharged.
+
+`Ranker.rank` then took the count from one and the amount from the other:
+
+```python
+count=counts.get(classification, component.count),   # findings: overcharged orders
+amount_paise=component.amount_paise,                 # component: the whole fee
+```
+
+The comment above it argued for preferring the finding count, on the grounds that "6
+subscriptions" is a human fact while a component count is an accounting artefact. That
+reasoning is right wherever the two populations coincide. For FEE they never do, and
+pairing them produced a line describing no real set of orders at all. On `qa-B` — a
+clean run — it claimed 250 orders and ₹31,310.75 while the drill-down was empty.
+
+**The fix is not to pick one number.** Both are true and a merchant needs both: the fee
+is what payment processing cost, and the overcharge is the only part that can be
+disputed. The overcharge previously appeared nowhere in the UI, which the QA pass
+correctly called the most commercially interesting number the engine computes.
+
+So the fee line now counts the orders whose money it shows (574 · ₹37,023.69), and the
+overcharge rides along as a `LineNote` — a figure ABOUT a line rather than another
+contribution to the gap. That distinction is structural, not cosmetic: the overcharge is
+a SUBSET of money already counted, so adding it as a component would double-count and
+`GapDecomposition.check()` would fail. Nothing sums notes.
+
+**Actionability.** `FEE` sits in `always_benign`, and that is correct for the fee — it
+is the contracted cost of taking payments, and there is nothing to chase. It is wrong
+for the overcharge, so the note is judged on materiality alone rather than through
+`is_actionable`. The config entry now says which of the two it governs. The row stays
+benign and unflagged, but prints the overcharge in the action tone when it is material:
+an actionable figure hidden inside a collapsed benign row is the same defect, quieter.
+
+**The test that had to change.** `test_line_counts_match_the_findings_behind_them`
+asserted count == len(findings) for every line, and its docstring — "a wrong count is a
+wrong claim" — is exactly the principle at issue. Its implementation assumed the two
+populations always coincide, which is what forced the mismatched pairing. It now skips
+FEE and a dedicated test pins the real invariant: the fee line counts at least as many
+orders as were overcharged, the note matches the findings exactly, and the note never
+exceeds the line it qualifies.
+
+### F1 — both primary CTAs did nothing
+
+"Send payment links" and "Mark reviewed", in the panel the entire product points at,
+had no handler. No request, no state change, no label change. The QA pass wrapped
+`window.fetch` and clicked both: `fetchCalls []`, `innerHTML changed false`.
+
+The labels were also promises the product cannot keep — nothing here sends an email or
+opens a dashboard. Both halves are now honest:
+
+* **The label names what the click does.** Copying is the truthful verb: the work leaves
+  the screen and lands in whatever actually does the chasing — a mail client, a
+  spreadsheet, a support tool — none of which this product is.
+* **What a group can offer depends on its data, not its name.** A group with customers
+  behind it offers their addresses; `UNRECORDED_REFUND` is a correction to the books
+  with nobody to chase, so it offers its order ids instead. The count is in the label,
+  so the button says what you are about to get.
+* **"Copied" is only claimed once the write resolves**, and reverts after two seconds so
+  the control can be used again. A blocked clipboard says so — silence there would
+  reintroduce the original defect.
+* **"Mark reviewed" survives collapsing the card** (state lives in the parent) and is
+  visible on the collapsed header: a reviewed group surrenders the TOP badge and the
+  one repeating animation in the product, because both mean "start here". It is
+  deliberately per-session and not persisted — claiming a review outlived a reload would
+  be a second inert control in the other direction.
+
+### F7 — the action table was unreachable on a phone
+
+At 360px the detail table rendered 624px wide inside a 299px container, and the card's
+`overflow-hidden` — which exists to clip the corner radius — meant no horizontal scroll.
+The customer, reason and order id columns were simply unreachable, and the amount alone
+is not something anyone can act on.
+
+The scroll now belongs to the table rather than the card, with `-mx-5 px-5` so it runs
+to the card's edges instead of stopping inside the padding and reading as a mistake.
+
+### Still open
+
+Fifteen findings remain, including three the QA pass rates above these: `unexplained`
+is structurally incapable of being non-zero while the correlation section on the same
+page names ₹2,480.00 outstanding (F2); 213 detected late settlements are never shown
+(F4); and the scorecard reports 1.00 recall on a run that caught 72% of what was planted
+(F5, F6). Also open: missing-source gating (F8), duplicated percentages (F9), rate-card
+retroactivity (F10), heading semantics (F11), the raw error page (F12), unnamed early
+refunds (F13), and the polish items (F14–F18).
+
+**Numbering note.** Two entries above both claim ADR-054. Left as they are — renumbering
+existing decisions would break every reference to them.

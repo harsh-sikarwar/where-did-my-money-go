@@ -127,8 +127,41 @@ _DISPLAY_ORDER = (
 
 
 @dataclass
+class LineNote:
+    """A figure that qualifies a verdict line without entering the gap sum.
+
+    Kept structurally separate from `amount_paise` so it cannot be mistaken for a
+    contribution: nothing sums notes, and `GapDecomposition.check()` never sees them.
+    """
+
+    label: str
+    count: int
+    amount_paise: int
+    actionable: bool
+    explanation: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "label": self.label,
+            "count": self.count,
+            "amount_paise": self.amount_paise,
+            "actionable": self.actionable,
+            "explanation": self.explanation,
+        }
+
+
+@dataclass
 class VerdictLine:
-    """One line of the verdict screen."""
+    """One line of the verdict screen.
+
+    `count` and `amount_paise` must describe the SAME population. That sounds too
+    obvious to state, which is exactly why it went wrong: the fee line took its count
+    from the findings (orders charged the wrong rate) and its amount from the gap
+    component (the whole fee, across every order that paid one), and rendered them
+    side by side as though they were one fact. On one QA run that read "40 orders ·
+    ₹37,023.69" while its own drill-down showed "40 orders · ₹227.90" — the same label
+    over two populations, 162x apart.
+    """
 
     classification: Classification
     label: str
@@ -137,6 +170,12 @@ class VerdictLine:
     amount_paise: int
     actionable: bool
     findings: list[Finding] = field(default_factory=list)
+    # A second figure ABOUT this line rather than a second contribution to the gap.
+    # The fee overcharge lives here: it is a subset of money already counted in
+    # `amount_paise`, so it can never be added to the decomposition without
+    # double-counting — but it is the only fee number a merchant can dispute, and
+    # until now it appeared nowhere in the product.
+    note: LineNote | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +185,7 @@ class VerdictLine:
             "count": self.count,
             "amount_paise": self.amount_paise,
             "actionable": self.actionable,
+            "note": self.note.as_dict() if self.note else None,
         }
 
 
@@ -223,6 +263,76 @@ class Ranker:
             return True
         return abs(amount_paise) >= self.tol.actionable_above_paise
 
+    def _line(
+        self,
+        classification: Classification,
+        label: str,
+        explanation: str,
+        component: Any,
+        counts: dict[Classification, int],
+        findings: list[Finding],
+    ) -> VerdictLine:
+        """One verdict line, with its count and its amount describing the same rows.
+
+        The count used to prefer the finding count for every classification, on the
+        reasoning that "6 subscriptions" is a human fact while a component count is an
+        accounting artefact. That is true where the two populations coincide. For FEE
+        they are different sets — every order that paid a fee, versus the orders
+        charged the wrong one — and pairing one's count with the other's amount is
+        what produced a line contradicting its own drill-down.
+
+        So: the count comes from the component whenever it is the component's money
+        being shown, and the finding count is used only where a finding IS the unit of
+        the amount.
+        """
+        mine = [f for f in findings if f.classification is classification]
+
+        if classification is Classification.FEE:
+            # Two questions, two lines' worth of fact, one of which is not a gap
+            # contribution at all. `amount_paise` stays the whole fee (that is what
+            # left the merchant's money), counted over the orders that actually paid
+            # one. The overcharge rides along as a note.
+            over_paise = sum(f.amount_paise for f in mine)
+            # NOT `is_actionable(FEE, ...)`. FEE sits in `always_benign`, and that
+            # entry means the fee itself — the contracted cost of taking payments —
+            # is never something to chase. An overcharge is the opposite: money
+            # charged above the rate card, which is the one fee figure a merchant can
+            # dispute. So it is judged on materiality alone.
+            note = LineNote(
+                label="charged above your contracted rate",
+                count=len(mine),
+                amount_paise=over_paise,
+                actionable=over_paise >= self.tol.actionable_above_paise,
+                explanation=(
+                    "The part of that fee which exceeds the rate card — the only "
+                    "portion you could dispute. It is already included in the figure "
+                    "above, not additional to it."
+                ),
+            ) if mine else None
+            return VerdictLine(
+                classification=classification,
+                label=label,
+                explanation=explanation,
+                count=component.count,
+                amount_paise=component.amount_paise,
+                # The whole fee is the contracted cost of taking payments; it is not
+                # something to chase. Only the overcharge can be actionable, and it
+                # says so on the note.
+                actionable=False,
+                findings=mine,
+                note=note,
+            )
+
+        return VerdictLine(
+            classification=classification,
+            label=label,
+            explanation=explanation,
+            count=counts.get(classification, component.count),
+            amount_paise=component.amount_paise,
+            actionable=self.is_actionable(classification, component.amount_paise),
+            findings=mine,
+        )
+
     def rank(
         self,
         findings: list[Finding],
@@ -257,17 +367,8 @@ class Ranker:
             label, explanation = LINE_COPY.get(
                 classification, (str(classification).lower(), "")
             )
-            lines.append(VerdictLine(
-                classification=classification,
-                label=label,
-                explanation=explanation,
-                # Prefer the finding count where one exists: "6 subscriptions" is a
-                # human fact, while the component count is an accounting artefact
-                # (FEE spans every order that paid one).
-                count=counts.get(classification, component.count),
-                amount_paise=component.amount_paise,
-                actionable=self.is_actionable(classification, component.amount_paise),
-                findings=[f for f in findings if f.classification is classification],
+            lines.append(self._line(
+                classification, label, explanation, component, counts, findings,
             ))
 
         for classification, component in by_class.items():
@@ -276,12 +377,8 @@ class Ranker:
             label, explanation = LINE_COPY.get(
                 classification, (str(classification).lower(), "")
             )
-            lines.append(VerdictLine(
-                classification=classification, label=label, explanation=explanation,
-                count=counts.get(classification, component.count),
-                amount_paise=component.amount_paise,
-                actionable=self.is_actionable(classification, component.amount_paise),
-                findings=[f for f in findings if f.classification is classification],
+            lines.append(self._line(
+                classification, label, explanation, component, counts, findings,
             ))
 
         return Verdict(
