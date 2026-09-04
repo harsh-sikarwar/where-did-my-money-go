@@ -4,6 +4,7 @@ Deliberately the only user interface until the Day-1 checkpoint passes.
 The FastAPI layer added later is a thin wrapper over these same calls.
 """
 
+import contextlib
 import platform
 import sys
 
@@ -19,6 +20,39 @@ app = typer.Typer(
     help="Where did my money go? — settlement reconciliation with failure correlation.",
 )
 console = Console()
+
+
+class _Refuse(contextlib.AbstractContextManager):
+    """Turn the engine's own errors into something a merchant can act on.
+
+    The engine's messages are written to be read: "unknown archetype 'x'. Known:
+    ['d2c_ecommerce', 'saas_subscription']" and "defect profile 'demo' demands 34 defects
+    but the batch has only 5 orders … Either raise --volume or use a rate-based profile".
+    Both were reaching the terminal wrapped in eighteen lines of Rich traceback, with the
+    useful sentence last — so the CLI was taking the single best thing about this engine's
+    error handling and burying it under a stack dump.
+
+    A traceback is the right output for a bug and the wrong one for a refusal. This
+    prints the message, exits non-zero, and keeps the frames for genuinely unexpected
+    exceptions, which still raise. ADR-054.
+    """
+
+    # Errors that mean "you asked for something impossible", not "the engine broke".
+    # Deliberately narrow: anything not listed here keeps its traceback, because a
+    # blanket `except Exception` would hide the next real bug behind a tidy one-liner.
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        from finctl.config.loader import ConfigError
+        from finctl.money import MoneyError
+        from finctl.normalize.normalizer import NormalizationError
+
+        if exc_type is None:
+            return False
+        if not issubclass(exc_type, ConfigError | MoneyError | NormalizationError | ValueError):
+            return False
+        # A ValueError from deep in the engine is a refusal; one from argument parsing
+        # is Typer's own business and never reaches here.
+        console.print(f"\n[red]{exc}[/red]\n")
+        raise typer.Exit(1) from None
 
 
 @app.command()
@@ -250,15 +284,18 @@ def generate(
 
     cfg = load_config()
     started = _time.perf_counter()
-    batch = Generator(
-        cfg,
-        seed=seed,
-        archetype=archetype,
-        payment_mix=mix,
-        volume=volume,
-        settlement_cycle_days=cycle,
-        defect_profile=defects,
-    ).generate()
+    # An unknown archetype and an over-subscribed defect profile are both REFUSALS with
+    # messages that name the fix. Without this they arrived as tracebacks.
+    with _Refuse():
+        batch = Generator(
+            cfg,
+            seed=seed,
+            archetype=archetype,
+            payment_mix=mix,
+            volume=volume,
+            settlement_cycle_days=cycle,
+            defect_profile=defects,
+        ).generate()
     elapsed = _time.perf_counter() - started
 
     write_batch(batch, Path(out))
