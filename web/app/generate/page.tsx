@@ -213,15 +213,22 @@ export default function GeneratePage() {
               </div>
               <div className="sm:flex-1">
                 <Field label="Seed">
+                  {/* The eight-digit default rendered as "2026090": the Random button
+                      took the width and the first field on the screen looked broken.
+                      The input keeps room for its own value and the button shrinks.
+                      F15. */}
                   <div className="flex gap-2">
-                    <NumberInput
-                      value={seed}
-                      onChange={(v) => setSeed(Number(v) || 0)}
-                      min={0}
-                    />
+                    <div className="min-w-[11ch] flex-1">
+                      <NumberInput
+                        value={seed}
+                        onChange={(v) => setSeed(Number(v) || 0)}
+                        min={0}
+                      />
+                    </div>
                     <Button
                       variant="secondary"
                       size="sm"
+                      className="shrink-0"
                       onClick={() => setSeed(Math.floor(Math.random() * 2 ** 31))}
                     >
                       Random
@@ -284,6 +291,15 @@ export default function GeneratePage() {
                     min={options.limits.min_volume}
                     max={options.limits.max_volume}
                   />
+                  {/* On the field, not only above the button. The button sits at the
+                      foot of a long form, so a disabled Generate with its reason
+                      thirty rows away left the user guessing which input was wrong.
+                      F16. */}
+                  {volumeError && (
+                    <p className="mt-2 text-[12.5px] font-medium text-[var(--color-urgent)]">
+                      {volumeError}
+                    </p>
+                  )}
                 </Field>
               </div>
               <div className="sm:flex-1">
@@ -345,12 +361,6 @@ export default function GeneratePage() {
             <div className="mt-8">
               <ErrorNote>{error}</ErrorNote>
             </div>
-          )}
-
-          {volumeError && (
-            <p className="mt-8 text-[13px] font-medium text-[var(--color-urgent)]">
-              {volumeError}
-            </p>
           )}
 
           <Button

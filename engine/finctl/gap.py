@@ -43,6 +43,16 @@ class GapComponent:
     amount_paise: int          # signed: positive widens the gap, negative narrows it
     count: int
     order_ids: list[str] = field(default_factory=list)
+    # Signed paise per order, for components whose money can be attributed to a
+    # specific order. This is recorded HERE, where each amount is computed, rather
+    # than re-derived downstream: a second derivation is how a summary line and its
+    # own drill-down come to describe two different populations.
+    #
+    # Not every component can be attributed. In-flight settlements and orphan bank
+    # credits have no ledger order behind them, so they are left empty and the
+    # timeline reports them as undated rather than spreading them over days they
+    # cannot be shown to belong to.
+    per_order: list[tuple[str, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -154,6 +164,7 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             amount_paise=sum(m.ledger_amount_paise for m in duplicate_rows),
             count=len(duplicate_rows),
             order_ids=[m.order_id for m in duplicate_rows],
+            per_order=[(m.order_id, m.ledger_amount_paise) for m in duplicate_rows],
         ))
 
     # --- money Razorpay kept as fees -------------------------------------------------
@@ -165,6 +176,7 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             classification=Classification.FEE,
             amount_paise=fees,
             count=sum(1 for m in primary_rows if m.fee_paise),
+            per_order=[(m.order_id, m.fee_paise) for m in primary_rows if m.fee_paise],
         ))
 
     # --- orders that never reached settlement ----------------------------------------
@@ -183,6 +195,7 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             amount_paise=sum(a for _, a in orders),
             count=len(orders),
             order_ids=[o for o, _ in orders],
+            per_order=list(orders),
         ))
 
     # --- payments the PSP is holding --------------------------------------------------
@@ -204,6 +217,9 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             amount_paise=sum(m.ledger_amount_paise - m.fee_paise for m in held),
             count=len(held),
             order_ids=[m.order_id for m in held],
+            per_order=[
+                (m.order_id, m.ledger_amount_paise - m.fee_paise) for m in held
+            ],
         ))
 
     # --- payments under dispute -------------------------------------------------------
@@ -250,6 +266,12 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             ),
             count=len(disputed_rows),
             order_ids=[row["order_id"] for row in disputed_rows if row.get("order_id")],
+            per_order=[
+                (row["order_id"],
+                 (row.get("amount", 0) or 0) - (row.get("fee", 0) or 0))
+                for row in disputed_rows
+                if row.get("order_id")
+            ],
         ))
 
     # --- settled but not yet in the bank ---------------------------------------------
@@ -272,17 +294,22 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
     excess = 0
     excess_count = 0
     excess_ids: list[str] = []
+    excess_per_order: list[tuple[str, int]] = []
     for m in primary_rows:
         if m.matched and m.settled_gross_paise > m.ledger_amount_paise:
-            excess += m.settled_gross_paise - m.ledger_amount_paise
+            over = m.settled_gross_paise - m.ledger_amount_paise
+            excess += over
             excess_count += 1
             excess_ids.append(m.order_id)
+            # Negative, matching the component's sign: this order NARROWS the gap.
+            excess_per_order.append((m.order_id, -over))
     if excess:
         d.components.append(GapComponent(
             classification=Classification.REFUND,
             amount_paise=-excess,
             count=excess_count,
             order_ids=excess_ids,
+            per_order=excess_per_order,
         ))
 
     # --- settled for LESS than the ledger expected -----------------------------------
@@ -290,17 +317,21 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
     shortfall = 0
     shortfall_count = 0
     shortfall_ids: list[str] = []
+    shortfall_per_order: list[tuple[str, int]] = []
     for m in primary_rows:
         if m.matched and m.settled_gross_paise < m.ledger_amount_paise:
-            shortfall += m.ledger_amount_paise - m.settled_gross_paise
+            short = m.ledger_amount_paise - m.settled_gross_paise
+            shortfall += short
             shortfall_count += 1
             shortfall_ids.append(m.order_id)
+            shortfall_per_order.append((m.order_id, short))
     if shortfall:
         d.components.append(GapComponent(
             classification=Classification.UNEXPLAINED,
             amount_paise=shortfall,
             count=shortfall_count,
             order_ids=shortfall_ids,
+            per_order=shortfall_per_order,
         ))
 
     # --- refunds that Razorpay debited from a settlement ------------------------------
@@ -355,6 +386,11 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
                     for r in rows
                     if r.get("order_id") or r.get("entity_id")
                 ],
+                per_order=[
+                    (r.get("order_id") or r["entity_id"], r.get("debit", 0))
+                    for r in rows
+                    if r.get("order_id") or r.get("entity_id")
+                ],
             ))
 
     # --- settlements for orders the ledger does not contain ---------------------------
@@ -386,6 +422,12 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             order_ids=sorted({
                 row["order_id"] for row in orphan_rows if row.get("order_id")
             }),
+            per_order=[
+                (row["order_id"],
+                 -((row.get("credit", 0) or 0) - (row.get("debit", 0) or 0)))
+                for row in orphan_rows
+                if row.get("order_id")
+            ],
         ))
 
     # --- bank credits with no settlement behind them ---------------------------------
@@ -412,6 +454,7 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
             existing.amount_paise += component.amount_paise
             existing.count += component.count
             existing.order_ids.extend(component.order_ids)
+            existing.per_order.extend(component.per_order)
     d.components = list(merged.values())
 
     return d

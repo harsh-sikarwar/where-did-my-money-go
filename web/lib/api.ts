@@ -17,6 +17,20 @@ export interface Money {
   display: string;
 }
 
+/**
+ * A figure that qualifies a line without being added to it.
+ *
+ * The fee overcharge is the first: it is a subset of the fee already shown, so it can
+ * never join the gap sum, but it is the only fee figure a merchant can dispute.
+ */
+export interface LineNote {
+  label: string;
+  explanation: string;
+  count: number;
+  amount: Money;
+  actionable: boolean;
+}
+
 export interface VerdictLine {
   classification: string;
   label: string;
@@ -24,6 +38,7 @@ export interface VerdictLine {
   count: number;
   amount: Money;
   actionable: boolean;
+  note: LineNote | null;
 }
 
 export interface PassSummary {
@@ -49,7 +64,22 @@ export interface Verdict {
   summary_source?: "model" | "template";
   actionable_total: Money;
   benign_total: Money;
+  /** Money no rule could account for, after correlation. Already inside `lines`. */
   unexplained: Money;
+  unexplained_count: number;
+  /** Integrity check on the decomposition: lines + this == gap. Must be zero. */
+  residual: Money;
+  /** Sources this batch did not have. A ledger-only batch cannot be reconciled. */
+  missing_sources: string[];
+  missing_note: string | null;
+  /** Settlements that arrived late. Gap-neutral: the money is already in `received`. */
+  late: {
+    count: number;
+    value: Money;
+    median_days_late: number;
+    max_days_late: number;
+    cycle_days: number;
+  } | null;
   lines: VerdictLine[];
   match: { pass1: PassSummary; pass2: PassSummary };
   performance: {
@@ -214,6 +244,31 @@ async function send<T>(
     );
   }
   return unwrap<T>(response);
+}
+
+export interface TimelineDay {
+  /** ISO date, YYYY-MM-DD. */
+  day: string;
+  amount: Money;
+  orders: number;
+  /** The part of this day that needs a decision, under the same materiality policy
+   *  the verdict applied. The chart colours from this, never from magnitude. */
+  actionable: Money;
+  /** What this day's orders should have brought in, per the ledger. */
+  expected: Money;
+  /** Derived as `expected - amount`, so the two lines are exactly one gap apart. */
+  received: Money;
+}
+
+export interface Timeline {
+  batch: string;
+  gap: Money;
+  dated: Money;
+  /** Gap money with no dated order behind it. Declared rather than spread across
+   *  days it cannot be shown to belong to — so `dated + undated === gap`. */
+  undated: Money;
+  days: TimelineDay[];
+  peak: TimelineDay | null;
 }
 
 export interface RateCardMethod {
@@ -410,6 +465,8 @@ export const api = {
     }),
 
   actions: (batch: string) => get<Actions>(`/api/actions/${batch}`),
+
+  timeline: (batch: string) => get<Timeline>(`/api/timeline/${batch}`),
 
   /** The CSV lives at a URL so the browser downloads it rather than us building a blob. */
   actionsCsvUrl: (batch: string) => `${BASE}/api/actions/${batch}/csv`,

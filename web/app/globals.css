@@ -120,8 +120,12 @@ body {
   line-height: 1.6;
 }
 
+/* 12px, lifted from 11px. Every section marker on every screen uses this, set in
+   mid-grey and uppercase — it passed 4.5:1 by a small margin and read as strained on
+   a page of financial figures people squint at. Uppercase tracking makes a small size
+   harder again, so the floor moves up rather than the colour getting louder. F14. */
 .text-label {
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 700;
   line-height: 1.3;
   letter-spacing: 0.12em;

@@ -28,6 +28,14 @@ general claims.** Two caveats do most of the work here, and both are load-bearin
    rows, but the 100% gain figure should be read as *"correlation resolves what it can
    see"*, not *"correlation resolves everything"*.
 
+**What would settle it.** One real merchant batch, with the unexplained residual published
+whatever it comes to. That has not been done — no live account was available for this
+build — and it is the first item in `LIMITATIONS.md`'s future scope. The nearest thing
+achieved is running the engine's central identity over Razorpay's own published sample
+export, where it holds on every payment row and found two parsing bugs on the way
+(ADR-056). Ten sample rows are not a merchant's month, and nothing below should be read as
+if they were.
+
 **Baseline for comparison.** Terra Insight publishes the yardstick: manual VLOOKUP
 reconciliation achieves roughly a **51% match rate**; structured tooling reaches **88%+**.
 Our match rate is not directly comparable to either, because ours is an **exact-identifier

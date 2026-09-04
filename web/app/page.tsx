@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { GapSparkline } from "@/components/GapByDay";
 import { GapComposition, type GapSegment } from "@/components/GapComposition";
 import {
   ArrowRightIcon,
@@ -10,7 +11,7 @@ import {
   severityOf,
   toneAlpha,
 } from "@/components/ui";
-import { api, type Verdict } from "@/lib/api";
+import { api, type Timeline, type Verdict } from "@/lib/api";
 
 /**
  * The front door. One decision: bring your own numbers, or dial a scenario and watch
@@ -46,6 +47,7 @@ type Batch = {
 export default function Landing() {
   const [runs, setRuns] = useState<Batch[]>([]);
   const [latest, setLatest] = useState<Verdict | null>(null);
+  const [latestTimeline, setLatestTimeline] = useState<Timeline | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,6 +73,15 @@ export default function Landing() {
             if (!cancelled) setLatest(v);
           } catch {
             /* no glance card this time */
+          }
+
+          // The sparkline is the card's supporting detail. Its absence costs the
+          // card a chart; it must never cost the card its figures.
+          try {
+            const t = await api.timeline(done[0].name);
+            if (!cancelled) setLatestTimeline(t);
+          } catch {
+            /* no sparkline this time */
           }
         }
       })
@@ -122,7 +133,7 @@ export default function Landing() {
         />
       </div>
 
-      {latest && <LastCycle verdict={latest} />}
+      {latest && <LastCycle verdict={latest} timeline={latestTimeline} />}
 
       {runs.length > 0 && (
         <section
@@ -168,7 +179,13 @@ export default function Landing() {
  * Last cycle at a glance. Every figure here is the engine's, including the composition
  * bar — this card is a preview of the analysis screen, not a summary written beside it.
  */
-function LastCycle({ verdict }: { verdict: Verdict }) {
+function LastCycle({
+  verdict,
+  timeline = null,
+}: {
+  verdict: Verdict;
+  timeline?: Timeline | null;
+}) {
   const segments: GapSegment[] = [
     ...verdict.lines.map((line) => ({
       id: line.classification,
@@ -207,21 +224,27 @@ function LastCycle({ verdict }: { verdict: Verdict }) {
       </div>
 
       <div className="px-7 pt-5 pb-7">
-        <Eyebrow className="mb-1.5">Gap found</Eyebrow>
-        <div className="money text-[34px] leading-none font-bold tracking-tight">
-          {verdict.gap.display}
-        </div>
-        {pct !== null && (
-          <div
-            className="mt-2 inline-flex items-center rounded-full px-2.5 py-1 text-[11.5px] font-bold"
-            style={{
-              background: toneAlpha("action", 0.12),
-              color: "var(--color-action)",
-            }}
-          >
-            {pct < 0.01 ? "<0.01" : pct.toFixed(2)}% of expected
+        <div className="grid items-end gap-6 sm:grid-cols-[1fr_1.6fr] sm:gap-8">
+          <div>
+            <Eyebrow className="mb-1.5">Gap found</Eyebrow>
+            <div className="money text-[34px] leading-none font-bold tracking-tight">
+              {verdict.gap.display}
+            </div>
+            {pct !== null && (
+              <div
+                className="mt-2 inline-flex items-center rounded-full px-2.5 py-1 text-[11.5px] font-bold"
+                style={{
+                  background: toneAlpha("action", 0.12),
+                  color: "var(--color-action)",
+                }}
+              >
+                {pct < 0.01 ? "<0.01" : pct.toFixed(2)}% of expected
+              </div>
+            )}
           </div>
-        )}
+
+          {timeline && <GapSparkline data={timeline} />}
+        </div>
 
         <div className="mt-6">
           <GapComposition segments={segments} />

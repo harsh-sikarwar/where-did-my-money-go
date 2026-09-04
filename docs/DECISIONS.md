@@ -2646,3 +2646,606 @@ carries a negative total. The UI still handles one — magnitude-based bar width
 `offsets the gap` legend entry rather than a dropped segment — because a future
 classification could be both negative and actionable, and the previous behaviour was to
 render `width: -74.2%` and silently draw nothing.
+
+---
+
+## ADR-053 — The holiday calendar was empty, which is not the same as neutral
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** `tolerances.yaml` shipped `holidays: []`, with a comment arguing that a short
+known-correct list beats a guessed-at full one. The argument is right. The empty list was
+not the conclusion it implies — it makes the engine treat every bank holiday as a working
+day, so a payout that was never going to arrive is judged late and a merchant is told to
+chase money the bank is closed for. Diwali week is precisely when a merchant most wants to
+know where their money is.
+
+**Decision.** Populate the fixed-date national holidays on which Indian banks close under
+the Negotiable Instruments Act, for 2025 and 2026: Republic Day, Independence Day, Gandhi
+Jayanti, Christmas.
+
+**What is deliberately absent, and why that is the honest half.** Most Indian bank
+holidays are lunar or state-declared. Diwali, Holi, Eid and Good Friday move every year
+and differ by state, and Maharashtra's list — the one that governs settlement, since the
+clearing houses sit there — is published annually rather than derived.
+
+Guessing them would produce a calendar confidently wrong on the dates that matter most,
+and the asymmetry decides it: **a missing holiday makes one settlement look a day late,
+while a wrong holiday makes a real delay look benign.** This engine's argument is that it
+does not quietly explain money away, so it errs toward flagging.
+
+A merchant running a real batch across Diwali pastes that year's RBI list into the config.
+That is an edit to a YAML file, not a code change, which is what the config layer is for.
+
+`test_the_list_is_deliberately_fixed_date_only` asserts the absence, so adding a moving
+feast is a decision someone makes on purpose with a published list in hand, rather than a
+lint someone silences.
+
+**No effect on the accuracy figures.** The generator and the classifier share one
+`WorkingCalendar` — deliberately, so a generator bug cannot hide behind a matching
+classifier bug — so both moved together and the matrix is unchanged: 26 runs, 0 missed,
+0 false positives, balance identity holding. Only the timing fields in
+`matrix-results.json` differ, and those measure the machine.
+
+---
+
+## ADR-054 — 488 statements at 0%, in the interface everything else reaches around
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** `cli.py` had no tests at all. `pipeline.run()` was exercised from a dozen
+angles; `finctl checkpoint` — the command the README tells a reader to type first — from
+none. The suite tested the engine through the door the tests use, not the one a person
+uses.
+
+The cost is not hypothetical. Twice during this session a wrong option name (`--cycle-days`
+for `--cycle`, a positional argument for `--amount`) produced a usage error that no test
+would ever have caught, because nothing typed these commands.
+
+**Decision.** Smoke tests over every subcommand, asserting the contract a CLI actually
+has rather than re-testing the engine underneath it:
+
+- exit 0 on the happy path, non-zero on the sad one
+- no traceback, ever
+- the numbers printed are the engine's, not a second copy
+- a command that refuses says what to do instead
+
+`catch_exceptions=False`, so a crash fails loudly rather than passing as a deliberate
+refusal — which is the distinction these tests exist to draw.
+
+**What they found immediately.** Two commands were leaking internal exceptions to the
+terminal as eighteen lines of Rich traceback:
+
+```
+ConfigError: unknown archetype 'not_an_archetype'. Known: ['d2c_ecommerce', …]
+ValueError: defect profile 'demo' demands 34 defects but the batch has only 5 orders …
+```
+
+Both messages are excellent — they name the fix, not just the fault, which is this
+engine's stated standard for errors. The CLI was taking the best thing about its own error
+handling and burying it under a stack dump. The critique flagged "two leaked internal
+exceptions"; these are they.
+
+`_Refuse` turns those into the message alone plus exit 1. Deliberately narrow —
+`ConfigError`, `MoneyError`, `NormalizationError`, `ValueError` — because a blanket
+`except Exception` would hide the next real bug behind a tidy one-liner. **A traceback is
+the right output for a bug and the wrong one for a refusal.**
+
+**Coverage moved where it should.** cli.py 0% → 70%, blind.py 0% → 91%, overall 75% → 89%.
+
+The blind tests assert the property that matters there, which is what the command does
+*not* print: no defect type names, no archetype, no configuration values, and no bare
+integers. A first version asserted on the bare word "defect" and failed on the sentence
+explaining that nothing is printed — an assertion about prose describing the guarantee
+rather than about a breach of it.
+
+**Still uncovered, and named.** 148 statements: the `probe --live` path (needs Razorpay
+credentials and a network), and Rich table rendering in the deeper drill-downs. Both are
+presentation over data that is tested where it is produced.
+
+---
+
+## ADR-055 — CI, and the one number it refuses to gate on
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** Every check in this project ran by hand. The evidence for "it works" was that
+it worked on one laptop — and two of the four defects fixed in ADR-049..052 were found by
+an outsider running the engine, which is what CI is: an outsider with no context and no
+muscle memory.
+
+**Decision.** Four jobs on every push: `engine` (ruff, pytest, coverage), `metrics` (the
+accuracy matrix), `web` (tsc, next build), `secrets`.
+
+**The matrix job is the one worth having.** It re-derives the headline claim on every push
+and fails the build if the summary stops saying `defects missed: 0`, `false positives: 0`,
+`balance identity: holds in every run`. A claim that is only ever regenerated by hand is a
+claim that can quietly stop being true between regenerations.
+
+It also checks `docs/matrix-results.json` against a fresh run, **excluding `seconds` and
+`rows_per_second`.** That exclusion is the whole design: those measure the machine, not
+the engine, and they differ on every run. A byte-for-byte diff would fail on a slow runner,
+and a check that cries wolf on hardware noise is one people learn to re-run until green —
+worse than no check, because then a real accuracy regression looks like the usual flake.
+Caught by running the check locally before committing it, where it failed immediately.
+
+**No coverage threshold, deliberately.** cli.py sat at 0% while the classifier, correlator,
+matcher, gap and ranker sat at 95–100%. A single repo-wide percentage would have been
+satisfied by the wrong work — and the honest reading was always per-module. Coverage is
+reported, not gated.
+
+**Format check is non-blocking.** 41 files would reformat, and a reformat commit that
+large would bury the history this project keeps deliberately readable. The check runs so
+the number is visible and shrinking rather than unknown.
+
+**No API key in CI.** The explanation stage falls back to its template without one, and
+`tests/conftest.py` disables it for every test regardless. A suite that reaches a
+third-party endpoint has red builds that must be diagnosed before they can be trusted.
+
+**The secrets job enforces a rule that predates the code.** `.env` has been gitignored
+since commit one; this fails the build if it is ever tracked, and greps for key *shapes*
+rather than running a generic entropy scan — a false positive here trains people to ignore
+the job.
+
+---
+
+## ADR-056 — Running the arithmetic against Razorpay's own file, and the two bugs it found
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** METRICS.md says it plainly at the top: every accuracy figure is measured
+against data this project generated, where the generator defines truth. A closed loop.
+The critique named breaking that loop as the single highest-value change available —
+"one real batch converts *100% on our synthetic data* into *it works*."
+
+A live merchant account was not available. What was available is
+`razorpay-sample-files/`: Razorpay's own exports, not written by us and not written for
+us. `test_normalize.py` already proved they were READABLE. It did not prove the money
+arithmetic agreed with them, and those are different claims.
+
+**Decision.** Run the engine's central identity over Razorpay's own settlement recon
+export:
+
+    credit - debit == amount - fee - tax
+
+on every payment row, in integer paise through `money.py` — not in float, since the
+reason that module exists is that this is where binary floating point drifts.
+
+**It holds on all nine payment rows.** The tenth is the refund, where it correctly does
+NOT hold: a refund is a debit that nets negative against a positive amount, which is why
+`gap.py` books refunds as their own signed component. Asserting the exception is what
+makes the rule meaningful.
+
+**Two real bugs, neither of which the generator could have produced.**
+
+**1. There were two date parsers and only one was good.** `to_date` reached only
+`date.fromisoformat`, so it raised a bare `ValueError: Invalid isoformat string:
+'29/06/2022 07:34:39'` — a string taken verbatim from Razorpay's export, in the very
+column `_parse_timestamp`'s docstring cites. That function has read DD/MM/YYYY correctly
+since ADR-044. The matcher and classifier were calling the weaker one. It now delegates,
+so a bad date also gets the engine's own message ("Accepted: Excel serial date, epoch
+seconds, YYYY-MM-DD…") instead of a stack trace.
+
+The generator writes one timestamp format per column, because nobody would think to
+generate a column that mixes two. Razorpay's file mixes them — a spreadsheet writes
+whichever the cell format dictates.
+
+**2. A naive datetime was shifted by the machine's timezone.** `openpyxl` returns naive
+datetimes for every date cell in an .xlsx, and `.astimezone(UTC)` interprets a naive value
+as LOCAL time. On an IST machine (+5:30) a settlement stamped 02:00 read as the PREVIOUS
+DAY. A silent, machine-dependent off-by-one on a settlement date — precisely the class of
+error this engine exists to find in other people's systems, and it would have made the
+same batch reconcile differently in Mumbai and in London.
+
+The sample rows are afternoon timestamps, so the bug was latent even there: it needed a
+value near midnight to surface. It was found by checking the parsing directly rather than
+by the row happening to trip it, which is the argument for asserting on a real file rather
+than eyeballing its output.
+
+**What this does and does not establish.** Ten rows is not a merchant's month. The honest
+claim is: **the engine's core identity holds on real Razorpay-authored rows, and two
+parsing bugs that only real data exposes are now fixed.** It is not "it works on
+production data" — that still needs a live account, and LIMITATIONS.md keeps saying so.
+
+The value was never the ten rows. It is that two hours against a file we did not write
+found two defects that 825 tests against a file we did write did not.
+
+## ADR-057 — The design's daily chart, and the three ways it could have lied
+
+**Date:** 2026-09-04 · **Phase:** design conformance
+
+**Context.** The handoff bundle (`Reconciliation tool UI mockups-handoff`) specifies a
+"Gap by day" chart on the analysis screen and a sparkline of the same data on the
+landing card. Neither was built. `globals.css` carries a `drawLine` keyframe with no
+consumer, which is the fingerprint of the detailed view's expected-vs-received chart
+being designed and never implemented either.
+
+Nothing in the API could have served them. `Finding` and `Detail` carry no date, and
+`GapComponent` carried a component total plus a list of order ids — enough to say
+*what* explains the gap, not *when* it happened.
+
+**Decision.** Attribute at the source, then bucket. `GapComponent` gains `per_order`,
+recorded at each of the twelve sites where an amount is computed. `timeline.py` buckets
+those by the order's capture date. No amount is derived twice.
+
+That last point is the whole design. The alternative — recomputing per-order amounts
+downstream from findings — is exactly how the fee row came to disagree with its own
+drill-down by 162×. A second derivation of the same number is a second chance to get it
+wrong.
+
+**Three ways this chart could have lied, and what each cost to avoid.**
+
+**1. Spreading what it cannot place.** In-flight settlements and orphan bank credits
+have no ledger order, and an unrecorded refund is keyed by refund entity because the
+absence of an order id is what makes it unrecorded. Prorating that money across days
+would have produced a chart that balances and is fiction. It is returned as
+`undated_paise` and printed under the chart: *"₹3,000.00 of the gap has no capture date
+behind it and is not shown above."* On `qa-C` that line is exactly the unrecorded-refund
+line, which is the correct and self-explaining answer.
+
+**2. Colouring by magnitude.** The mockup colours tall bars amber. This product spends
+its first sixty lines of CSS establishing that amber means money that needs a decision
+and nothing else. A chart that made amber mean "big" would be the first place that
+stopped being true, so `TimelineDay` carries `actionable_paise` — the verdict's own
+materiality answer, handed over rather than recomputed, as ADR-054 requires of the
+action list — and a bar is amber because that day needs a decision. A tall grey bar is a
+busy day, not a problem.
+
+**3. Zooming until the story looked better.** On a healthy cycle the gap is a few percent,
+so cumulative expected and received very nearly coincide. Zooming the y-axis off zero
+would have made the band look dramatic and would have been drawing a claim the data does
+not support. The axis stays at zero and the distance is annotated at the right edge, so
+the reader gets the quantity without the chart overstating it. `received` is derived per
+day as `expected - gap` rather than summed from the bank side — the bank credits land on
+settlement dates belonging to other days, and deriving it makes it structurally
+impossible for the two lines to sit any distance apart other than the gap.
+
+**Invariant.** `dated + undated == gap`, asserted on every build, in the same style and
+for the same reason as `GapDecomposition.check()`. `tests/test_timeline.py` holds it,
+holds that both cumulative lines total the figures printed at the top of the page, and
+holds that a tall benign day never outranks a smaller day that needs a decision.
+
+**What was NOT adopted.** The mockup's "Attached evidence" slots are a design-tool
+affordance for dropping screenshots into a canvas. There is no such thing in the
+product, and inventing an upload to fill a rectangle would be building the mockup rather
+than the design.
+
+---
+
+## ADR-058 — A count and an amount that described different orders
+
+An external QA pass reconciled nine runs against the built-in answer key and found the
+maths sound: expected − received = gap = sum of lines, to the paise, in every run. What
+it found broken was the reporting layer. Three of its eighteen findings are addressed
+here; the rest are still open and listed at the end.
+
+### F3 — the fee line contradicted its own drill-down
+
+The verdict's fee row read "40 orders · ₹37,023.69" on `qa-C`. Expanding that same row
+showed "40 orders · ₹227.90". A ratio of 162x under one label.
+
+Neither number was wrong. They answered different questions:
+
+* **The gap component** books the WHOLE fee — every rupee Razorpay kept — because that
+  is money which genuinely left the merchant. 574 orders paid one.
+* **The findings** carry the OVERCHARGE — the delta against the rate card — because a
+  fee charged at the contracted rate is not a discrepancy and emits no finding. 40
+  orders were overcharged.
+
+`Ranker.rank` then took the count from one and the amount from the other:
+
+```python
+count=counts.get(classification, component.count),   # findings: overcharged orders
+amount_paise=component.amount_paise,                 # component: the whole fee
+```
+
+The comment above it argued for preferring the finding count, on the grounds that "6
+subscriptions" is a human fact while a component count is an accounting artefact. That
+reasoning is right wherever the two populations coincide. For FEE they never do, and
+pairing them produced a line describing no real set of orders at all. On `qa-B` — a
+clean run — it claimed 250 orders and ₹31,310.75 while the drill-down was empty.
+
+**The fix is not to pick one number.** Both are true and a merchant needs both: the fee
+is what payment processing cost, and the overcharge is the only part that can be
+disputed. The overcharge previously appeared nowhere in the UI, which the QA pass
+correctly called the most commercially interesting number the engine computes.
+
+So the fee line now counts the orders whose money it shows (574 · ₹37,023.69), and the
+overcharge rides along as a `LineNote` — a figure ABOUT a line rather than another
+contribution to the gap. That distinction is structural, not cosmetic: the overcharge is
+a SUBSET of money already counted, so adding it as a component would double-count and
+`GapDecomposition.check()` would fail. Nothing sums notes.
+
+**Actionability.** `FEE` sits in `always_benign`, and that is correct for the fee — it
+is the contracted cost of taking payments, and there is nothing to chase. It is wrong
+for the overcharge, so the note is judged on materiality alone rather than through
+`is_actionable`. The config entry now says which of the two it governs. The row stays
+benign and unflagged, but prints the overcharge in the action tone when it is material:
+an actionable figure hidden inside a collapsed benign row is the same defect, quieter.
+
+**The test that had to change.** `test_line_counts_match_the_findings_behind_them`
+asserted count == len(findings) for every line, and its docstring — "a wrong count is a
+wrong claim" — is exactly the principle at issue. Its implementation assumed the two
+populations always coincide, which is what forced the mismatched pairing. It now skips
+FEE and a dedicated test pins the real invariant: the fee line counts at least as many
+orders as were overcharged, the note matches the findings exactly, and the note never
+exceeds the line it qualifies.
+
+### F1 — both primary CTAs did nothing
+
+"Send payment links" and "Mark reviewed", in the panel the entire product points at,
+had no handler. No request, no state change, no label change. The QA pass wrapped
+`window.fetch` and clicked both: `fetchCalls []`, `innerHTML changed false`.
+
+The labels were also promises the product cannot keep — nothing here sends an email or
+opens a dashboard. Both halves are now honest:
+
+* **The label names what the click does.** Copying is the truthful verb: the work leaves
+  the screen and lands in whatever actually does the chasing — a mail client, a
+  spreadsheet, a support tool — none of which this product is.
+* **What a group can offer depends on its data, not its name.** A group with customers
+  behind it offers their addresses; `UNRECORDED_REFUND` is a correction to the books
+  with nobody to chase, so it offers its order ids instead. The count is in the label,
+  so the button says what you are about to get.
+* **"Copied" is only claimed once the write resolves**, and reverts after two seconds so
+  the control can be used again. A blocked clipboard says so — silence there would
+  reintroduce the original defect.
+* **"Mark reviewed" survives collapsing the card** (state lives in the parent) and is
+  visible on the collapsed header: a reviewed group surrenders the TOP badge and the
+  one repeating animation in the product, because both mean "start here". It is
+  deliberately per-session and not persisted — claiming a review outlived a reload would
+  be a second inert control in the other direction.
+
+### F7 — the action table was unreachable on a phone
+
+At 360px the detail table rendered 624px wide inside a 299px container, and the card's
+`overflow-hidden` — which exists to clip the corner radius — meant no horizontal scroll.
+The customer, reason and order id columns were simply unreachable, and the amount alone
+is not something anyone can act on.
+
+The scroll now belongs to the table rather than the card, with `-mx-5 px-5` so it runs
+to the card's edges instead of stopping inside the padding and reading as a mistake.
+
+### Still open
+
+Fifteen findings remain, including three the QA pass rates above these: `unexplained`
+is structurally incapable of being non-zero while the correlation section on the same
+page names ₹2,480.00 outstanding (F2); 213 detected late settlements are never shown
+(F4); and the scorecard reports 1.00 recall on a run that caught 72% of what was planted
+(F5, F6). Also open: missing-source gating (F8), duplicated percentages (F9), rate-card
+retroactivity (F10), heading semantics (F11), the raw error page (F12), unnamed early
+refunds (F13), and the polish items (F14–F18).
+
+**Numbering note.** Two entries above both claim ADR-054. Left as they are — renumbering
+existing decisions would break every reference to them.
+
+---
+
+## ADR-059 — Four things the product said about itself that were not true
+
+The second pass over the QA dossier. ADR-058 took the two findings it ranked first;
+these are the next four, and they share a shape with those: the engine was right every
+time, and the layer reporting on it said something else.
+
+### F2 — a check that could not fail
+
+The waterfall's closing row read "Unexplained — nothing in the data accounts for this —
+₹0.00". It read that on every run ever made, including 2,500 orders with 849 planted
+defects. Scroll down the same page and the correlation section said ₹2,480.00 was still
+unexplained, and named the order.
+
+`Verdict.unexplained_paise` was `GapDecomposition.residual_paise` — gap minus the sum of
+the components. The components are *constructed* so as to close the gap, and `check()`
+raises when they do not, so that number is structurally incapable of being non-zero. It
+was decoration presented as a check, on a page whose whole promise is that every rupee is
+accounted for.
+
+Two different quantities had one name. They now have two:
+
+* `unexplained_paise` / `unexplained_count` — the CORRELATION residual. Money that IS in
+  the lines above but which no rule could attribute to a cause, after the payments and
+  subscriptions files were brought in. It can be non-zero, and on `blind` it is.
+* `residual_paise` — the decomposition's own residual. Still computed, still asserted,
+  no longer displayed as though it were a finding.
+
+**The bar had to change too.** `unexplained` was appended as a segment to the stacked
+bar. That was harmless while it was structurally zero — it drew nothing. As the
+correlation residual it is money already inside the lines, so drawing it would paint the
+same rupees twice and the bar would no longer be the gap. The bar is now the lines, and
+only the lines.
+
+**Nine tests asserted `sum(lines) + unexplained == gap`.** That identity is real and
+worth keeping — it just belongs to `residual_paise`. The test names already said
+"residual", which is what the assertion was always reaching for. Only two of the nine
+failed, on the batches where the correlation residual happens to be non-zero; the other
+seven would have kept passing while asserting the wrong field.
+
+### F4 — 213 late payouts detected, never mentioned
+
+The engine classifies late settlements with full working — captured date, expected date,
+actual date, working days late — and writes every one to the audit log. 41 on `qa-A`,
+213 on `qa-D`. No TIMING line appears in any verdict, and the words "late" or "T+2"
+appear nowhere in the analysis UI outside the collapsed audit trail.
+
+There is a good reason for the missing line and it is worth stating, because it is why
+this was never simply an oversight: money that settled late but HAS arrived is already
+inside `received`. Its contribution to the gap is zero, and counting it again was the
+original double-count `gap.py` was written to prevent. It cannot go in the waterfall.
+
+Zero gap impact is not zero information. A merchant financing operations on money that
+lands two days after it was promised has a working-capital problem whether or not it
+nets out by the end of the cycle. So `LatePayouts` reports count, value delayed, median
+and worst delay, and the cycle it was measured against — beside the waterfall, in a
+panel that says in as many words that it is not part of the gap. No rupee is
+double-counted, and nothing the engine detected is silently discarded.
+
+Every figure is aggregated from proof the classifier already wrote. Nothing is
+recomputed, for the same reason the fee overcharge is not recomputed downstream
+(ADR-058).
+
+### F5 — 1.00 recall on a run that found 612 of 849
+
+`recall` is `caught / (caught + missed)`, which drops `below_tolerance` from the
+denominator. That is defensible on its own terms: those are defects config declares
+immaterial — a timing lag inside `grace_days` — and an engine is not wrong to stay
+silent about them. But it makes the figure incapable of falling below 1.00 on any run
+whose only misses are sub-threshold, and 1.00 is what it reported on every run tested.
+
+Both are now reported, with strict as the primary. `recall_strict` is `caught /
+planted`, forgiving nothing:
+
+```
+qa-D   strict 0.72   lenient 1.00   612 caught, 237 below tolerance
+qa-A   strict 0.85   lenient 1.00   341 caught,  59 below tolerance
+qa-C   strict 0.87   lenient 1.00   104 caught,  15 below tolerance
+```
+
+The tolerance window is printed alongside, because a recall figure without its
+threshold cannot be argued with. The lenient figure is kept rather than deleted — it
+answers a real question ("of what we were asked to report, how much did we get?") and
+the two together say more than either alone. A judge who sees 1.00 everywhere concludes
+the scorer is decorative; 72.1% beside a stated grace window is the more persuasive
+number, and the only one that can go down when the engine gets worse.
+
+### F6 — the answer key disagreed with a correct analysis
+
+`healthy_subscription_decoy` plants orders with genuinely failed payments on
+still-active subscriptions. They are not defects — the engine is supposed to decline to
+claim them as halted subscriptions, and it does, on every run. But they produce real
+`PAYMENT_FAILED` findings, and the key listed nothing at all for them: `defect_count: 0`
+against 20 correct findings.
+
+So the loop this product invites — generate a scenario, check whether we caught it —
+reported phantom over-reporting on every run containing decoys.
+
+Decoys now declare the findings they should legitimately produce. On `qa-decoy` the key
+and the analysis now reconcile exactly: 20 reported = 0 real defects + 20 decoys.
+
+**Scoped to decoys deliberately.** The obvious generalisation — counting
+`expected_classification` across all planted defects — produces a number that is wrong
+in a new way. A real defect's `expected_classification` is what the CLASSIFIER should
+say, before correlation runs, and correlation then legitimately promotes some of them: a
+MISSING order whose payment failed is reported as PAYMENT_FAILED, which is the entire
+point of the correlation pass. Counting those would swap one misleading number for
+another. With decoys accounted for, the remaining difference on `qa-C` and `qa-D` is
+exactly the MISSING → PAYMENT_FAILED promotion:
+
+```
+qa-C   engine 18 = 6 decoys + 12 promoted from MISSING   (engine MISSING = 0)
+qa-D   engine 100 = 50 decoys + 50 promoted from MISSING (engine MISSING = 0)
+```
+
+Nothing is unexplained, and the engine was correct in all three runs.
+
+### Still open
+
+Eleven findings remain: missing-source gating (F8), two percentages per line (F9),
+rate-card retroactivity (F10), heading semantics (F11), the raw error page (F12),
+unnamed early refunds (F13), and the polish items (F14–F18). F5's separate note about
+`caught` being inflated by non-findings on `qa-split` — 20 split settlements the engine
+correctly ignored, recorded as 20 caught — is untouched and needs its own decision about
+what "catching" a non-defect should mean.
+
+---
+
+## ADR-060 — The remaining eleven, and the two that are worth more than a patch
+
+Nine of the QA dossier's remaining findings are fixed here. Two are documented in
+LIMITATIONS instead, because both need engine-wide changes disproportionate to what they
+change on screen, and a hurried version of either would be worse than an honest note.
+
+### F8 — a ledger-only upload was analysed as if every file were present
+
+Uploading a ledger with no settlement, bank, payments or subscriptions file produced a
+confident analysis: a 100% gap, "every rupee of that difference is accounted for below",
+and "0 of 2 orders reached Razorpay". All three describe the missing file rather than the
+merchant's money — nothing reached Razorpay because no Razorpay file was supplied.
+
+The backend knew. `missing_sources` was computed at upload time and returned in the
+upload response, then never surfaced again — and the analysis page is where anyone
+actually reads a verdict. It is now computed on every read of the verdict, with the
+`recon` case (which had no copy at all) named as the severe one, and rendered ABOVE the
+figures. Below them it would be a footnote on a number the reader has already believed.
+
+This is also the first-run path for anyone bringing their own data.
+
+### F12 — the error page dumped internals
+
+`/analysis/does-not-exist` rendered the backend string verbatim, including a Python list
+literal of every batch on disk. Upload errors leaked absolute server paths with an
+un-normalised `../` in them.
+
+The 404 is now a sentence that names a few recent runs. The paths are trimmed to
+basenames at the API boundary — not in the engine, which is right to name the file it
+choked on, because a CLI user is the operator and needs it. The trimming happens where
+the reader stops being the operator, and the rest of the message survives: "ledger.csv
+has no header row. Refusing to read positionally." is still the fix instruction.
+
+### F11 — no headings anywhere on the analysis page
+
+Zero `h1`–`h6` elements. "WHAT NEEDS YOU", "Your rates", "How do I know this is true?"
+were all styled `div`s, so a screen-reader user had no way to navigate the document.
+
+`Eyebrow` now renders `h2` by default, which fixes most of the page in one edit, with
+`as="div"` still available where it is genuinely a label — a heading outline full of
+things that head nothing would be a new problem, not a fix. Two collapsible sections had
+their headings INSIDE the button; a heading nested in a button is invalid and assistive
+tech may drop it from the outline, so the heading now wraps the control instead.
+
+The page `h1` is visually hidden. The design deliberately leads with the figures rather
+than a title, and inventing a visible one to satisfy the outline would change the design
+to fix an accessibility bug that does not require it.
+
+### F17 — "One thing needs you this week: 2 no record at Razorpay at all."
+
+`LINE_COPY`'s label is a descriptive phrase. It reads correctly as a row label and
+ungrammatically with a count in front of it. A label and a countable noun are different
+parts of speech, so `LINE_NOUN` now supplies the second: "2 orders with no record at
+Razorpay". A classification absent from that map falls back to a shape needing no noun,
+so a future addition degrades to clumsy rather than to broken — and a test asserts every
+displayable classification has one.
+
+The summary named the same line twice — "The largest line is X and it needs you; what
+needs you this week is X" — whenever the largest line was also the actionable one and
+there were no benign lines to take the other branch. That case now has its own clause.
+
+### F9 — two percentages, forty pixels apart
+
+The bar legend announced share of the positive-parts sum; the rows announce share of the
+net gap. The dossier read this as a bug. It is not: the code documents why the bar uses
+the positive sum — a signed denominator makes segments exceed the track they are drawn
+in — and share of net gap is the honest figure for a row, since a refund line
+legitimately goes negative.
+
+Two correct percentages with two denominators and one word is still a defect, though. The
+fix is to name the denominator in both places ("of the bar", "of the gap"), not to force
+one number. Worth noting the bar's figure is `sr-only`: the reader hearing both was
+always the screen-reader user, which is who this fix is for.
+
+### F15, F16, F18, F14
+
+The seed input reserves `11ch` so its own eight-digit default stops rendering as
+"2026090". The volume error moved onto the field — it was already displayed, but at the
+foot of a long form beside the disabled button, thirty rows from the input it was about.
+The CSV download link is padded to the 24px WCAG 2.2 AA minimum (it was the only element
+on the page that missed it), and `NumberInput` states `inputMode` rather than relying on
+`type=number` to imply it.
+
+For F14, the accessibility half only: `text-label` goes 11px → 12px and two badges 10.5px
+→ 11px. The dossier also proposes collapsing fourteen type steps to six. That is a
+restyle of every component for a cosmetic gain on a page whose contrast already passes at
+139 of 139 text nodes, so it is not done here.
+
+### Deferred to LIMITATIONS, with reasons
+
+**F13 (early refunds have no line)** needs a new classification threaded through the
+classifier, ranker, decomposition, scorer and golden files — with a rule that decides
+early-vs-ordinary from settlement dates rather than the generator's label, since the
+engine must reach it from data it would have in production. The arithmetic is already
+correct; the line is honestly labelled, just less specific than it could be.
+
+**F10 (a saved rate card rewrites sealed runs)** needs config hashing, manifest pinning,
+and a decision about what re-analysis under a new card *is*. Our position is that it
+should be a new evaluation with both visible rather than an overwrite — which makes batch
+identity "the sources plus the config that read them" rather than the folder name. That
+is a data-model change and deserves better than a patch.

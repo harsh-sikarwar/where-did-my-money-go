@@ -119,10 +119,30 @@ class TestTheLinesAddUp:
         result, _ = scenario
         v = result.verdict
         total = sum(line.amount_paise for line in v.lines)
-        assert total + v.unexplained_paise == v.gap_paise, (
-            f"lines sum to {total} + residual {v.unexplained_paise}, "
+        assert total + v.residual_paise == v.gap_paise, (
+            f"lines sum to {total} + residual {v.residual_paise}, "
             f"but the gap is {v.gap_paise}"
         )
+
+    def test_unexplained_is_the_correlation_residual_not_the_decomposition_one(
+        self, scenario
+    ) -> None:
+        """The row a merchant reads must be capable of being non-zero.
+
+        It used to show `GapDecomposition.residual_paise`, which is structurally always
+        zero — the components are built to close the gap, and `check()` raises if they
+        do not. So the screen said "Unexplained: nothing in the data accounts for this,
+        ₹0.00" on every run ever made, while the correlation section on the same page
+        named real money still outstanding.
+        """
+        result, _ = scenario
+        v = result.verdict
+        c = result.correlated
+
+        assert v.unexplained_paise == sum(f.amount_paise for f in c.still_unexplained)
+        assert v.unexplained_count == len(c.still_unexplained)
+        # And the integrity check it used to be conflated with still holds separately.
+        assert v.residual_paise == 0
 
     def test_actionable_plus_benign_equals_the_lines(self, scenario) -> None:
         """Both totals are displayed. They must partition the same set."""
@@ -155,8 +175,21 @@ class TestCounts:
     """Counts are displayed next to every amount. A wrong count is a wrong claim."""
 
     def test_line_counts_match_the_findings_behind_them(self, scenario) -> None:
+        """A count and the amount beside it must describe the same rows.
+
+        FEE is the exception that proves the rule, and it is excluded here because it
+        is asserted properly below instead. Every order that pays a fee produces no
+        finding — a correct fee is not a discrepancy — so for FEE the finding count is
+        the OVERCHARGED orders while the amount is the whole fee. Requiring them to be
+        equal is what drove the fee line to display one population's count over
+        another's money.
+        """
+        from finctl.classify.classifier import Classification
+
         result, _ = scenario
         for line in result.verdict.lines:
+            if line.classification is Classification.FEE:
+                continue
             behind = [
                 f for f in result.correlated.findings
                 if f.classification is line.classification
@@ -166,6 +199,43 @@ class TestCounts:
                     f"{line.classification}: screen says {line.count}, "
                     f"{len(behind)} findings exist"
                 )
+
+    def test_fee_line_and_its_note_each_count_their_own_population(
+        self, scenario
+    ) -> None:
+        """The fee line counts fee-payers; its note counts the overcharged.
+
+        The regression this pins: the line once took its count from the findings and
+        its amount from the gap component, so it read "40 orders, ₹37,023.69" beside a
+        drill-down of "40 orders, ₹227.90" — 162x apart under one label.
+        """
+        from finctl.classify.classifier import Classification
+
+        result, _ = scenario
+        fee = next(
+            (line for line in result.verdict.lines
+             if line.classification is Classification.FEE), None
+        )
+        if fee is None:
+            return
+
+        over = [
+            f for f in result.correlated.findings
+            if f.classification is Classification.FEE
+        ]
+
+        # The line counts orders that paid a fee, which is at least the number
+        # overcharged and generally many more.
+        assert fee.count >= len(over)
+
+        if over:
+            assert fee.note is not None, "overcharges exist but the line does not say so"
+            assert fee.note.count == len(over)
+            assert fee.note.amount_paise == sum(f.amount_paise for f in over)
+            # The overcharge is part of the fee already shown, never additional to it.
+            assert abs(fee.note.amount_paise) <= abs(fee.amount_paise)
+        else:
+            assert fee.note is None
 
     def test_halted_count_matches_the_subscriptions_file(self, scenario) -> None:
         """'Six customers' must be six actual halted subscriptions."""
@@ -338,7 +408,7 @@ class TestAdversarialInputsStillBalance:
         p.write_text("\n".join(lines + lines[1:6]) + "\n")
 
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
         from finctl.classify.classifier import Classification
         dup = next(
@@ -395,7 +465,7 @@ class TestAdversarialInputsStillBalance:
             w.writerows(rows[: len(rows) // 2])
 
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
     def test_renamed_columns_produce_the_same_answer(self, batch_dir: Path) -> None:
         """Mapping must be by name, and must not change any number."""
@@ -438,7 +508,7 @@ class TestAdversarialInputsStillBalance:
         """Two-way reconciliation: everything settled is in-flight by definition."""
         (batch_dir / "bank.csv").unlink()
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
 
 class TestSplitSettlementsAndEarlyRefunds:
@@ -528,7 +598,7 @@ class TestSplitSettlementsAndEarlyRefunds:
         left the bank, and something must account for it."""
         pipeline, _ = result
         v = pipeline.verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
     def test_both_refund_mechanisms_merge_into_one_line(self, result) -> None:
         """A one-sided refund (negative) and a settled refund (positive) are both
@@ -576,7 +646,7 @@ class TestHandEditedLedger:
     def test_deleting_ledger_rows_still_balances(self, batch_dir: Path) -> None:
         self._delete_ledger_rows(batch_dir, [10, 19])
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
     def test_a_deleted_order_becomes_an_unexpected_settlement(
         self, batch_dir: Path
@@ -684,7 +754,7 @@ class TestHandEditedLedger:
         p.write_text("\n".join(lines) + "\n")
 
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise
 
 
 class TestMoreHandEdits:
@@ -751,7 +821,7 @@ class TestMoreHandEdits:
         )
         assert line.amount_paise == round(float(amount) * 100)
         assert line.amount_paise > 0
-        assert sum(x.amount_paise for x in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(x.amount_paise for x in v.lines) + v.residual_paise == v.gap_paise
         assert order_id  # the duplicated order is identifiable
 
     def test_a_zero_ledger_amount_is_not_called_a_refund(self, batch_dir: Path) -> None:
@@ -801,4 +871,4 @@ class TestMoreHandEdits:
         p.write_text("\n".join(lines) + "\n")
 
         v = run(batch_dir).verdict
-        assert sum(line.amount_paise for line in v.lines) + v.unexplained_paise == v.gap_paise
+        assert sum(line.amount_paise for line in v.lines) + v.residual_paise == v.gap_paise

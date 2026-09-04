@@ -9,6 +9,7 @@ If a number appears only in the browser, it is not testable and does not exist.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -82,8 +83,16 @@ def _load(batch: str, *, refresh: bool = False) -> PipelineResult:
 
     path = DATA_ROOT / batch
     if not path.is_dir():
+        # A sentence, not a Python repr. This used to render the raw list literal of
+        # every batch on disk straight into the browser — the one screen in the app
+        # that looked unfinished next to everything around it.
         available = sorted(p.name for p in DATA_ROOT.iterdir() if p.is_dir()) if DATA_ROOT.is_dir() else []
-        raise HTTPException(404, f"no batch {batch!r}. Available: {available}")
+        detail = f"There is no run called {batch!r}."
+        if available:
+            shown = ", ".join(available[:6])
+            more = f", and {len(available) - 6} more" if len(available) > 6 else ""
+            detail += f" Recent runs: {shown}{more}."
+        raise HTTPException(404, detail)
 
     try:
         # Remembered mappings are needed HERE too, not only on upload. Any cache miss
@@ -96,10 +105,22 @@ def _load(batch: str, *, refresh: bool = False) -> PipelineResult:
         # Surface the engine's own message. Its errors are written to be read by a
         # human and name the offending column, row or key — flattening them into
         # "internal error" would discard the most useful part.
-        raise HTTPException(422, f"{type(exc).__name__}: {exc}") from exc
+        raise HTTPException(422, _client_error(exc)) from exc
 
     _cache[batch] = result
     return result
+
+
+# Absolute server paths, with an un-normalised `../` in them, were being handed to the
+# browser inside otherwise good error messages. The engine is right to name the file it
+# choked on — a CLI user needs it — so the path is trimmed to a basename here, at the
+# boundary where the reader stops being the operator.
+_PATH_IN_MESSAGE = re.compile(r"(?:/[^\s/]+)*/([^\s/]+\.(?:csv|json|xlsx|xls))")
+
+
+def _client_error(exc: Exception) -> str:
+    """The engine's message, with server paths reduced to filenames."""
+    return _PATH_IN_MESSAGE.sub(r"\1", f"{type(exc).__name__}: {exc}")
 
 
 def _money(paise: int) -> dict[str, Any]:
@@ -362,7 +383,7 @@ def generate_batch(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             result = run(target, _config(), mappings=_mapping_store())
         except Exception as exc:
-            raise HTTPException(422, f"{type(exc).__name__}: {exc}") from exc
+            raise HTTPException(422, _client_error(exc)) from exc
     except Exception:
         # Same reasoning as upload: a half-written batch would reconcile a partial
         # scenario on the next request.
@@ -596,7 +617,7 @@ async def upload(
             # surfaced verbatim rather than flattened into "bad file".
             raise HTTPException(422, str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(422, f"{type(exc).__name__}: {exc}") from exc
+            raise HTTPException(422, _client_error(exc)) from exc
 
     except Exception:
         # A half-written batch would be staged on the next request and silently
@@ -623,10 +644,26 @@ async def upload(
     }
 
 
+def _missing_sources(result: Any) -> list[str]:
+    """Sources absent from a staged batch, in the order Source declares them."""
+    staged = set(result.batch.sources)
+    return [s.value for s in Source if s not in staged]
+
+
 def _missing_note(missing: list[str]) -> str | None:
     if not missing:
         return None
     notes = []
+    if "recon" in missing:
+        # The severe case, and the one that was silent. With no settlement file every
+        # order is unmatched, so the verdict reads "0 of N orders reached Razorpay" and
+        # a 100% gap — describing the absent file, not the merchant's money.
+        notes.append(
+            "No Razorpay settlement file, so there is nothing to reconcile the ledger "
+            "against: every order is reported as never having reached Razorpay, and "
+            "the whole of your revenue is reported as the gap. That is a description "
+            "of the missing file rather than of your money."
+        )
     if "bank" in missing:
         notes.append(
             "No bank statement, so this is a two-way reconciliation: money Razorpay has "
@@ -792,11 +829,58 @@ def clear_rate_card() -> dict[str, Any]:
     return get_rate_card()
 
 
+@app.get("/api/timeline/{batch}")
+def timeline(batch: str, refresh: bool = False) -> dict[str, Any]:
+    """The gap spread across the days the orders were captured on.
+
+    Answers the question the verdict provokes: not how big, but when. A single bad
+    Tuesday and a steady leak of the same size are different problems, and the
+    composition bar cannot tell them apart.
+
+    `undated` is money the components could not pin to a dated order — an unrecorded
+    refund keyed by entity id, a settlement for an order the ledger never mentioned.
+    It is returned rather than spread across the days, so the chart never implies a
+    day it cannot evidence. `dated + undated == gap` is asserted engine-side.
+    """
+    result = _load(batch, refresh=refresh)
+    t = result.timeline
+    peak = t.peak
+
+    return {
+        "batch": batch,
+        "gap": _money(t.gap_paise),
+        "dated": _money(t.dated_paise),
+        "undated": _money(t.undated_paise),
+        "days": [
+            {
+                "day": d.day.isoformat(),
+                "amount": _money(d.paise),
+                "orders": d.order_count,
+                "actionable": _money(d.actionable_paise),
+                "expected": _money(d.expected_paise),
+                "received": _money(d.received_paise),
+            }
+            for d in t.days
+        ],
+        "peak": (
+            {
+                "day": peak.day.isoformat(),
+                "amount": _money(peak.paise),
+                "orders": peak.order_count,
+                "actionable": _money(peak.actionable_paise),
+            }
+            if peak
+            else None
+        ),
+    }
+
+
 @app.get("/api/verdict/{batch}")
 def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
     """The four lines and a verdict. The default screen."""
     result = _load(batch, refresh=refresh)
     v = result.verdict
+    missing_sources = _missing_sources(result)
 
     # The one place a language model touches this product. It writes the summary prose
     # and nothing else: every figure below is rendered by `_money` from an integer the
@@ -818,7 +902,31 @@ def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
         "summary_source": summary_source,
         "actionable_total": _money(v.actionable_paise),
         "benign_total": _money(v.benign_paise),
+        # Money no rule could account for, after correlation. Not the decomposition's
+        # residual, which is an integrity check that must be zero — returned beside it
+        # as `residual` so the distinction is visible rather than implied.
         "unexplained": _money(v.unexplained_paise),
+        "unexplained_count": v.unexplained_count,
+        "residual": _money(v.residual_paise),
+        # Which files this batch did NOT have, on every read of the verdict rather than
+        # only in the upload response. A ledger-only upload produces a confident 100%
+        # gap, and the analysis page is where anyone actually reads it.
+        "missing_sources": missing_sources,
+        "missing_note": _missing_note(missing_sources),
+        # Detected late settlements. Gap-neutral — the money arrived, so it is already
+        # inside `received` — but 213 late payouts on a 2,500-order run is a
+        # working-capital fact the engine knew and never said.
+        "late": (
+            {
+                "count": v.late.count,
+                "value": _money(v.late.value_paise),
+                "median_days_late": v.late.median_days_late,
+                "max_days_late": v.late.max_days_late,
+                "cycle_days": v.late.cycle_days,
+            }
+            if v.late
+            else None
+        ),
         "lines": [
             {
                 "classification": str(line.classification),
@@ -827,6 +935,20 @@ def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
                 "count": line.count,
                 "amount": _money(line.amount_paise),
                 "actionable": line.actionable,
+                # A figure ABOUT the line, already inside its amount. The fee
+                # overcharge is the only one so far: the portion charged above the
+                # rate card, which is the one fee number a merchant can dispute.
+                "note": (
+                    {
+                        "label": line.note.label,
+                        "explanation": line.note.explanation,
+                        "count": line.note.count,
+                        "amount": _money(line.note.amount_paise),
+                        "actionable": line.note.actionable,
+                    }
+                    if line.note
+                    else None
+                ),
             }
             for line in v.lines
         ],

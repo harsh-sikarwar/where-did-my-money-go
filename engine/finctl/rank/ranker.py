@@ -107,6 +107,34 @@ LINE_COPY: dict[Classification, tuple[str, str]] = {
     ),
 }
 
+# A countable plural noun for each classification, for the sentences that put a NUMBER
+# in front of a line.
+#
+# `LINE_COPY`'s label is a descriptive phrase — "no record at Razorpay at all" — which
+# reads correctly as a row label and produces "One thing needs you this week: 2 no
+# record at Razorpay at all." when a count is placed in front of it. A label and a
+# countable noun are different parts of speech and the templates need both.
+#
+# Absent from this map, `headline()` falls back to a shape that needs no noun, so a new
+# classification degrades to clumsy rather than to ungrammatical.
+LINE_NOUN: dict[Classification, str] = {
+    Classification.TIMING: "payouts still on their way",
+    Classification.ON_HOLD: "payments Razorpay is holding",
+    Classification.FEE: "orders charged a fee",
+    Classification.TAX_ON_FEE: "orders charged tax on the fee",
+    Classification.REFUND: "refunds Razorpay paid out anyway",
+    Classification.ROUNDING: "rounding differences",
+    Classification.DUPLICATE: "duplicated orders",
+    Classification.UNEXPECTED_SETTLEMENT: "settlements not in your ledger",
+    Classification.UNRECORDED_REFUND: "unrecorded refunds",
+    Classification.DISPUTED: "disputed payments",
+    Classification.HALTED_SUBSCRIPTION: "halted subscriptions",
+    Classification.PAYMENT_FAILED: "failed payments",
+    Classification.MISSING: "orders with no record at Razorpay",
+    Classification.NEEDS_REVIEW: "orders needing review",
+}
+
+
 # Display order for the verdict. Benign lines first, largest-first within each group,
 # so the eye lands on "this is mostly fine" before "this needs you".
 _DISPLAY_ORDER = (
@@ -127,8 +155,41 @@ _DISPLAY_ORDER = (
 
 
 @dataclass
+class LineNote:
+    """A figure that qualifies a verdict line without entering the gap sum.
+
+    Kept structurally separate from `amount_paise` so it cannot be mistaken for a
+    contribution: nothing sums notes, and `GapDecomposition.check()` never sees them.
+    """
+
+    label: str
+    count: int
+    amount_paise: int
+    actionable: bool
+    explanation: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "label": self.label,
+            "count": self.count,
+            "amount_paise": self.amount_paise,
+            "actionable": self.actionable,
+            "explanation": self.explanation,
+        }
+
+
+@dataclass
 class VerdictLine:
-    """One line of the verdict screen."""
+    """One line of the verdict screen.
+
+    `count` and `amount_paise` must describe the SAME population. That sounds too
+    obvious to state, which is exactly why it went wrong: the fee line took its count
+    from the findings (orders charged the wrong rate) and its amount from the gap
+    component (the whole fee, across every order that paid one), and rendered them
+    side by side as though they were one fact. On one QA run that read "40 orders ·
+    ₹37,023.69" while its own drill-down showed "40 orders · ₹227.90" — the same label
+    over two populations, 162x apart.
+    """
 
     classification: Classification
     label: str
@@ -137,6 +198,12 @@ class VerdictLine:
     amount_paise: int
     actionable: bool
     findings: list[Finding] = field(default_factory=list)
+    # A second figure ABOUT this line rather than a second contribution to the gap.
+    # The fee overcharge lives here: it is a subset of money already counted in
+    # `amount_paise`, so it can never be added to the decomposition without
+    # double-counting — but it is the only fee number a merchant can dispute, and
+    # until now it appeared nowhere in the product.
+    note: LineNote | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +213,38 @@ class VerdictLine:
             "count": self.count,
             "amount_paise": self.amount_paise,
             "actionable": self.actionable,
+            "note": self.note.as_dict() if self.note else None,
+        }
+
+
+@dataclass
+class LatePayouts:
+    """Settlements that arrived, but later than the cycle promised.
+
+    Deliberately NOT a verdict line. Money that settled late but HAS arrived is already
+    inside `received`, so its contribution to the gap is zero — counting it again was
+    the original double-count that `gap.py` exists to prevent, and it is why this has
+    no line despite the engine detecting 213 of them on a 2,500-order run.
+
+    Zero gap impact is not zero information. A merchant with 213 late payouts has a
+    working-capital problem worth naming, and the engine already knows the count, the
+    value and how late each one was. So it is reported beside the waterfall rather than
+    inside it: no rupee is double-counted and nothing is silently discarded.
+    """
+
+    count: int = 0
+    value_paise: int = 0
+    median_days_late: int = 0
+    max_days_late: int = 0
+    cycle_days: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "count": self.count,
+            "value_paise": self.value_paise,
+            "median_days_late": self.median_days_late,
+            "max_days_late": self.max_days_late,
+            "cycle_days": self.cycle_days,
         }
 
 
@@ -157,7 +256,29 @@ class Verdict:
     received_paise: int
     gap_paise: int
     lines: list[VerdictLine] = field(default_factory=list)
+    # Money no rule could account for, from the CORRELATION pass — the honest residual,
+    # and the only one worth showing a merchant.
+    #
+    # This used to be the decomposition's residual, which is a different thing entirely
+    # and is now `residual_paise` below. The components are constructed so as to close
+    # the gap, so that number is structurally incapable of being non-zero: it read
+    # "Unexplained — nothing in the data accounts for this — ₹0.00" on every run,
+    # including 2,500 orders with 849 defects, on a page whose whole promise is that
+    # every rupee is accounted for. Worse, the correlation section further down the
+    # SAME page named ₹2,480.00 still unexplained, and the order it belonged to.
+    #
+    # A check that cannot fail proves nothing. This one can.
     unexplained_paise: int = 0
+    # How many orders that residual spans, so the row can say "one order" rather than
+    # leaving a bare figure to be taken on faith.
+    unexplained_count: int = 0
+    # The decomposition's own residual: gap minus the sum of the components. It MUST be
+    # zero and `GapDecomposition.check()` raises when it is not, so it is kept as an
+    # integrity signal rather than displayed as a finding.
+    residual_paise: int = 0
+    # Detected late settlements, summarised. Gap-neutral, so it sits beside the
+    # waterfall rather than in it — see LatePayouts.
+    late: LatePayouts | None = None
 
     @property
     def actionable_lines(self) -> list[VerdictLine]:
@@ -184,7 +305,12 @@ class Verdict:
         top = max(actionable, key=lambda line: line.amount_paise)
         if top.classification is Classification.HALTED_SUBSCRIPTION:
             return f"One thing needs you this week: those {top.count} customers."
-        return f"One thing needs you this week: {top.count} {top.label}."
+        noun = LINE_NOUN.get(top.classification)
+        if noun:
+            return f"One thing needs you this week: {top.count} {noun}."
+        # No noun for this classification: use a shape that does not need one rather
+        # than concatenating a count onto a descriptive phrase.
+        return f"One thing needs you this week: {top.label} ({top.count})."
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -192,6 +318,9 @@ class Verdict:
             "received_paise": self.received_paise,
             "gap_paise": self.gap_paise,
             "unexplained_paise": self.unexplained_paise,
+            "unexplained_count": self.unexplained_count,
+            "residual_paise": self.residual_paise,
+            "late": self.late.as_dict() if self.late else None,
             "actionable_paise": self.actionable_paise,
             "benign_paise": self.benign_paise,
             "headline": self.headline(),
@@ -223,10 +352,107 @@ class Ranker:
             return True
         return abs(amount_paise) >= self.tol.actionable_above_paise
 
+    def _line(
+        self,
+        classification: Classification,
+        label: str,
+        explanation: str,
+        component: Any,
+        counts: dict[Classification, int],
+        findings: list[Finding],
+    ) -> VerdictLine:
+        """One verdict line, with its count and its amount describing the same rows.
+
+        The count used to prefer the finding count for every classification, on the
+        reasoning that "6 subscriptions" is a human fact while a component count is an
+        accounting artefact. That is true where the two populations coincide. For FEE
+        they are different sets — every order that paid a fee, versus the orders
+        charged the wrong one — and pairing one's count with the other's amount is
+        what produced a line contradicting its own drill-down.
+
+        So: the count comes from the component whenever it is the component's money
+        being shown, and the finding count is used only where a finding IS the unit of
+        the amount.
+        """
+        mine = [f for f in findings if f.classification is classification]
+
+        if classification is Classification.FEE:
+            # Two questions, two lines' worth of fact, one of which is not a gap
+            # contribution at all. `amount_paise` stays the whole fee (that is what
+            # left the merchant's money), counted over the orders that actually paid
+            # one. The overcharge rides along as a note.
+            over_paise = sum(f.amount_paise for f in mine)
+            # NOT `is_actionable(FEE, ...)`. FEE sits in `always_benign`, and that
+            # entry means the fee itself — the contracted cost of taking payments —
+            # is never something to chase. An overcharge is the opposite: money
+            # charged above the rate card, which is the one fee figure a merchant can
+            # dispute. So it is judged on materiality alone.
+            note = LineNote(
+                label="charged above your contracted rate",
+                count=len(mine),
+                amount_paise=over_paise,
+                actionable=over_paise >= self.tol.actionable_above_paise,
+                explanation=(
+                    "The part of that fee which exceeds the rate card — the only "
+                    "portion you could dispute. It is already included in the figure "
+                    "above, not additional to it."
+                ),
+            ) if mine else None
+            return VerdictLine(
+                classification=classification,
+                label=label,
+                explanation=explanation,
+                count=component.count,
+                amount_paise=component.amount_paise,
+                # The whole fee is the contracted cost of taking payments; it is not
+                # something to chase. Only the overcharge can be actionable, and it
+                # says so on the note.
+                actionable=False,
+                findings=mine,
+                note=note,
+            )
+
+        return VerdictLine(
+            classification=classification,
+            label=label,
+            explanation=explanation,
+            count=counts.get(classification, component.count),
+            amount_paise=component.amount_paise,
+            actionable=self.is_actionable(classification, component.amount_paise),
+            findings=mine,
+        )
+
+    def _late_payouts(self, findings: list[Finding]) -> LatePayouts | None:
+        """Summarise the TIMING findings the waterfall cannot carry.
+
+        Every figure here comes from proof the classifier already wrote — the delay is
+        not recomputed, only aggregated, for the same reason the fee overcharge is not
+        recomputed downstream.
+        """
+        late = [f for f in findings if f.classification is Classification.TIMING]
+        if not late:
+            return None
+
+        days = sorted(
+            int(f.proof.get("working_days_late", 0) or 0) for f in late
+        )
+        return LatePayouts(
+            count=len(late),
+            value_paise=sum(f.amount_paise for f in late),
+            median_days_late=days[len(days) // 2],
+            max_days_late=days[-1],
+            # The cycle the delay was measured against, so the panel can say "T+2"
+            # rather than leaving "late" undefined. Taken from the findings themselves
+            # because the cycle may have been OBSERVED from the data rather than
+            # configured, and the two can differ.
+            cycle_days=int(late[0].proof.get("cycle_days", 0) or 0),
+        )
+
     def rank(
         self,
         findings: list[Finding],
         matches: MatchResult,
+        still_unexplained: list[Finding] | None = None,
     ) -> Verdict:
         """Build the verdict from the GAP DECOMPOSITION, not from finding amounts.
 
@@ -257,17 +483,8 @@ class Ranker:
             label, explanation = LINE_COPY.get(
                 classification, (str(classification).lower(), "")
             )
-            lines.append(VerdictLine(
-                classification=classification,
-                label=label,
-                explanation=explanation,
-                # Prefer the finding count where one exists: "6 subscriptions" is a
-                # human fact, while the component count is an accounting artefact
-                # (FEE spans every order that paid one).
-                count=counts.get(classification, component.count),
-                amount_paise=component.amount_paise,
-                actionable=self.is_actionable(classification, component.amount_paise),
-                findings=[f for f in findings if f.classification is classification],
+            lines.append(self._line(
+                classification, label, explanation, component, counts, findings,
             ))
 
         for classification, component in by_class.items():
@@ -276,18 +493,23 @@ class Ranker:
             label, explanation = LINE_COPY.get(
                 classification, (str(classification).lower(), "")
             )
-            lines.append(VerdictLine(
-                classification=classification, label=label, explanation=explanation,
-                count=counts.get(classification, component.count),
-                amount_paise=component.amount_paise,
-                actionable=self.is_actionable(classification, component.amount_paise),
-                findings=[f for f in findings if f.classification is classification],
+            lines.append(self._line(
+                classification, label, explanation, component, counts, findings,
             ))
 
+        # The residual a merchant is shown comes from the CORRELATION pass: money no
+        # rule could account for, after the payments and subscriptions files were
+        # brought in. `d.residual_paise` is a different quantity — an integrity check
+        # on the decomposition that must be zero — and showing it as though it were
+        # this one meant the row could never say anything.
+        outstanding = list(still_unexplained or [])
         return Verdict(
             expected_paise=d.expected_paise,
             received_paise=d.received_paise,
             gap_paise=d.gap_paise,
             lines=lines,
-            unexplained_paise=d.residual_paise,
+            unexplained_paise=sum(f.amount_paise for f in outstanding),
+            unexplained_count=len(outstanding),
+            residual_paise=d.residual_paise,
+            late=self._late_payouts(findings),
         )

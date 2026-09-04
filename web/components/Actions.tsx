@@ -35,11 +35,16 @@ export function Actions({ batch }: { batch: string }) {
   const [data, setData] = useState<ActionsData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Held in the parent, not the card: collapsing a group must not forget that it was
+  // reviewed. It is deliberately per-session and not persisted — claiming a review
+  // survived a reload would be a second inert control, in the other direction.
+  const [reviewed, setReviewed] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setData(null);
     setError(null);
     setExpanded(new Set());
+    setReviewed(new Set());
     api
       .actions(batch)
       .then((d) => {
@@ -97,9 +102,12 @@ export function Actions({ batch }: { batch: string }) {
     <section className="mt-14">
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-4">
         <Eyebrow>What needs you</Eyebrow>
+        {/* 20px tall, under the 24px WCAG 2.2 AA target minimum — the only element on
+            the page that missed it. Padded rather than enlarged, so the type stays put
+            and only the hit area grows. F18. */}
         <a
           href={api.actionsCsvUrl(batch)}
-          className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--color-ink-soft)] transition-colors hover:text-[var(--color-ink)]"
+          className="-mx-1.5 inline-flex min-h-6 items-center gap-1.5 px-1.5 text-[13px] font-semibold text-[var(--color-ink-soft)] transition-colors hover:text-[var(--color-ink)]"
         >
           <DownloadIcon size={13} /> Download as CSV
         </a>
@@ -139,6 +147,15 @@ export function Actions({ batch }: { batch: string }) {
               return next;
             })
           }
+          reviewed={reviewed.has(group.classification)}
+          onReviewed={() =>
+            setReviewed((prev) => {
+              const next = new Set(prev);
+              if (next.has(group.classification)) next.delete(group.classification);
+              else next.add(group.classification);
+              return next;
+            })
+          }
         />
       ))}
     </section>
@@ -151,13 +168,41 @@ function Group({
   maxPaise,
   open,
   onToggle,
+  reviewed,
+  onReviewed,
 }: {
   group: ActionGroup;
   top: boolean;
   maxPaise: number;
   open: boolean;
   onToggle: () => void;
+  reviewed: boolean;
+  onReviewed: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const cta = ctaFor(group);
+
+  // "Copied" is a claim about the clipboard, so it is only made once the write has
+  // actually resolved. The confirmation reverts on its own — a button stuck on
+  // "Copied" cannot be used a second time, and the merchant may well want to.
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(t);
+  }, [copied]);
+
+  async function copy() {
+    const text = cta.text(group);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setCopyFailed(false);
+    } catch {
+      setCopyFailed(true);
+    }
+  }
+
   // A component can be negative: money that arrived which the books did not expect.
   // It is a real discrepancy worth reconciling, but it is not money to CHASE, so it
   // never wears the urgent tone or the ringing TOP badge even when it is the largest
@@ -188,13 +233,26 @@ function Group({
         className="flex w-full items-center justify-between gap-4 p-5 text-left"
       >
         <span className="flex min-w-0 items-center gap-3">
-          {top && !offset && (
+          {/* A reviewed group stops asking. It keeps its place and its figure — the
+              money has not moved — but it surrenders the badge and the one repeating
+              animation in the product, because both mean "start here" and it is no
+              longer where you start. */}
+          {reviewed ? (
             <span
-              className="shrink-0 rounded-[5px] px-[7px] py-[3px] text-[10.5px] font-extrabold tracking-[0.06em] text-[var(--color-ground)]"
-              style={{ background: tone, animation: "ring 2.6s ease-out infinite" }}
+              className="shrink-0 rounded-[5px] border border-[var(--color-line)] px-[7px] py-[3px] text-[11px] font-extrabold tracking-[0.06em] text-[var(--color-ink-faint)]"
             >
-              TOP
+              DONE
             </span>
+          ) : (
+            top &&
+            !offset && (
+              <span
+                className="shrink-0 rounded-[5px] px-[7px] py-[3px] text-[11px] font-extrabold tracking-[0.06em] text-[var(--color-ground)]"
+                style={{ background: tone, animation: "ring 2.6s ease-out infinite" }}
+              >
+                TOP
+              </span>
+            )
           )}
           <span className="flex min-w-0 flex-col gap-[7px]">
             <span className="text-[15px] leading-snug font-bold">
@@ -242,35 +300,43 @@ function Group({
 
       {open && (
         <div className="fade border-t border-[var(--color-line)] px-5 pt-2 pb-3">
-          <table className="w-full border-collapse">
-            <caption className="sr-only">
-              {labelFor(group)} — {group.count} orders totalling {group.total.display}
-            </caption>
-            <tbody>
-              {shown.map((item, i) => (
-                <tr
-                  key={`${item.order_id ?? "row"}-${i}`}
-                  className="border-b border-[oklch(1_0_0/0.06)] transition-colors hover:bg-[oklch(1_0_0/0.03)]"
-                >
-                  <td className="money w-[90px] py-2.5 text-[12.5px] font-bold">
-                    {item.amount.display}
-                  </td>
-                  <td className="money py-2.5 pr-3 text-[12.5px] text-[var(--color-ink-soft)]">
-                    {item.email ?? item.customer_id ?? "—"}
-                  </td>
-                  <td
-                    className="money py-2.5 pr-3 text-[12.5px]"
-                    style={{ color: "var(--color-accent)" }}
+          {/* The card's own `overflow-hidden` (it clips the corner radius) also killed
+              any chance of scrolling this table, so at 360px the customer, reason and
+              order id columns were simply unreachable — the amount alone is not
+              something a merchant can act on. The scroll belongs to the table, not the
+              card: `-mx-5 px-5` lets it run to the card's edges rather than stopping
+              inside the padding and looking like a mistake. F7. */}
+          <div className="-mx-5 overflow-x-auto px-5">
+            <table className="w-full min-w-[420px] border-collapse">
+              <caption className="sr-only">
+                {labelFor(group)} — {group.count} orders totalling {group.total.display}
+              </caption>
+              <tbody>
+                {shown.map((item, i) => (
+                  <tr
+                    key={`${item.order_id ?? "row"}-${i}`}
+                    className="border-b border-[oklch(1_0_0/0.06)] transition-colors hover:bg-[oklch(1_0_0/0.03)]"
                   >
-                    {item.reason ?? group.classification}
-                  </td>
-                  <td className="money py-2.5 text-right text-[12.5px] text-[var(--color-ink-faint)]">
-                    {item.order_id ?? "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    <td className="money w-[90px] py-2.5 text-[12.5px] font-bold">
+                      {item.amount.display}
+                    </td>
+                    <td className="money py-2.5 pr-3 text-[12.5px] text-[var(--color-ink-soft)]">
+                      {item.email ?? item.customer_id ?? "—"}
+                    </td>
+                    <td
+                      className="money py-2.5 pr-3 text-[12.5px]"
+                      style={{ color: "var(--color-accent)" }}
+                    >
+                      {item.reason ?? group.classification}
+                    </td>
+                    <td className="money py-2.5 text-right text-[12.5px] text-[var(--color-ink-faint)]">
+                      {item.order_id ?? "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
           {group.count > shown.length && (
             <p className="tnum pt-3 text-[12.5px] text-[var(--color-ink-faint)]">
@@ -279,17 +345,26 @@ function Group({
             </p>
           )}
 
-          <div className="flex gap-2.5 pt-4 pb-1.5">
+          <div className="flex flex-wrap items-center gap-2.5 pt-4 pb-1.5">
             <Button
               size="sm"
+              onClick={copy}
               style={{ background: tone, color: "var(--color-ground)" }}
               className="font-bold"
             >
-              {ctaFor(group)}
+              {copied ? cta.done : cta.label}
             </Button>
-            <Button size="sm" variant="secondary">
-              Mark reviewed
+            <Button size="sm" variant="secondary" onClick={onReviewed}>
+              {reviewed ? "Reviewed" : "Mark reviewed"}
             </Button>
+            {/* The clipboard is unavailable over plain http on some browsers and can be
+                denied outright. Saying so beats a button that silently does nothing —
+                which is the failure this whole change exists to remove. */}
+            {copyFailed && (
+              <span className="text-[12.5px] text-[var(--color-ink-faint)]">
+                Clipboard blocked — the CSV above has these rows.
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -332,16 +407,56 @@ function labelFor(group: ActionGroup): string {
  * will not restart on its own.") and is already printed above the fold of the card —
  * setting it again as a button label gave a two-sentence paragraph a rounded
  * background and made the control impossible to scan.
+ *
+ * It must also be TRUE. These labels named actions the product cannot perform: nothing
+ * here sends an email or opens a dashboard, and a button that says "Send payment links"
+ * and does nothing is worse than no button — it is the last control a judge touches
+ * (F1). So each label now names what the click actually does, and the click does it.
+ *
+ * What a group supports depends on its data, not its name: a group with no customer
+ * behind it (an unrecorded refund is a correction to the books, not someone to chase)
+ * has no addresses to copy, so it is offered its order ids instead.
  */
-const CTA: Record<string, string> = {
-  HALTED_SUBSCRIPTION: "Send payment links",
-  PAYMENT_FAILED: "Retry these payments",
-  ON_HOLD: "Open Razorpay dashboard",
-  DISPUTED: "Submit evidence",
-  REFUND: "Check refund records",
-  UNRECORDED_REFUND: "Correct the books",
-};
+type Cta = { label: string; done: string; text: (g: ActionGroup) => string };
 
-function ctaFor(group: ActionGroup): string {
-  return CTA[group.classification] ?? "Start on these";
+/** Addresses to chase, deduped, in the engine's largest-first order. */
+function recipients(g: ActionGroup): string[] {
+  const seen = new Set<string>();
+  for (const i of g.items) {
+    const to = i.email ?? i.contact;
+    if (to) seen.add(to);
+  }
+  return [...seen];
+}
+
+/**
+ * What this group can hand over. Copying is the honest verb: the work leaves the
+ * screen and lands wherever the chasing actually happens, which for a merchant is a
+ * mail client, a spreadsheet or a support tool — none of which this product is.
+ */
+function ctaFor(group: ActionGroup): Cta {
+  const to = recipients(group);
+  if (to.length > 0) {
+    return {
+      label: `Copy ${to.length} ${to.length === 1 ? "address" : "addresses"}`,
+      done: "Copied",
+      text: () => to.join(", "),
+    };
+  }
+  const ids = group.items.map((i) => i.order_id).filter((o): o is string => !!o);
+  if (ids.length > 0) {
+    return {
+      label: `Copy ${ids.length} order ${ids.length === 1 ? "id" : "ids"}`,
+      done: "Copied",
+      text: () => ids.join("\n"),
+    };
+  }
+  // Neither a customer nor an order id: nothing to hand over but the figure itself.
+  // Offering "Copy 0 order ids" would be a button that runs and achieves nothing,
+  // which is the defect this function exists to remove.
+  return {
+    label: "Copy the total",
+    done: "Copied",
+    text: (g) => g.total.display,
+  };
 }

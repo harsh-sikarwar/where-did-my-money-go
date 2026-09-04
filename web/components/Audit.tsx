@@ -16,20 +16,25 @@ export function Audit({ batch }: { batch: string }) {
 
   return (
     <section className="mt-16 border-t border-[var(--color-line-strong)] pt-8">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-baseline justify-between text-left"
-        aria-expanded={open}
-      >
-        <span className="text-title">How do I know this is true?</span>
-        <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-accent)]">
-          {open ? "hide" : "show the audit trail"}
-          <ChevronDownIcon
-            size={13}
-            className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`}
-          />
-        </span>
-      </button>
+      {/* The heading WRAPS the control rather than sitting inside it: a heading nested
+          in a button is invalid, and assistive tech may drop it from the outline —
+          which would leave this section unreachable in exactly the way F11 is about. */}
+      <h2 className="text-title">
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex w-full items-baseline justify-between text-left font-[inherit] text-[inherit]"
+          aria-expanded={open}
+        >
+          How do I know this is true?
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-accent)]">
+            {open ? "hide" : "show the audit trail"}
+            <ChevronDownIcon
+              size={13}
+              className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+            />
+          </span>
+        </button>
+      </h2>
       {open && <AuditBody batch={batch} />}
     </section>
   );

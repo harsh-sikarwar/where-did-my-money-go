@@ -11,6 +11,7 @@ from datetime import date
 import pytest
 
 from finctl.calendar import WorkingCalendar
+from finctl.config.loader import load_config
 
 
 @pytest.fixture
@@ -102,3 +103,66 @@ class TestConfigurability:
     def test_negative_days_raises(self, cal: WorkingCalendar) -> None:
         with pytest.raises(ValueError, match="non-negative"):
             cal.add_working_days(date(2026, 9, 4), -1)
+
+
+class TestTheShippedHolidayCalendar:
+    """The holidays in tolerances.yaml, asserted rather than assumed. ADR-053.
+
+    An empty list is not neutral. It makes the engine treat a bank holiday as a working
+    day, so a payout that was never going to arrive is judged late and a merchant is told
+    to chase money the bank is closed for.
+    """
+
+    @pytest.fixture
+    def cal(self) -> WorkingCalendar:
+        tol = load_config().tolerances
+        return WorkingCalendar(tol.weekend_days, tol.holidays)
+
+    @pytest.mark.parametrize(
+        ("day", "name"),
+        [
+            (date(2026, 1, 26), "Republic Day"),
+            (date(2026, 8, 15), "Independence Day"),
+            (date(2026, 10, 2), "Gandhi Jayanti"),
+            (date(2026, 12, 25), "Christmas"),
+        ],
+    )
+    def test_national_holidays_are_not_working_days(
+        self, cal: WorkingCalendar, day: date, name: str
+    ) -> None:
+        assert not cal.is_working_day(day), f"{name} is being treated as a working day"
+
+    def test_a_holiday_pushes_the_settlement_date_out(self, cal: WorkingCalendar) -> None:
+        """The behaviour that matters, not just the flag.
+
+        Thursday 1 Oct 2026 + T+2, where Friday is Gandhi Jayanti: Friday is out, the
+        weekend is out, so it lands Tuesday 6 Oct rather than Monday 5 Oct. Without the
+        holiday the engine would call Tuesday's arrival a day late.
+        """
+        assert cal.add_working_days(date(2026, 10, 1), 2) == date(2026, 10, 6)
+
+    def test_ordinary_days_are_unaffected(self, cal: WorkingCalendar) -> None:
+        """A calendar that swallows working days would hide real delays."""
+        assert cal.is_working_day(date(2026, 8, 17))     # an ordinary Monday
+        assert cal.is_working_day(date(2026, 10, 1))     # the Thursday above
+
+    def test_the_list_is_deliberately_fixed_date_only(self) -> None:
+        """Moving feasts are absent ON PURPOSE, and the test says so.
+
+        Diwali, Holi, Eid and Good Friday are lunar or state-declared: they move every
+        year and differ by state. A guessed date is worse than a missing one — a missing
+        holiday makes one settlement look a day late, while a WRONG holiday makes a real
+        delay look benign, and this engine's argument is that it does not quietly explain
+        money away.
+
+        If this test fails because someone added a moving feast, that is a decision to
+        make deliberately (with that year's published RBI list), not a lint to silence.
+        """
+        holidays = {date.fromisoformat(h) for h in load_config().tolerances.holidays}
+        month_days = {(d.month, d.day) for d in holidays}
+        assert month_days == {(1, 26), (8, 15), (10, 2), (12, 25)}
+
+    def test_every_configured_holiday_parses(self) -> None:
+        """A typo here is a silently missing holiday, not an error."""
+        for iso in load_config().tolerances.holidays:
+            date.fromisoformat(iso)     # raises on a malformed entry

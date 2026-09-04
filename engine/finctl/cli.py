@@ -4,6 +4,7 @@ Deliberately the only user interface until the Day-1 checkpoint passes.
 The FastAPI layer added later is a thin wrapper over these same calls.
 """
 
+import contextlib
 import platform
 import sys
 
@@ -19,6 +20,39 @@ app = typer.Typer(
     help="Where did my money go? — settlement reconciliation with failure correlation.",
 )
 console = Console()
+
+
+class _Refuse(contextlib.AbstractContextManager):
+    """Turn the engine's own errors into something a merchant can act on.
+
+    The engine's messages are written to be read: "unknown archetype 'x'. Known:
+    ['d2c_ecommerce', 'saas_subscription']" and "defect profile 'demo' demands 34 defects
+    but the batch has only 5 orders … Either raise --volume or use a rate-based profile".
+    Both were reaching the terminal wrapped in eighteen lines of Rich traceback, with the
+    useful sentence last — so the CLI was taking the single best thing about this engine's
+    error handling and burying it under a stack dump.
+
+    A traceback is the right output for a bug and the wrong one for a refusal. This
+    prints the message, exits non-zero, and keeps the frames for genuinely unexpected
+    exceptions, which still raise. ADR-054.
+    """
+
+    # Errors that mean "you asked for something impossible", not "the engine broke".
+    # Deliberately narrow: anything not listed here keeps its traceback, because a
+    # blanket `except Exception` would hide the next real bug behind a tidy one-liner.
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        from finctl.config.loader import ConfigError
+        from finctl.money import MoneyError
+        from finctl.normalize.normalizer import NormalizationError
+
+        if exc_type is None:
+            return False
+        if not issubclass(exc_type, ConfigError | MoneyError | NormalizationError | ValueError):
+            return False
+        # A ValueError from deep in the engine is a refusal; one from argument parsing
+        # is Typer's own business and never reaches here.
+        console.print(f"\n[red]{exc}[/red]\n")
+        raise typer.Exit(1) from None
 
 
 @app.command()
@@ -250,15 +284,18 @@ def generate(
 
     cfg = load_config()
     started = _time.perf_counter()
-    batch = Generator(
-        cfg,
-        seed=seed,
-        archetype=archetype,
-        payment_mix=mix,
-        volume=volume,
-        settlement_cycle_days=cycle,
-        defect_profile=defects,
-    ).generate()
+    # An unknown archetype and an over-subscribed defect profile are both REFUSALS with
+    # messages that name the fix. Without this they arrived as tracebacks.
+    with _Refuse():
+        batch = Generator(
+            cfg,
+            seed=seed,
+            archetype=archetype,
+            payment_mix=mix,
+            volume=volume,
+            settlement_cycle_days=cycle,
+            defect_profile=defects,
+        ).generate()
     elapsed = _time.perf_counter() - started
 
     write_batch(batch, Path(out))
@@ -598,22 +635,34 @@ def checkpoint(
     table.add_column("caught", justify="right")
     table.add_column("missed", justify="right")
     table.add_column("below tol.", justify="right")
+    # Strict leads. The lenient figure drops `below_tolerance` from its denominator,
+    # which cannot fall below 100% on any run whose only misses are sub-threshold — it
+    # read 100% on a run that found 612 of 849 planted defects.
     table.add_column("recall", justify="right")
+    table.add_column("of scoreable", justify="right")
     for name, s in sorted(report.by_type.items()):
         colour = "green" if not s.missed else "red"
         table.add_row(
             name, str(len(s.caught)),
             f"[{colour}]{len(s.missed)}[/{colour}]" if s.missed else "0",
             f"[dim]{len(s.below_tolerance)}[/dim]" if s.below_tolerance else "0",
-            f"[{colour}]{s.recall * 100:.0f}%[/{colour}]",
+            f"[{colour}]{s.recall_strict * 100:.0f}%[/{colour}]",
+            f"[dim]{s.recall * 100:.0f}%[/dim]",
         )
     console.print(table)
 
     console.print(
-        f"\n  overall recall [bold]{report.recall * 100:.1f}%[/bold]"
-        f"  ({report.total_caught} caught, {report.total_missed} missed, "
+        f"\n  overall recall [bold]{report.recall_strict * 100:.1f}%[/bold]"
+        f"  ({report.total_caught} caught of {report.total_planted} planted, "
+        f"{report.total_missed} missed, "
         f"{report.total_below_tolerance} below tolerance)"
     )
+    if report.total_below_tolerance:
+        console.print(
+            f"  [dim]{report.recall * 100:.1f}% of the defects config asks us to "
+            f"report — the rest settled within the {report.tolerance_grace_days}-day "
+            "grace window and are not defects by policy[/dim]"
+        )
     if report.false_positives:
         console.print(
             f"  [red]{len(report.false_positives)} false positives[/red] — "
@@ -661,7 +710,8 @@ def matrix(
         console.print(
             f"  {r.archetype[:4]}/{r.payment_mix:<10}/{r.volume:>6}/T+{r.cycle_days} "
             f"[dim]{r.defect_profile:<6}[/dim] "
-            f"match {r.match_rate_pass1 * 100:>5.1f}%  recall {r.recall * 100:>5.1f}%  "
+            f"match {r.match_rate_pass1 * 100:>5.1f}%  "
+            f"recall {r.recall_strict * 100:>5.1f}%  "
             f"{r.rows_per_second:>7,}/s{miss}{fp}{flag}"
         )
 
@@ -898,19 +948,22 @@ def blind_score(
     table.add_column("missed", justify="right")
     table.add_column("below tol.", justify="right")
     table.add_column("recall", justify="right")
+    table.add_column("of scoreable", justify="right")
     for name, s in sorted(report.by_type.items()):
         colour = "green" if not s.missed else "red"
         table.add_row(
             name, str(len(s.caught)),
             f"[{colour}]{len(s.missed)}[/{colour}]",
             f"[dim]{len(s.below_tolerance)}[/dim]",
-            f"[{colour}]{s.recall * 100:.0f}%[/{colour}]",
+            f"[{colour}]{s.recall_strict * 100:.0f}%[/{colour}]",
+            f"[dim]{s.recall * 100:.0f}%[/dim]",
         )
     console.print(table)
 
     console.print(
-        f"\n  recall [bold]{report.recall * 100:.1f}%[/bold] "
-        f"({report.total_caught} caught, {report.total_missed} missed, "
+        f"\n  recall [bold]{report.recall_strict * 100:.1f}%[/bold] "
+        f"({report.total_caught} caught of {report.total_planted} planted, "
+        f"{report.total_missed} missed, "
         f"{report.total_below_tolerance} below tolerance)"
     )
     # A hand-edited batch will produce findings that are NOT in the answer key, because

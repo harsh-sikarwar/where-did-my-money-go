@@ -63,7 +63,7 @@ engine/                   the project. Python, uv-managed, no web dependencies.
     explain/              the only stage that calls an LLM — prose only, never a number
     adapters/             live Razorpay API (timeboxed, cuttable)
     audit/                JSONL decision log
-  tests/                  797 tests, including golden-file tests
+  tests/                  837 tests, including golden-file tests
 
 api/                      FastAPI — thin wrapper over the engine
 web/                      Next.js + Tailwind, one page
@@ -158,7 +158,7 @@ Or piecewise:
 cd engine
 uv sync --group dev
 uv run finctl doctor                      # verify the environment
-uv run pytest                             # 797 tests
+uv run pytest                             # 837 tests
 
 uv run finctl generate --volume 200 --out data/demo
 uv run finctl checkpoint --data data/demo # the engine's own scorecard
@@ -198,7 +198,7 @@ predates any code in this repo, deliberately.
 
 ## Status
 
-**Engine, API and UI are built and measured.** 797 tests green. The full pipeline runs
+**Engine, API and UI are built and measured.** 837 tests green. The full pipeline runs
 end to end: generate → normalize → stage → match → classify → correlate → rank → verdict,
 with an audit trail behind every figure.
 
@@ -218,7 +218,19 @@ structurally cannot produce (ADR-031, ADR-033, ADR-037 – ADR-049). That story 
 [docs/JOURNAL.md](docs/JOURNAL.md); what it means for the accuracy claims is in
 [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
-**Known open items** — the live-API fee convention is unresolved (ADR-007/ADR-012), the
+**The limitation that matters most: no real merchant batch has ever been reconciled.**
+Every figure above is measured against data this project generated, where the generator
+defines truth — a closed loop, and one that cannot report a defect class nobody thought to
+generate. The engine's arithmetic does agree with Razorpay's own published sample rows
+(ADR-056), and that contact alone found two parsing bugs the suite could not. But ten
+sample rows are not a merchant's month. The claim this repository is entitled to make is
+*"measured, reproducible accuracy on synthetic Razorpay-shaped data, with arithmetic that
+agrees with Razorpay's own sample"* — not *"it works on production data"*. That second
+sentence needs one real merchant export, with the unexplained residual published whatever
+it turns out to be; no live account was available for this build. It is the first item in
+[the future scope](docs/LIMITATIONS.md#future-scope), and it is not development work.
+
+**Other known open items** — the live-API fee convention is unresolved (ADR-007/ADR-012), the
 correlation's two newest mechanisms (disputes, withholding) have unit coverage but are
 not exercised by the matrix, and two action-list groups have no per-row reason. All are stated in
 [docs/LIMITATIONS.md](docs/LIMITATIONS.md).

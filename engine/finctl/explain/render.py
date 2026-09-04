@@ -196,17 +196,23 @@ def template(verdict: Verdict) -> str:
     top = max(actionable, key=lambda line: line.amount_paise)
     biggest = max(verdict.lines, key=lambda line: abs(line.amount_paise))
 
-    second = (
-        f"The largest line is {biggest.label}"
-        + (
-            " and it resolves on its own"
-            if not biggest.actionable
-            else " and it needs you"
-        )
-        + f"; what needs you this week is {top.label}."
-    )
-    if benign and biggest.actionable:
+    # When the largest line IS the one that needs you, saying so twice in one sentence
+    # produced "The largest line is no record at Razorpay at all and it needs you; what
+    # needs you this week is no record at Razorpay at all." One clause, once.
+    if biggest.classification is top.classification:
+        second = f"The largest line is {top.label}, and it needs you this week."
+    elif benign and biggest.actionable:
         second = f"What needs you this week is {top.label}."
+    else:
+        second = (
+            f"The largest line is {biggest.label}"
+            + (
+                " and it resolves on its own"
+                if not biggest.actionable
+                else " and it needs you"
+            )
+            + f"; what needs you this week is {top.label}."
+        )
     return f"{first} {second}"
 
 

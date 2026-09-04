@@ -27,6 +27,7 @@ from finctl.rank.ranker import Ranker, Verdict
 from finctl.schema import Source
 from finctl.score import ScoreReport, score
 from finctl.stage.staging import StagedBatch, stage_from_dir
+from finctl.timeline import Timeline, build_timeline
 
 
 @dataclass
@@ -73,6 +74,25 @@ class PipelineResult:
             # `tolerances.yaml`; handing its answer over is what keeps the two screens
             # from disagreeing about whether a line needs the merchant this week.
             # ADR-054.
+            actionable=frozenset(
+                line.classification for line in self.verdict.actionable_lines
+            ),
+        )
+
+    @property
+    def timeline(self) -> Timeline:
+        """The gap spread over the days it happened on.
+
+        A property, and built from `decompose(...)` like `actions` above, for the same
+        reason: a stored second copy is a copy that can disagree. The chart on screen
+        and the total above it are then the same arithmetic, not two that happen to
+        match today.
+        """
+        return build_timeline(
+            self.matches,
+            decompose(self.matches, self.correlated.findings),
+            # The same materiality answer the verdict reached, handed over rather than
+            # recomputed — for the reason ADR-054 gives about the action list.
             actionable=frozenset(
                 line.classification for line in self.verdict.actionable_lines
             ),
@@ -186,7 +206,9 @@ def run(
         }, order_id=f.order_id)
     log.record("correlate", "before_after", correlated.summary())
 
-    verdict = Ranker(cfg.tolerances).rank(correlated.findings, matches)
+    verdict = Ranker(cfg.tolerances).rank(
+        correlated.findings, matches, correlated.still_unexplained,
+    )
     for line in verdict.lines:
         log.record("rank", "verdict_line", {
             "classification": str(line.classification),

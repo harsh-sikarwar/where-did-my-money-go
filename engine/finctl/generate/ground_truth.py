@@ -142,6 +142,34 @@ class GroundTruth:
         """Things that resemble defects but are not. Used by the false-attribution test."""
         return [d for d in self.defects if not d.is_real_defect]
 
+    def decoy_findings(self) -> dict[str, int]:
+        """What the DECOYS alone should make a correct engine report.
+
+        Decoys are not defects, but they are not silent either: a healthy subscription
+        with a retryable card failure produces a genuinely failed payment, and an
+        engine that says PAYMENT_FAILED about it is right. The trap is claiming
+        HALTED_SUBSCRIPTION — silent revenue death — which `must_not_claim` pins and
+        `decoys_claimed` scores.
+
+        The key used to list nothing at all for a decoy while the analysis correctly
+        reported one, so the loop this product invites — generate a scenario, check
+        whether we caught it — showed phantom over-reporting on every run containing
+        decoys: qa-C reported 18 failed payments against 12 planted with 6 decoys,
+        qa-D 100 against 50 with 50.
+
+        Scoped to decoys deliberately. A REAL defect's `expected_classification` is
+        what the classifier should say BEFORE correlation runs, and correlation then
+        legitimately promotes some of them — a MISSING order whose payment failed is
+        reported as PAYMENT_FAILED, which is the whole point of the correlation pass.
+        Counting those here would swap one misleading number for another.
+        """
+        out: dict[str, int] = {}
+        for d in self.decoys:
+            if not d.expected_classification:
+                continue
+            out[d.expected_classification] = out.get(d.expected_classification, 0) + 1
+        return out
+
     def by_type(self, defect_type: str) -> list[PlantedDefect]:
         return [d for d in self.defects if d.defect_type == defect_type]
 
@@ -166,6 +194,11 @@ class GroundTruth:
             "total_expected_net_paise": self.total_expected_net_paise,
             "defect_count": len(self.real_defects),
             "decoy_count": len(self.decoys),
+            # Findings the decoys should legitimately produce. `defect_count` answers
+            # "how many things are wrong" and correctly excludes decoys; this answers
+            # "what should a correct analysis therefore say about them", which is a
+            # different question and was previously unanswered anywhere in the key.
+            "decoy_findings": self.decoy_findings(),
             "impact_by_type": self.impact_by_type(),
             "defects": [asdict(d) for d in self.defects],
         }
