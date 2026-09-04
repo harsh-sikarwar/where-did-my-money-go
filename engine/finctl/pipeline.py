@@ -63,7 +63,7 @@ class PipelineResult:
         The amounts come from the same gap decomposition the verdict is built from. A
         property alone was never enough to guarantee agreement: this list summed
         `finding.amount_paise` and disagreed with the verdict for every batch until
-        ADR-049. Being computed in one place does not make two computations equal.
+        ADR-053. Being computed in one place does not make two computations equal.
         """
         return build_actions(
             self.correlated.findings,
@@ -72,6 +72,7 @@ class PipelineResult:
             # The verdict has already applied the materiality policy from
             # `tolerances.yaml`; handing its answer over is what keeps the two screens
             # from disagreeing about whether a line needs the merchant this week.
+            # ADR-054.
             actionable=frozenset(
                 line.classification for line in self.verdict.actionable_lines
             ),

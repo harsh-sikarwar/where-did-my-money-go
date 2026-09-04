@@ -343,7 +343,7 @@ def decompose(matches: MatchResult, findings: list[Finding]) -> GapDecomposition
                 count=len(rows),
                 # Carried so the action list can show a per-order amount. Without these
                 # the group total was right and every row under it read ₹0.00 — the same
-                # defect as the ₹0.00 chargeback, one component further down. ADR-049.
+                # defect as the ₹0.00 chargeback, one component further down. ADR-053.
                 #
                 # An UNRECORDED refund has no `order_id` on either side — that absence is
                 # what makes it unrecorded — so it is keyed by its refund `entity_id`,

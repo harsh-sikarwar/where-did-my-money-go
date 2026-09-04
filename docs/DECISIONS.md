@@ -2301,9 +2301,14 @@ the hand-edited rounds and the real sample files exist alongside it.
 
 ---
 
-## ADR-049 — The action list disagreed with the verdict, and a test held it in place
+## ADR-053 — The action list disagreed with the verdict, and a test held it in place
 
 **Date:** 2026-09-04 · **Phase:** review
+
+> *Numbered out of sequence deliberately.* This was written as a second ADR-049 — two
+> sessions claimed the number the same morning. It keeps its position here, which is
+> chronological, and took the next free number rather than renumbering the four ADRs
+> that followed it and the code comments citing them.
 
 **Context.** An external critique ran the engine and put the two screens side by side:
 
@@ -2380,7 +2385,7 @@ assertion rather than the correction.
 
 **Date:** 2026-09-04 · **Phase:** review
 
-**Context.** ADR-049's sibling finding: the README claimed an LLM wrote the explanations
+**Context.** ADR-053's sibling finding: the README claimed an LLM wrote the explanations
 and the recommended actions. Neither was true — `finctl/explain/` was a one-line stub and
 there was no model call anywhere in the codebase. The claim was corrected first (the
 table read **Not built** for a day), because a false capability claim in a project whose
@@ -2568,3 +2573,76 @@ row since it was written.
 **What is still empty, correctly.** `UNRECORDED_REFUND` rows have no customer and no
 contact, because they have no order on either side — that absence is what makes them
 unrecorded (ADR-039). Filling those would be inventing a customer.
+
+---
+
+## ADR-054 — "Actionable" is one policy, and the action list was applying a second one
+
+**Date:** 2026-09-04 · **Phase:** review
+
+**Context.** ADR-053 made the action list agree with the verdict on the *amounts*. It did
+not make the two screens agree on *which rows belong there at all*. Reading both against
+the `blind` batch:
+
+| Screen | Total | Groups |
+|---|---|---|
+| Verdict — actionable | ₹31,417.00 | HALTED_SUBSCRIPTION, PAYMENT_FAILED |
+| Action list — chase | ₹33,661.00 | …plus DUPLICATE, ₹2,244.00 |
+
+₹2,244 was presented to a merchant as work to do on a screen headed *"What needs you"*,
+while the verdict on the same page called it benign.
+
+**The two rules.** They were never the same rule:
+
+- `actions.build` filtered on `BENIGN` — a frozenset in `classifier.py` holding five
+  classifications that mean "arithmetic that came out right".
+- The verdict asks `Ranker.is_actionable`, which reads `tolerances.yaml`: `always_benign`
+  first, then `always_actionable`, then a materiality floor. That list also names
+  **REFUND** and **DUPLICATE** — *"a bookkeeping divergence to reconcile, not a
+  this-week action"* and *"a data-entry issue in the merchant's own ledger"*.
+
+So the config had already answered the question, in a file whose whole purpose is to hold
+that answer, and one of the two consumers was not reading it. `DUPLICATE` is a real
+discrepancy — it is on the verdict, it is in the gap, it widens the expectation — but a
+merchant cannot *chase* it. There is nobody to email. The fix is to delete a row from
+their own ledger, which is why the policy calls it benign.
+
+**Decision.** The verdict's ruling is the authority, and `build()` takes it as an
+argument rather than deriving a second opinion:
+
+```python
+actions.build(..., actionable=frozenset(
+    line.classification for line in verdict.actionable_lines
+))
+```
+
+`BENIGN` stays as the floor for the direct unit-test path that supplies no verdict. Where
+a verdict exists — every production caller — its answer wins.
+
+**Why not widen `BENIGN` instead.** It would have fixed this batch and been wrong in
+principle. `BENIGN` means "this arithmetic is correct"; `always_benign` means "this needs
+no human this week". A `DUPLICATE` is not correct arithmetic — it is a real defect that
+happens not to be chaseable. Collapsing the two would make the distinction unavailable to
+anything that later needs it, and materiality is configurable precisely so test day can
+vary it: a threshold change must not silently alter which screen shows what.
+
+**The test was enforcing the bug, again.** `test_every_actionable_finding_reaches_the_list`
+asserted `listed == len([f for f in findings if f.classification not in BENIGN])` — the
+coarse rule, as an equality. It *required* the action list to carry rows the verdict
+called benign, so the correct behaviour would have failed it. This is the second time in
+two ADRs that a test held a disagreement in place by asserting the weaker of two
+available rules; the pattern is worth naming: **a test that restates the implementation's
+rule cannot detect that the rule is the wrong one.** It now asserts against the verdict's
+judgement, plus the converse the old test could not express — that nothing the verdict
+calls benign appears as work.
+
+**Measured.** All six batches on disk now report identical figures on both screens.
+`chase_total` on `/api/actions/{batch}` equals `actionable_total` on
+`/api/verdict/{batch}`, exactly, everywhere. 797 tests green.
+
+**What this does not fix.** The negative-component case is now unreachable through this
+path rather than solved: with REFUND correctly excluded, no group on any current batch
+carries a negative total. The UI still handles one — magnitude-based bar widths, an
+`offsets the gap` legend entry rather than a dropped segment — because a future
+classification could be both negative and actionable, and the previous behaviour was to
+render `width: -74.2%` and silently draw nothing.
