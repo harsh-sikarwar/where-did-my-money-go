@@ -88,11 +88,28 @@ class TestTheBugItFixed:
         Before the fix: T+1 flagged 0, T+2 flagged 15, T+7 flagged 291 — on batches with
         an identical lag distribution. The same defects must be detected whatever cycle
         the merchant is on.
+
+        The load-bearing property is AGREEMENT across cycles, not the literal count:
+        the count follows from the batch composition, which changes whenever a defect
+        type is added (it moved 15 -> 10 when UNRECORDED_REFUND took three index slots,
+        ADR-039). A cycle-dependent count is the bug; a composition-dependent one is not.
         """
         result = Classifier(load_config()).classify(
             match(stage_from_dir(batch_at(cycle, volume=300, seed=99)))
         )
-        assert len(result.by_class(Classification.TIMING)) == 15
+        assert len(result.by_class(Classification.TIMING)) == 10
+
+    def test_all_cycles_agree_on_the_same_batch_shape(self) -> None:
+        """The invariant behind the case above, asserted directly rather than implied."""
+        counts = {
+            cycle: len(
+                Classifier(load_config())
+                .classify(match(stage_from_dir(batch_at(cycle, volume=300, seed=99))))
+                .by_class(Classification.TIMING)
+            )
+            for cycle in (1, 2, 7)
+        }
+        assert len(set(counts.values())) == 1, f"cycle-dependent detection: {counts}"
 
     def test_a_slow_cycle_does_not_flag_every_order_as_late(self) -> None:
         """A T+7 merchant is not late. They are on a slower contract.
@@ -157,3 +174,58 @@ class TestAuditScrubberHandlesIntKeys:
         log = AuditLog("t")
         log.record("classify", "x", {"api_key": "sk-real", "dist": {1: 2}})
         assert log.events[0]["detail"]["api_key"] == "[redacted]"
+
+
+class TestTheScorerJudgesAgainstTheSameCycle:
+    """The scorer's half of the same bug, found five ADRs later. ADR-051.
+
+    `cycle.py` gave the CLASSIFIER an observed cycle and never gave one to the scorer.
+    So on a T+3-or-slower batch the engine correctly classified late-but-within-cycle
+    orders as RECONCILED, while `score()` — still reading the configured T+2 — counted
+    each one as a MISS. The engine was right and its own scorecard understated it.
+
+    The matrix ran T+1 and T+2 only, where the two values are close enough that the
+    baseline never mattered. An axis that samples only where two numbers agree cannot
+    detect that it is reading the wrong one.
+    """
+
+    @pytest.mark.parametrize("cycle", [1, 2, 3, 5, 7])
+    def test_recall_is_perfect_at_every_cycle(self, cycle: int) -> None:
+        """The headline property: the scorecard must not penalise correct work."""
+        result = run(batch_at(cycle, volume=400, seed=20260902))
+        timing = result.scored.by_type["timing_lag"]
+        assert len(timing.missed) == 0, (
+            f"T+{cycle}: {len(timing.missed)} timing defects reported missed, but the "
+            f"engine judged against the observed cycle and classified them correctly"
+        )
+        assert timing.recall == 1.0
+
+    def test_within_cycle_lags_stay_below_tolerance_not_missed(self) -> None:
+        """The specific misclassification: below_tolerance became missed.
+
+        These are two different statements. "Below tolerance" says config deliberately
+        declines to flag it; "missed" says the engine failed. Collapsing the first into
+        the second is what understated the score.
+        """
+        slow = run(batch_at(7, volume=400, seed=20260902)).scored.by_type["timing_lag"]
+        fast = run(batch_at(2, volume=400, seed=20260902)).scored.by_type["timing_lag"]
+        assert len(slow.below_tolerance) == len(fast.below_tolerance)
+        assert len(slow.missed) == len(fast.missed) == 0
+
+    def test_the_scorer_uses_the_cycle_the_classifier_used(self) -> None:
+        """Stated as the invariant rather than as its symptom.
+
+        Any future stage that judges timing must be handed the same number. The point of
+        this test is that the two are EQUAL, not that either has a particular value.
+        """
+        from finctl.classify.classifier import Classifier as _Classifier
+
+        data = batch_at(7, volume=300, seed=20260902)
+        classifier = _Classifier(load_config())
+        classifier.classify(match(stage_from_dir(data)))
+        observed = run(data).cycle
+
+        assert classifier.cycle_days == observed.effective_days
+        assert observed.effective_days != observed.configured_days, (
+            "this batch must actually disagree with config, or the test proves nothing"
+        )

@@ -33,8 +33,8 @@ Identified in advance, actively mitigated. Not yet observed as failures.
 
 | Risk | Mitigation | Status |
 |---|---|---|
-| Hardcoded fee rate wrong for UPI-heavy merchants | Rate card is config; `config` refuses to supply a default MDR; explicit payment-mix test | Mitigated by design, unverified |
-| Correlation mis-attributes a gap | Planted deliberately on test day and documented | Planned |
+| Hardcoded fee rate wrong for UPI-heavy merchants | Rate card is config; `config` refuses a default MDR | **Occurred.** The mechanism worked; the shipped *value* was wrong — UPI billed at 0 when the ~2% platform fee applies. Found by reading Razorpay's pricing page, not by the suite. Fixed in ADR-035 |
+| Correlation mis-attributes a gap | Planted deliberately on test day and documented | **Run.** 2,246 decoys across 22 matrix runs, 0 claimed, false-attribution rate 0.0000 (ADR-042). The decoy is a failed payment on a *healthy* subscription — same shape as the halted centrepiece, differing in `status`/`auth_attempts`. Limit: we designed the confusion, so it does not prove resistance to one we did not imagine |
 | Timing tolerance breaks on bursty volume | Tolerance configurable, T+1/T+2/T+7 tested | Planned |
 | Live API integration eats the clock | Hard 2h timebox, seeded fallback always ready | Not started |
 | Not from a finance background | Every finance term in output is explained by the system or absent — a forcing function on our own understanding | Ongoing |
@@ -69,9 +69,14 @@ internally consistent; a genuinely mixed batch is treated as an error (ADR-007).
 Razorpay ever mixes conventions within one recon report, our engine raises rather than
 handling it. That is the intended behaviour, but it is an assumption, not a verified fact.
 
-**Refunds are modelled as one-sided by omission.** The one-sided-refund defect is a refund
+**Refunds are modelled as one-sided by omission.** ~~The one-sided-refund defect is a refund
 the merchant recorded that never reaches settlement. The reverse case — a settlement refund
-the merchant never recorded — is not yet generated. Both should exist; only one does.
+the merchant never recorded — is not yet generated. Both should exist; only one does.~~
+**Closed 2026-09-03 (ADR-039).** The reverse case is now generated and classified as
+`UNRECORDED_REFUND`. Razorpay's own sample export contained one, and it revealed something
+worse than a missing defect type: those rows carry a blank `order_id`, and the matcher
+dropped every row without one. Money left the merchant's account and no stage of the
+engine ever saw it.
 
 ### Phase 1c — normalize / stage / match
 
@@ -208,6 +213,13 @@ not verify against an actual `type: "refund"` recon row, because in the one-side
 there is none by definition. A negative gap with some other cause would be mislabelled.
 This is a genuine soft spot and a good candidate for the Day 3 adversarial pass.
 
+**Partially addressed (ADR-039), and stated precisely.** Where a real refund row *does*
+exist, the engine now reads it rather than inferring: `UNRECORDED_REFUND` fires on the
+row itself, carrying its `entity_id`, `arn` and reason. The direction inference remains
+for the genuinely one-sided case — where by definition there is no row to check — so the
+soft spot is narrowed, not closed. Two confidence levels now exist where there was one,
+which is the honest position rather than a claim to have solved it.
+
 ### Phase 1 — engine
 
 **The fee/tax convention is unresolved, and it is the number everything depends on.**
@@ -244,3 +256,210 @@ than tracked as a note.
 available during Phase 1. Per ADR-006 this was not allowed to block the build. Every
 fixture declares `live_capture: false` inline, and a test asserts that declaration exists,
 so the distinction cannot be lost by reading a file alone.
+
+### Review — external checks against published pricing and prior art
+
+**A UPI-labelled row can carry two different rates, and we cannot always tell which.**
+`method: upi` covers both a bank-to-bank UPI payment (~2% platform fee) and a RuPay
+*credit card* paid through a UPI app (2.15% + GST) — a credit-card transaction wearing a
+UPI mask. The rate card prices both (`upi`, `upi_rupay_credit`), but if a batch labels the
+masked case as plain `upi` with no distinguishing field, we will check it against the
+wrong rate and report a small FEE discrepancy on a transaction that was billed correctly.
+The 15 bps gap is under most rounding tolerances at single-transaction scale and becomes
+visible in aggregate. We do not currently detect the ambiguity, and cannot without a field
+that separates them. See ADR-035.
+
+**No fuzzy matching, by choice — and it costs recall.** ADR-015 refuses approximate
+matching on identifiers. A comparable open-source implementation (Sashank2006) matches on
+`order_id + amount + date window` with numeric tolerance, arguing that nobody misspells an
+order id so the tolerance is on the *numbers*, not the string. That is a reasonable
+position and it will match rows we leave unmatched. We chose the opposite failure: we
+would rather report "unmatched, look at it" than assert a pairing we cannot prove. This is
+a real recall cost on messy merchant data, not a claim of superiority.
+
+**No composite hypotheses.** When two line items together explain a gap that neither
+explains alone, we go to UNEXPLAINED. The same prior implementation attempts a composite
+path. Compound faults are common in real data, so this is a genuine coverage gap; the
+residual absorbs it honestly rather than guessing, but it does absorb it.
+
+**Bank-leg aggregation is N:1 and depends on it.** A settlement consolidates many payments
+into one bank credit under one UTR, so pass 2 aggregates per UTR rather than comparing row
+to row. This is the same cardinality Hyperswitch documents for its second leg. It is
+tested and it holds — noted here because a row-to-row comparison would appear to work on
+small batches and fail on any batch with real consolidation.
+
+**We refuse to guess a column mapping; Cointab lets the user draw one.** A commercial
+implementation of this same reconciliation accepts CSV/XLS/XLSX and has the user map
+columns in a UI. We raise on an unrecognised header instead. Defensible for an engine that
+must never silently misread a money column, but it is the friction point on a real
+merchant's file, and "raise" is not a substitute for the mapping step a product would need.
+
+### Real-data phase — what Razorpay's own sample files falsified
+
+We obtained Razorpay's twelve official sample report exports to build the upload path
+against real headers. Four assumptions did not survive contact with them.
+
+**A date format we could not read, that failed silently.** The recon export carries Excel
+serial dates (`44658.44689814815`) and `DD/MM/YYYY HH:MM:SS` **in the same column**. Our
+parser read the bare-integer form as epoch seconds and returned **1970-01-01**. It raised
+nothing. Every affected order would have looked ~52 years late and been filed as TIMING —
+the benign bucket — while also corrupting the observed settlement cycle for the whole
+batch. Fixed in ADR-037. That this survived 547 tests is the point: the generator emits
+epoch seconds, so no batch it produced could reach the branch.
+
+**The exports are `.xlsx`, not CSV.** ~~The normalizer is `csv.DictReader` only.~~
+**Closed 2026-09-03 (ADR-043).** Both formats now read through one function, and a test
+asserts an `.xlsx` batch produces the same gap, headline and score as the identical
+`.csv` batch — a separate xlsx path would be a second implementation of the engine
+rather than a second door into it. "Real CSV upload" was the wrong framing of the
+feature: Razorpay's dashboard hands a merchant an Excel file.
+
+**Our recon type discriminator had the wrong name.** `matcher.py` branched on
+`row["type"]`; the real column is `transaction_entity`. The *values* match (`payment`,
+`refund`) but the key did not, so on a real export every recon row was dropped and every
+order reported as MISSING. ADR-008 committed to Razorpay's own field names precisely so a
+live-data swap would be a source change rather than a schema change — this is one place
+that promise had drifted, and no test could catch it because both sides of the test used
+our name. Fixed in ADR-038 via an accessor that reads either spelling; both remain
+supported, since the live API and the dashboard export genuinely differ.
+
+**Amounts are rupee decimals, not paise.** `amount: 1.0` means one rupee. Our JSON
+ingest path (`load_collection`) assumes canonical integer paise. The CSV/xlsx path parses
+rupee strings correctly, so this is a live hazard only where the two paths meet.
+
+**What these files do and do not establish.** They are authoritative for **schema and
+format**, which is what we most needed. They are *not* a real merchant's data: 10 recon
+rows, one payment method (`bank_transfer`), `sample utr` as a literal string, and no
+populated disputes. So they close the "am I reading the right columns" question and
+leave the "are my accuracy numbers self-graded" question open. The accuracy figures in
+METRICS.md are still measured against generator-produced ground truth, and obtaining
+these files does not change that.
+
+### The actionable list is at its cap
+
+The verdict's actionable list is now **5 lines** — `UNRECORDED_REFUND`, `DISPUTED`,
+`HALTED_SUBSCRIPTION`, `PAYMENT_FAILED`, `ON_HOLD` — and `test_rank.py` caps it at 5.
+
+That cap has been raised twice, each time because the engine learned to name a cause it
+previously left in UNEXPLAINED (ON_HOLD in ADR-036, UNRECORDED_REFUND in ADR-039,
+DISPUTED in ADR-041). Each raise was the right call in isolation: money moved out of a
+silent bucket onto a line with an owner.
+
+It is not repeatable. The product promise is that a merchant reads this list in one
+glance on a Monday morning, and a sixth line starts making it a dashboard — the thing
+this project argues against from the README down. The next classification added forces a
+real decision (grouping related causes, or a "more" affordance), not another cap raise.
+Stated here so that decision is made deliberately rather than by a test edit.
+
+### Upload exists; the mapping picker does not
+
+`POST /api/upload` accepts a merchant's own files and reconciles them (ADR-044). Two
+things it does not yet do:
+
+**~~An unfamiliar column name is a dead end in the browser.~~ Closed 2026-09-03
+(ADR-045).** The 422 now carries structured data — which fields are unmapped and every
+column available to choose from — `POST /api/inspect` returns headers plus three real
+sample rows, and `POST /api/mappings` records the choice against a fingerprint of the
+file's shape. Asked once, then never again for that shape, including next month's export
+with the columns reordered. **The picker screen now exists** (ADR-047): the 422
+becomes a set of buttons, one per unclaimed column, offered in file order and unranked so
+the UI does not reintroduce the guess the engine refuses to make.
+
+**~~The rate card is still ours, not theirs.~~ Closed 2026-09-03 (ADR-046).** A merchant
+can now supply their contracted rates, layered over the shipped card so they state only
+what they negotiated. On the demo batch a contracted 1.75% turns 30 fee findings worth
+₹595 into 189 worth ₹3,552 — same data, different contract, and the proof quotes their
+number. **The form now exists** (ADR-047), taking
+percentages rather than basis points — the API takes bps because integers keep money
+arithmetic exact, but no merchant thinks in bps and asking them to would invite the exact
+unit error the API refuses.
+
+### What still has no screen
+
+~~The **action list** is the gap that matters now.~~ **Built 2026-09-03 (ADR-048).** The
+verdict's "those 6 customers" now resolves to six named rows with amounts, reasons and a
+next step, available in the CLI, the API and the UI, with a CSV export. Two residual
+gaps: `REFUND` and `UNRECORDED_REFUND` rows have an empty "why" column, because nothing
+upstream attaches a reason to them; and the customer column shows an id rather than an
+email, because our generator has no contact fields — Razorpay's real payments export
+does, and the code reads them when present, but that path is unexercised by our data.
+
+**~~Correlation still has one mechanism.~~ Three as of 2026-09-03 (ADR-049).** Halted
+subscriptions, disputes and withholding, plus the failed-payment fallback — with an
+explicit order of precedence, since a disputed payment on a halted subscription is both
+things and only one has a deadline.
+
+The honest limit: these joins are **not measured by the matrix**. The generator produces
+no batch where a disputed payment sits behind an unmatched order, so the residual is zero
+on every profile — a property of the generator, not proof the correlator is complete. The
+new mechanisms have unit coverage of the shapes real exports produce, which is a weaker
+claim than the recall figures and should be read as such.
+
+
+---
+
+### The explanation stage is not built, and the README claimed it was
+
+Found by an external critique, not by us — which is itself the finding.
+
+`finctl/explain/__init__.py` is a one-line stub. There is no LLM call anywhere in this
+codebase: not in the engine, not in the API, not in the web app. `ANTHROPIC_API_KEY` and
+`FINCTL_LLM_MODEL` sit in `.env.example` reserved for a stage that was never written.
+
+Two claims in the README were false as a result:
+
+| Claimed | Actual |
+|---|---|
+| `\| Explanation \| **Yes** \|` in the AI-usage table | Deterministic hand-written copy |
+| `\| Recommended action \| **Yes** \|` | A fixed `dict[Classification, str]` in `actions.py` |
+| "the LLM stage falls back to a deterministic templated explanation" | There is nothing to fall back *from*. The template is the only path |
+
+The explanations themselves are good, and they are honest work — the objection is not to
+the copy but to describing it as something it is not. In a project whose entire argument
+is *measured rather than asserted*, an unearned capability claim in the headline table is
+the most expensive kind of error available to us: it invites a reader to discount the 721
+tests that **are** real.
+
+Corrected in the README rather than defended: the table read **Not built** for a day.
+
+**Then built** (ADR-050), which is why this entry stays rather than being deleted — the
+record of the claim being wrong is worth more than a tidy file. Explanation now reads
+**Yes** honestly: one model writes the summary prose, is never shown a figure, and any
+response containing one is discarded whole. Recommended action still reads **No**, and
+should: `NEXT_STEP` is deterministic copy that is already right.
+
+What this does *not* change: the decision to keep an LLM away from matching, fee
+arithmetic, classification and correlation stands, and remains the right one. A
+reconciliation engine that hallucinates is worse than no engine. The gap was never that
+the model was missing from the arithmetic — it is that it was missing from the prose
+while the README said otherwise.
+
+---
+
+### Two hostile inputs the suite never sent
+
+Both found by external critique, both reachable from a real merchant CSV.
+
+**`nan` and `Infinity` crashed the upload.** `Decimal("nan")` constructs without error and
+only raises at `int()`, so the exception escaped `parse_money` and surfaced as
+`InvalidOperation: []` — a 422 with a stack trace in it. `"inf"` did the same via
+`OverflowError`. The contrast is what makes it a real defect rather than a rough edge:
+every other parse error in this engine is a fix instruction ("cannot parse timestamp
+'not-a-date'. Accepted: Excel serial date, epoch seconds, YYYY-MM-DD…"). These two were
+noise. pandas writes `nan` for an empty cell and Excel emits `inf` from a division by
+zero, so neither is exotic.
+
+`-inf` passed before the fix only by accident — the negative-amount check caught it while
+`inf` sailed past. A test now asserts it is refused *with `allow_negative=True`*, so the
+finiteness check is what rejects it.
+
+**The CSV export was formula-injectable.** `to_csv` wrote `order_id`, `email` and `reason`
+through untouched, and a value starting `=`, `+`, `-` or `@` executes when the file is
+opened. The docstring's entire argument is that a merchant opens this in a spreadsheet,
+which is what turns a generic weakness into this file's specific one. Leading whitespace
+counts too: Excel skips it before reading the sigil, so `"\t=SUM(A1)"` was live. Values
+are prefixed with `'` and left otherwise unedited — defusing must not alter the merchant's
+own data.
+
+Neither was found by 721 tests, because the suite sent well-formed hostile data and these
+are malformed hostile data. The blind rounds plant *defects*; they do not plant *garbage*.

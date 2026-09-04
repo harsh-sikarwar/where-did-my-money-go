@@ -44,16 +44,21 @@ class TestAgainstGroundTruth:
     def test_unmatched_orders_are_exactly_the_planted_gaps(self, result, truth) -> None:
         found = {m.order_id for m in result.unmatched_orders()}
         expected = {
-            d.order_id for d in truth.real_defects
-            if d.defect_type in (DefectType.MISSING_ORDER, DefectType.HALTED_SUBSCRIPTION)
+            d.order_id for d in truth.defects
+            if d.defect_type in (DefectType.MISSING_ORDER, DefectType.HALTED_SUBSCRIPTION,
+                                 DefectType.HEALTHY_SUBSCRIPTION_DECOY)
         }
         assert found == expected, "matcher must find exactly the planted gaps, no others"
 
     def test_no_false_positives(self, result, truth) -> None:
         """An order the matcher calls missing that WAS settled is a lie to the merchant."""
+        # Decoys are included: a decoy's payment also FAILS, so it also leaves a gap.
+        # It is planted, just not as a defect — the trap is whether the engine explains
+        # the gap correctly (PAYMENT_FAILED), not whether the gap exists. ADR-042.
         planted = {
-            d.order_id for d in truth.real_defects
-            if d.defect_type in (DefectType.MISSING_ORDER, DefectType.HALTED_SUBSCRIPTION)
+            d.order_id for d in truth.defects
+            if d.defect_type in (DefectType.MISSING_ORDER, DefectType.HALTED_SUBSCRIPTION,
+                                 DefectType.HEALTHY_SUBSCRIPTION_DECOY)
         }
         for m in result.unmatched_orders():
             assert m.order_id in planted
@@ -79,7 +84,24 @@ class TestAgainstGroundTruth:
         # while a settled refund means money went back out (widens it). Conflating the
         # two is the sign trap this test has now hit twice.
         debited = sum(m.refunded_paise for m in result.order_matches)
-        assert result.gap_paise - fees - missing + one_sided - debited == 0
+        # A payment the PSP is HOLDING is matched (a recon row exists) but never
+        # reaches the bank, so it widens the gap with the same sign as `missing`.
+        # Booked net of fee, since `fees` already accounts for that part. ADR-036.
+        # A disputed payment is withheld for the same reason and with the same sign:
+        # Razorpay holds the money pending the outcome, so it never reaches the bank.
+        # ADR-041.
+        held_ids = {d.order_id for d in truth.by_type(DefectType.PAYMENT_ON_HOLD)}
+        held_ids |= {d.order_id for d in truth.by_type(DefectType.DISPUTED)}
+        held = sum(m.ledger_amount_paise - m.fee_paise
+                   for m in result.order_matches if m.order_id in held_ids)
+        # A refund the merchant never recorded is a debit like any other refund, but it
+        # hangs off no order, so `debited` (which sums per-order refund rows) cannot see
+        # it. Same sign as `debited`: money went back out. Without this term the identity
+        # fails by exactly the orphan refund total -- which is how this test caught the
+        # new defect type the day it was added. ADR-039.
+        unrecorded = sum(row.get("debit", 0) for row in result.unattributed_refunds)
+        assert (result.gap_paise - fees - missing + one_sided
+                - debited - held - unrecorded) == 0
 
 
 class TestTwoPassesNameTheLeg:

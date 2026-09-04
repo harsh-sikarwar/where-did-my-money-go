@@ -37,6 +37,41 @@ class ReconType(StrEnum):
     ADJUSTMENT = "adjustment"
 
 
+# The recon row's discriminator, under both spellings we have seen it.
+#
+# ADR-008 committed to Razorpay's own field names so that swapping seeded data for live
+# data would be a SOURCE change, not a SCHEMA change. We wrote `type`. Razorpay's actual
+# settlement recon export uses `transaction_entity` (confirmed against
+# `sample-settlements-recon-report.xlsx`). The VALUES agree — `payment`, `refund` — so
+# only the key drifted, and no test could catch it because both sides of every test used
+# our spelling. See ADR-038.
+RECON_TYPE_KEYS = ("transaction_entity", "type")
+
+
+def recon_type(row: dict) -> str | None:
+    """The kind of recon row, reading whichever key this source spelled it with.
+
+    Razorpay's export says `transaction_entity`; our generator and the live API say
+    `type`. Read through this accessor rather than indexing either key directly, so a
+    third spelling is a one-line change here instead of a hunt through five call sites.
+
+    Returns the raw string rather than a ReconType so an UNKNOWN value stays visible.
+    Coercing an unrecognised discriminator into a known member would silently reclassify
+    a row we do not understand.
+    """
+    for key in RECON_TYPE_KEYS:
+        value = row.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def is_recon_type(row: dict, expected: ReconType) -> bool:
+    """True when a recon row is of the given kind, under either spelling."""
+    actual = recon_type(row)
+    return actual is not None and actual == expected.value
+
+
 class MatchStatus(StrEnum):
     """Adopted from Hyperswitch, not invented — see docs/PRIOR-ART.md.
 
@@ -55,7 +90,16 @@ class MatchStatus(StrEnum):
 
 # Canonical columns per source. Order is the on-disk order; it carries no meaning,
 # because nothing in this engine matches positionally.
-LEDGER_COLUMNS = ("order_id", "amount_paise", "captured_at", "customer_id", "payment_method")
+LEDGER_COLUMNS = (
+    "order_id", "amount_paise", "captured_at", "customer_id",
+    # Optional, and the reason they are here: the action list tells a merchant to "email
+    # these customers a new payment link". Without an address that instruction is not
+    # executable, and a list of `cust_…` ids is an insight rather than a tool. A merchant
+    # ledger names the buyer on every row; the engine simply was not reading it.
+    # See ADR-052.
+    "email", "contact",
+    "payment_method",
+)
 BANK_COLUMNS = ("utr", "credit_paise", "value_date")
 
 # Column aliases. Keys are canonical names; values are the input spellings accepted.
@@ -73,6 +117,14 @@ LEDGER_ALIASES: dict[str, tuple[str, ...]] = {
     "captured_at": ("timestamp", "captured_at", "created_at", "date", "order_date",
                     "transaction_date", "datetime"),
     "customer_id": ("customer_id", "customerid", "customer", "cust_id", "buyer_id"),
+    # Deliberately narrow. "email" and "contact" are Razorpay's own column names on the
+    # payments export, and the obvious merchant spellings sit beside them. Nothing vaguer
+    # is accepted: mapping the wrong column into an address a merchant then writes to is
+    # worse than having no address, and this file's own rule is that a missing alias
+    # raises in seconds while a wrong one is found much later, if ever.
+    "email": ("email", "customer_email", "email_address", "buyer_email"),
+    "contact": ("contact", "customer_contact", "phone", "mobile", "phone_number",
+                "contact_number"),
     "payment_method": ("payment_method", "method", "mode", "payment_mode", "rail",
                        "instrument"),
 }

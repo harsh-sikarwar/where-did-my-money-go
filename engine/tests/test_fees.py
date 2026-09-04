@@ -37,25 +37,40 @@ class TestCanonicalCase:
 class TestPaymentMixCorrectness:
     """build-spec 6c: 'the most likely place your build is quietly wrong'."""
 
-    def test_upi_costs_exactly_nothing(self, config: Config) -> None:
+    def test_upi_costs_the_platform_fee_not_nothing(self, config: Config) -> None:
+        """ADR-030. Zero MDR is not zero cost — the platform fee is still deducted.
+
+        On ₹10,000: 2% = ₹200, 18% GST on that = ₹36, total ₹236.
+        """
         fee = expected_fee(1_000_000, "upi", config.rate_card)
-        assert fee.mdr_paise == 0
-        assert fee.gst_paise == 0            # no MDR means no GST on it
-        assert fee.total_fee_paise == 0
-        assert fee.net_paise == 1_000_000    # every paise reaches the bank
+        assert fee.mdr_paise == 20_000
+        assert fee.gst_paise == 3_600
+        assert fee.total_fee_paise == 23_600
+        assert fee.net_paise == 976_400
+
+    def test_rupay_credit_on_upi_is_priced_as_credit_not_upi(self, config: Config) -> None:
+        """A credit card wearing a UPI mask: 2.15%, not the standard UPI rate."""
+        masked = expected_fee(1_000_000, "upi_rupay_credit", config.rate_card)
+        standard = expected_fee(1_000_000, "upi", config.rate_card)
+        assert masked.mdr_bps == 215
+        assert masked.total_fee_paise > standard.total_fee_paise
 
     def test_upi_and_card_merchants_have_different_fee_profiles(self, config: Config) -> None:
-        """The judge's question: 'what about a UPI-heavy merchant?'"""
+        """The judge's question: 'what about a UPI-heavy merchant?'
+
+        The answer is no longer "UPI is free" — it is that the rate is looked up
+        per method, and international/EMI genuinely diverge from the domestic 2%.
+        """
         volume = 10_000_000  # ₹1,00,000
-        upi_only = expected_fee(volume, "upi", config.rate_card).total_fee_paise
-        card_only = expected_fee(volume, "card_credit", config.rate_card).total_fee_paise
-        assert upi_only == 0
-        assert card_only == 236_000          # ₹2,360
-        assert card_only - upi_only == 236_000
+        domestic = expected_fee(volume, "upi", config.rate_card).total_fee_paise
+        intl = expected_fee(volume, "card_international", config.rate_card).total_fee_paise
+        assert domestic == 236_000            # ₹2,360
+        assert intl == 354_000                # ₹3,540
+        assert intl > domestic
 
     @pytest.mark.parametrize(
         ("method", "expected_mdr_bps"),
-        [("upi", 0), ("card_debit", 90), ("card_credit", 200),
+        [("upi", 200), ("upi_rupay_credit", 215), ("card_debit", 200), ("card_credit", 200),
          ("card_international", 300), ("netbanking", 200), ("wallet", 200), ("emi", 300)],
     )
     def test_every_rail_uses_its_own_rate(
@@ -66,11 +81,14 @@ class TestPaymentMixCorrectness:
         assert fee.mdr_bps == expected_mdr_bps
         assert fee.mdr_paise == 1_000_000 * expected_mdr_bps // 10_000
 
-    def test_debit_is_cheaper_than_credit(self, config: Config) -> None:
-        """RBI caps debit lower. A flat 2% would overcharge every debit transaction."""
-        debit = expected_fee(1_000_000, "card_debit", config.rate_card)
-        credit = expected_fee(1_000_000, "card_credit", config.rate_card)
-        assert debit.total_fee_paise < credit.total_fee_paise
+    def test_no_method_is_silently_free(self, config: Config) -> None:
+        """The bug ADR-030 fixed: a rail priced at zero passes every fee check.
+
+        Nothing on the shipped card is free, so a zero total is now always a signal.
+        """
+        for method in config.rate_card.methods:
+            fee = expected_fee(1_000_000, method, config.rate_card)
+            assert fee.total_fee_paise > 0, f"{method} is priced at zero"
 
 
 class TestRefusals:

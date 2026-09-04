@@ -2,10 +2,20 @@
 #
 # THIS FILE IS THE POINT OF THE CONFIG LAYER.
 #
-# A hardcoded 2% fee will pass the demo and be wrong for most Indian merchants.
-# UPI carries ZERO MDR — mandated for banks — while cards carry ~2% plus 18% GST
-# on that MDR. A UPI-heavy merchant and a card-heavy merchant have completely
-# different expected-fee profiles. See build-spec.md section 6c.
+# A hardcoded 2% fee will pass the demo and be wrong for most Indian merchants,
+# and so will a hardcoded 0% for UPI. Two DIFFERENT charges are in play and this
+# file must not conflate them:
+#
+#   MDR          — the interchange the network/bank levies. Zero on bank-to-bank
+#                  UPI and RuPay debit, mandated by Section 10A of the Payment
+#                  and Settlement Systems Act 2007 (in force since Jan 2020).
+#   Platform fee — what the AGGREGATOR charges for the rails. Razorpay bills ~2%
+#                  on UPI regardless of the zero MDR, and it is this number that
+#                  lands in the `fee` field of a settlement.
+#
+# Zero MDR does not mean a zero fee. A merchant reconciling real UPI rows sees
+# ~2% + 18% GST deducted. Expecting 0 would flag every single UPI row as a fee
+# discrepancy. See ADR-030.
 #
 # There is deliberately NO DEFAULT MDR. An unknown payment method raises rather
 # than silently assuming 2%. See docs/BEHAVIOR.md, stage `config`.
@@ -34,15 +44,34 @@ rounding:
   mode: half_up           # half_up | half_even | floor | ceil
   gst_on_rounded_mdr: true
 
-# Per-method MDR in basis points. 1 bps = 0.01%.
+# Per-method rates in basis points. 1 bps = 0.01%.
 # Basis points keep everything integer: no float rate ever multiplies a money value.
+#
+# `mdr_bps` is the CHARGE THE MERCHANT ACTUALLY PAYS — network MDR plus aggregator
+# platform fee, which is what appears as `fee` on a settlement row. Where the two
+# components differ interestingly, `mdr_component_bps` records the split for
+# explanation only; it never enters the arithmetic.
 methods:
   upi:
-    mdr_bps: 0
-    note: "Zero MDR, mandated for banks. Not an oversight — assert it in tests."
+    mdr_bps: 200          # 2.00% — platform fee. NOT MDR.
+    mdr_component_bps: 0
+    note: >-
+      Zero MDR is real (statutory, Section 10A PSSA) but is NOT the merchant's
+      cost. Razorpay levies a ~2% platform/technology fee on bank-to-bank UPI,
+      and that is what is deducted. Do not "correct" this back to 0. See ADR-030.
+  upi_rupay_credit:
+    mdr_bps: 215          # 2.15%
+    note: >-
+      A RuPay credit card paid through a UPI app: a credit card transaction
+      wearing a UPI mask. Razorpay prices it at 2.15% + GST, not the standard
+      UPI rate, though the payment method may still be reported as `upi`.
+      See docs/LIMITATIONS.md — we cannot always tell the two apart.
   card_debit:
-    mdr_bps: 90           # 0.90%
-    note: "Debit cards are capped lower than credit under RBI rules."
+    mdr_bps: 200          # 2.00%
+    mdr_component_bps: 90
+    note: >-
+      RuPay debit is statutorily zero-MDR like UPI, but the same platform fee
+      applies; Razorpay's published card rate is a flat 2%.
   card_credit:
     mdr_bps: 200          # 2.00%
   card_international:

@@ -64,7 +64,7 @@ class Generator:
         payment_mix: str | None = None,
         volume: int = 200,
         settlement_cycle_days: int | None = None,
-        defect_profile: str = "demo",
+        defect_profile: str | dict[str, Any] = "demo",
         start_date: date | None = None,
         fee_convention: str = "gst_inclusive",
     ) -> None:
@@ -81,7 +81,11 @@ class Generator:
         self.rng = random.Random(seed)
         self.archetype = config.archetype(archetype)   # raises, listing valid names
         self.volume = volume
-        self.defect_profile_name = defect_profile
+        # A named profile keeps its name; an inline one is renamed "custom" by
+        # `_load_defect_profile` below, so ground truth always records a string.
+        self.defect_profile_name = (
+            defect_profile if isinstance(defect_profile, str) else "custom"
+        )
 
         # An explicit payment mix overrides the archetype's own distribution, so the
         # payment-mix axis can be varied independently on test day.
@@ -106,10 +110,48 @@ class Generator:
 
     # ---------------------------------------------------------------- config
 
-    def _load_defect_profile(self, name: str) -> dict[str, dict[str, Any]]:
+    def _load_defect_profile(
+        self, name: str | dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
+        """A named profile from defects.yaml, or an inline one supplied by the caller.
+
+        The inline form exists for the demo generator in the UI, where a merchant dials
+        individual defect counts rather than picking a preset. It is validated to the
+        SAME standard as a YAML profile — an unknown defect type is refused by name
+        rather than silently ignored, because a profile that asks for a defect nobody
+        plants produces a batch whose ground truth is quietly wrong, and a wrong metric
+        is worse than no metric (ADR-004).
+        """
         import yaml
 
         from finctl.config.loader import DEFAULTS_DIR, ConfigError
+
+        if isinstance(name, dict):
+            spec = {k: v for k, v in name.items() if k != "description"}
+            unknown = sorted(set(spec) - set(DefectType.ALL))
+            if unknown:
+                raise ConfigError(
+                    f"unknown defect type(s) {unknown}. Known: {sorted(DefectType.ALL)}"
+                )
+            for defect_type, entry in spec.items():
+                if not isinstance(entry, dict) or not ({"count", "rate"} & set(entry)):
+                    raise ConfigError(
+                        f"defect {defect_type!r} must be an object with a 'count' or "
+                        f"a 'rate', got {entry!r}"
+                    )
+                for key in ("count", "rate"):
+                    value = entry.get(key)
+                    if value is not None and (
+                        not isinstance(value, int | float)
+                        or isinstance(value, bool)
+                        or value < 0
+                    ):
+                        raise ConfigError(
+                            f"defect {defect_type!r}: {key} must be a non-negative "
+                            f"number, got {value!r}"
+                        )
+            self.defect_profile_name = "custom"
+            return spec
 
         profiles = yaml.safe_load((DEFAULTS_DIR / "defects.yaml").read_text())
         if name not in profiles:
@@ -132,6 +174,33 @@ class Generator:
     def _rid(self, prefix: str, length: int = 14) -> str:
         """A Razorpay-shaped id. Drawn from the seeded RNG, so ids are reproducible."""
         return prefix + "".join(self.rng.choice(_ID_ALPHABET) for _ in range(length))
+
+    def _contact(self, customer_id: str) -> tuple[str, str]:
+        """A synthetic email and phone for one customer.
+
+        The action list tells a merchant to "email these customers a new payment link"
+        and, until ADR-052, handed them a column of `cust_…` ids and no address. The
+        instruction was not executable, which is the difference between a tool and a
+        list.
+
+        Razorpay's real exports carry these: `email` and `contact` on the payments
+        report, `customer_email` and `customer_contact` on the subscriptions report —
+        confirmed against the sample files, and already the names `actions.py` looks for.
+        The generator simply never produced them.
+
+        Derived from `customer_id` rather than drawn separately so the same customer has
+        the same address in the ledger, the payments feed and the subscriptions feed. A
+        customer whose email differed per source would make the join look wrong when it
+        was right.
+
+        `@example.invalid` is reserved by RFC 2606 and can never route. Synthetic contact
+        details that could reach a real inbox are a demo one accidental send away from a
+        problem.
+        """
+        handle = customer_id.removeprefix("cust_").lower()
+        # A stable 10-digit Indian mobile: 6-9 leading, as the numbering plan requires.
+        digits = "".join(str(ord(c) % 10) for c in handle[:9])
+        return f"{handle}@example.invalid", f"+91{6 + ord(handle[0]) % 4}{digits}"
 
     @staticmethod
     def _ts(day: date, hour: int = 10, minute: int = 0) -> int:
@@ -193,15 +262,11 @@ class Generator:
         # the one failure mode this project cannot tolerate. So: refuse, loudly, naming
         # the arithmetic. Found by a test at volume=40 (51 defects demanded), where it
         # had silently produced zero halted subscriptions.
-        demanded = {dt: self._defect_count(dt) for dt in (
-            DefectType.MISSING_ORDER,
-            DefectType.WRONG_FEE_RATE,
-            DefectType.ONE_SIDED_REFUND,
-            DefectType.HALTED_SUBSCRIPTION,
-            DefectType.TIMING_LAG,
-            DefectType.SPLIT_SETTLEMENT,
-            DefectType.EARLY_REFUND,
-        )}
+        # Derived from DefectType.ALL rather than listed by hand. A hand-maintained
+        # list drifts: adding UNRECORDED_REFUND to the enum and to the profile still
+        # planted nothing, because this tuple had not been updated, and ground truth
+        # would then have been silent about a defect the profile asked for.
+        demanded = {dt: self._defect_count(dt) for dt in DefectType.ALL}
         total_demanded = sum(demanded.values())
         if total_demanded > self.volume:
             breakdown = ", ".join(f"{k}={v}" for k, v in demanded.items() if v)
@@ -213,7 +278,11 @@ class Generator:
             )
 
         cursor = 0
-        assigned: dict[str, set[int]] = {}
+        # Every known defect type gets an entry, empty where the profile does not ask
+        # for it. A profile is free to omit a defect — `clean` omits all of them — and
+        # the emission sites below should read "this profile wants none of these",
+        # not raise KeyError.
+        assigned: dict[str, set[int]] = {d: set() for d in DefectType.ALL}
         for defect_type, n in demanded.items():
             assigned[defect_type] = set(indices[cursor : cursor + n])
             cursor += n
@@ -226,14 +295,20 @@ class Generator:
             method = self._pick_method()
             amount = self._pick_amount()
             customer_id = self._rid("cust_", 10)
+            email, contact = self._contact(customer_id)
 
             is_subscription = self.rng.random() < self.archetype.subscription_share
 
+            # A merchant's own ledger names the buyer on every row — that is what makes
+            # the action list executable for a failed payment, which has no subscription
+            # to join through. See ADR-052.
             batch.ledger.append({
                 "order_id": order_id,
                 "amount": amount,
                 "timestamp": self._ts(order_day, self.rng.randrange(9, 20)),
                 "customer_id": customer_id,
+                "email": email,
+                "contact": contact,
                 "payment_method": method,
             })
 
@@ -251,6 +326,11 @@ class Generator:
                     "entity": "subscription",
                     "plan_id": self._rid("plan_"),
                     "customer_id": customer_id,
+                    # Razorpay's subscriptions export names these `customer_email` and
+                    # `customer_contact`; the payments export uses the bare `email` and
+                    # `contact`. Both spellings are already in `actions._LOOKUPS`.
+                    "customer_email": email,
+                    "customer_contact": contact,
                     "status": "halted",
                     "auth_attempts": 3,
                     "paid_count": self.rng.randrange(2, 8),
@@ -269,6 +349,11 @@ class Generator:
                     "entity": "payment",
                     "amount": amount,
                     "currency": "INR",
+                    # Razorpay's payments export carries these on the row. They are how
+                    # a merchant actually contacts the customer behind a failed payment,
+                    # which has no subscription to join through. See ADR-052.
+                    "email": email,
+                    "contact": contact,
                     "status": "failed",
                     "order_id": order_id,
                     "invoice_id": self._rid("inv_"),
@@ -296,6 +381,83 @@ class Generator:
                 ))
                 continue
 
+            # ---- DECOY: a failed payment on a HEALTHY subscription --------------
+            # Not a defect. This is a trap, and the engine's job is to decline it.
+            #
+            # The surface shape is identical to a halted subscription: a failed payment,
+            # a subscription_id, and a gap where money should be. The difference is one
+            # field — the subscription is `active` with auth_attempts=0, meaning Razorpay
+            # is still trying. That is a normal retryable failure, not silent revenue
+            # death, and claiming otherwise tells a merchant to chase a customer whose
+            # subscription is working fine.
+            #
+            # Planted with is_real_defect=False so the scorer treats it as a trap. See
+            # ADR-042.
+            if i in assigned[DefectType.HEALTHY_SUBSCRIPTION_DECOY]:
+                sub_id = self._rid("sub_")
+                batch.subscriptions.append({
+                    "id": sub_id,
+                    "entity": "subscription",
+                    "plan_id": self._rid("plan_"),
+                    "customer_id": customer_id,
+                    # Razorpay's subscriptions export names these `customer_email` and
+                    # `customer_contact`; the payments export uses the bare `email` and
+                    # `contact`. Both spellings are already in `actions._LOOKUPS`.
+                    "customer_email": email,
+                    "customer_contact": contact,
+                    "status": "active",       # <- the ONLY meaningful difference
+                    "auth_attempts": 0,       # <- Razorpay is still trying
+                    "paid_count": self.rng.randrange(2, 8),
+                    "total_count": 12,
+                    "remaining_count": self.rng.randrange(3, 9),
+                    "current_start": self._ts(order_day),
+                    "current_end": self._ts(order_day + timedelta(days=30)),
+                    "charge_at": self._ts(order_day + timedelta(days=30)),
+                    "created_at": self._ts(order_day - timedelta(days=90)),
+                    "payment_method": method,
+                    "notes": {"order_id": order_id},
+                })
+                batch.payments.append({
+                    "id": payment_id,
+                    "entity": "payment",
+                    "amount": amount,
+                    "currency": "INR",
+                    # Razorpay's payments export carries these on the row. They are how
+                    # a merchant actually contacts the customer behind a failed payment,
+                    # which has no subscription to join through. See ADR-052.
+                    "email": email,
+                    "contact": contact,
+                    "status": "failed",
+                    "order_id": order_id,
+                    "invoice_id": self._rid("inv_"),
+                    "subscription_id": sub_id,
+                    "method": method,
+                    "captured": False,
+                    "amount_refunded": 0,
+                    "fee": None,
+                    "tax": None,
+                    "error_code": "BAD_REQUEST_ERROR",
+                    "error_description": "Card has insufficient funds",
+                    "error_source": "bank",
+                    "error_step": "payment_authorization",
+                    "error_reason": "insufficient_funds",   # retryable, NOT halted
+                    "created_at": self._ts(order_day),
+                })
+                gt.add(PlantedDefect(
+                    defect_id=f"decoy-healthy-sub-{sub_id}",
+                    defect_type=DefectType.HEALTHY_SUBSCRIPTION_DECOY,
+                    order_id=order_id,
+                    impact_paise=amount,
+                    expected_classification="PAYMENT_FAILED",
+                    is_real_defect=False,
+                    detail={"subscription_id": sub_id, "payment_id": payment_id,
+                            "customer_id": customer_id,
+                            "must_not_claim": ["HALTED_SUBSCRIPTION"],
+                            "note": "healthy subscription; a retryable failure, not "
+                                    "silent revenue death"},
+                ))
+                continue
+
             # ---- DEFECT: missing order ----------------------------------------
             # Payment failed, so it never reached settlement. Indistinguishable from
             # lost money until correlation reads error_reason.
@@ -310,6 +472,11 @@ class Generator:
                     "entity": "payment",
                     "amount": amount,
                     "currency": "INR",
+                    # Razorpay's payments export carries these on the row. They are how
+                    # a merchant actually contacts the customer behind a failed payment,
+                    # which has no subscription to join through. See ADR-052.
+                    "email": email,
+                    "contact": contact,
                     "status": "failed",
                     "order_id": order_id,
                     "invoice_id": None,
@@ -367,6 +534,8 @@ class Generator:
                 "entity": "payment",
                 "amount": amount,
                 "currency": "INR",
+                "email": email,
+                "contact": contact,
                 "status": "captured",
                 "order_id": order_id,
                 "invoice_id": self._rid("inv_") if is_subscription else None,
@@ -415,6 +584,35 @@ class Generator:
             else:
                 recon_fee, recon_credit = fee_paise - tax_paise, amount - fee_paise
 
+            # ---- payment held by the PSP ---------------------------------------
+            # on_hold=true means Razorpay is withholding deliberately: not late, not
+            # missing, and the reason is in the row. See ADR-036.
+            on_hold = i in assigned[DefectType.PAYMENT_ON_HOLD]
+            if on_hold:
+                gt.add(PlantedDefect(
+                    defect_id=f"hold-{order_id}",
+                    defect_type=DefectType.PAYMENT_ON_HOLD,
+                    order_id=order_id,
+                    impact_paise=amount - fee_paise,
+                    expected_classification="ON_HOLD",
+                    detail={"hold_reason": "risk_review", "settled": False},
+                ))
+
+            # ---- DEFECT: disputed payment --------------------------------------
+            # A customer charged back. Razorpay withholds the money pending the
+            # outcome and the merchant has a deadline to submit evidence, so this is
+            # neither late nor missing. See ADR-041.
+            disputed = i in assigned[DefectType.DISPUTED]
+            if disputed:
+                gt.add(PlantedDefect(
+                    defect_id=f"dispute-{order_id}",
+                    defect_type=DefectType.DISPUTED,
+                    order_id=order_id,
+                    impact_paise=amount - fee_paise,
+                    expected_classification="DISPUTED",
+                    detail={"dispute_reason": "chargeback", "settled": False},
+                ))
+
             recon_row = {
                 "entity_id": payment_id,
                 "type": "payment",
@@ -422,10 +620,14 @@ class Generator:
                 "credit": recon_credit,
                 "amount": amount,
                 "currency": "INR",
+                # No email or contact here on purpose. Razorpay's settlement recon export
+                # carries neither — checked against sample-settlements-recon-report.xlsx —
+                # and inventing a column the real file lacks is how a generator produces a
+                # batch that only this engine can read. Rule 1 of this module.
                 "fee": recon_fee,
                 "tax": tax_paise,
-                "on_hold": False,
-                "settled": True,
+                "on_hold": on_hold,
+                "settled": not on_hold,
                 "created_at": self._ts(order_day),
                 "settled_at": self._ts(settled_day, 18),
                 "settlement_id": None,   # filled once settlements are grouped
@@ -441,7 +643,9 @@ class Generator:
                 "card_network": "Visa" if method.startswith("card") else None,
                 "card_issuer": "HDFC" if method.startswith("card") else None,
                 "card_type": method.replace("card_", "") if method.startswith("card") else None,
-                "dispute_id": None,
+                "dispute_id": self._rid("disp_") if disputed else None,
+                "dispute_created_at": self._ts(order_day, 12) if disputed else None,
+                "dispute_reason": "chargeback" if disputed else None,
             }
             # ---- DEFECT: split settlement ---------------------------------------
             # One order paid across two settlements on different days. Legitimate
@@ -495,7 +699,20 @@ class Generator:
                 ))
                 continue
 
-            settlement_groups.setdefault(settled_day, []).append(recon_row)
+            # A held payment is NOT grouped into a settlement and never reaches the
+            # bank: that is what being held means. The recon row exists and carries
+            # on_hold=true, so the engine can explain the gap from the row itself
+            # rather than reporting UNEXPLAINED. See ADR-036.
+            # A disputed payment is withheld for the same reason a held one is: the
+            # money does not reach the bank while the dispute is open. Grouping it into
+            # a settlement would mean the bank shows money the merchant does not have.
+            if not on_hold and not disputed:
+                settlement_groups.setdefault(settled_day, []).append(recon_row)
+            elif on_hold:
+                recon_row["settled_at"] = None
+                recon_row["hold_reason"] = "risk_review"
+            else:
+                recon_row["settled_at"] = None
             batch.recon.append(recon_row)
 
             # ---- DEFECT: refund before the original settled ---------------------
@@ -531,6 +748,54 @@ class Generator:
                             "refund_settled_on": early_day.isoformat(),
                             "payment_settled_on": settled_day.isoformat(),
                             "note": "refund settled BEFORE the payment it reverses"},
+                ))
+
+            # ---- DEFECT: unrecorded (reverse) refund ---------------------------
+            # Razorpay settled a refund the merchant never wrote down. Modelled on row
+            # 10 of `sample-settlements-recon-report.xlsx`: a `refund` row carrying an
+            # entity_id and a settlement_id, and NO order_id at all.
+            #
+            # The missing order_id is the whole point, not an omission. Razorpay keys
+            # these by `rfnd_…`, so nothing links the row to a sale, and the matcher
+            # used to drop it outright — money left the merchant's account and no stage
+            # ever saw it. See ADR-039.
+            if i in assigned[DefectType.UNRECORDED_REFUND]:
+                refund_amount = amount // 4 // 100 * 100
+                refund_day = self.calendar.add_working_days(settled_day, 2)
+                orphan = {
+                    "entity_id": self._rid("rfnd_"),
+                    "type": "refund",
+                    "amount": refund_amount,
+                    "debit": refund_amount,
+                    "credit": 0,
+                    "fee": 0,
+                    "tax": 0,
+                    "currency": "INR",
+                    # Razorpay's real export DOES carry payment_method on refund rows
+                    # (verified against sample-settlements-recon-report.xlsx, where the
+                    # refund row reads `bank_transfer`). Omitting it here produced a row
+                    # shape that does not occur in real data.
+                    "method": method,
+                    "settled_at": self._ts(refund_day, 18),
+                    "description": "Refund the merchant never recorded",
+                    "refund_notes": '{"refund_reason":"Issued from dashboard"}',
+                    # Deliberately NO order_id and NO payment_id: that is the shape
+                    # Razorpay's real export uses, and the shape that broke us.
+                }
+                settlement_groups.setdefault(refund_day, []).append(orphan)
+                batch.recon.append(orphan)
+
+                gt.add(PlantedDefect(
+                    defect_id=f"unrecorded-refund-{order_id}",
+                    defect_type=DefectType.UNRECORDED_REFUND,
+                    order_id=None,
+                    impact_paise=refund_amount,
+                    expected_classification="UNRECORDED_REFUND",
+                    detail={"refund_paise": refund_amount,
+                            "entity_id": orphan["entity_id"],
+                            "refund_settled_on": refund_day.isoformat(),
+                            "note": "settlement-side refund with no order_id; the "
+                                    "merchant ledger has no record of it"},
                 ))
 
             # ---- DEFECT: one-sided refund --------------------------------------

@@ -46,12 +46,15 @@ class Classification(StrEnum):
     ROUNDING = "ROUNDING"                        # sub-tolerance arithmetic noise
     DUPLICATE = "DUPLICATE"                      # the same order recorded twice
     MISSING = "MISSING"                          # no PSP record at all
+    ON_HOLD = "ON_HOLD"                          # Razorpay is deliberately withholding it
+    DISPUTED = "DISPUTED"                        # a customer charged back
     UNEXPLAINED = "UNEXPLAINED"                  # honest residual
     NEEDS_REVIEW = "NEEDS_REVIEW"                # more than one rule fits
     # Assigned by correlate:
     PAYMENT_FAILED = "PAYMENT_FAILED"
     HALTED_SUBSCRIPTION = "HALTED_SUBSCRIPTION"
     UNEXPECTED_SETTLEMENT = "UNEXPECTED_SETTLEMENT"   # money in for an unknown order
+    UNRECORDED_REFUND = "UNRECORDED_REFUND"           # money out the merchant never recorded
 
 
 # Classifications that mean "this is fine, no action needed". Used by ranking and by
@@ -212,6 +215,76 @@ class Classifier:
         proof["rounding_tolerance_paise"] = allowed
         proof["settlement_legs"] = len(m.recon_rows)
         return Classification.FEE, proof
+
+    def _check_on_hold(self, m: OrderMatch) -> tuple[Classification, dict[str, Any]] | None:
+        """Is Razorpay deliberately withholding this payment?
+
+        The recon row carries `on_hold` (bool) and `settled` (bool). When `on_hold` is
+        true the money is not late and not missing — it is being held on purpose, and the
+        reason is sitting in the row. Without this rule such an order falls through every
+        money check to UNEXPLAINED, which tells a merchant "we cannot account for this"
+        when the data plainly accounts for it.
+
+        Ordered before `_check_timing` deliberately: a held payment will also look late
+        once the cycle elapses, and "late" is the wrong answer. See ADR-036.
+        """
+        held = [r for r in m.recon_rows if r.get("on_hold")]
+        if not held:
+            return None
+
+        amount = sum(r.get("credit", 0) or 0 for r in held) or sum(
+            r.get("amount", 0) or 0 for r in held
+        )
+        reasons = sorted({r["hold_reason"] for r in held if r.get("hold_reason")})
+        return Classification.ON_HOLD, {
+            "rows_on_hold": len(held),
+            "amount_on_hold_paise": amount,
+            "hold_reasons": reasons,
+            "settled_flag": [bool(r.get("settled")) for r in held],
+            "arithmetic": (
+                f"{len(held)} recon row(s) flagged on_hold=true"
+                + (f" — {', '.join(reasons)}" if reasons else "")
+                + "; withheld by the PSP, not late and not missing"
+            ),
+        }
+
+    def _check_dispute(self, m: OrderMatch) -> tuple[Classification, dict[str, Any]] | None:
+        """Has a customer disputed this payment?
+
+        Razorpay's settlement recon export carries `dispute_id`, `dispute_created_at`
+        and `dispute_reason` on the row itself — three real columns, confirmed against
+        `sample-settlements-recon-report.xlsx`. A disputed payment is money Razorpay is
+        holding back or has already clawed back, and the merchant has a deadline to
+        respond with evidence.
+
+        Ordered before `_check_timing` for the same reason ON_HOLD is: a disputed
+        payment also looks late once the cycle elapses, and "it arrives on its own" is
+        the most damaging thing this engine could say about a chargeback. Waiting is
+        precisely how a merchant loses one. See ADR-041.
+        """
+        disputed = [r for r in m.recon_rows if r.get("dispute_id")]
+        if not disputed:
+            return None
+
+        amount = sum(r.get("credit", 0) or 0 for r in disputed) or sum(
+            r.get("amount", 0) or 0 for r in disputed
+        )
+        reasons = sorted({r["dispute_reason"] for r in disputed if r.get("dispute_reason")})
+        raised = sorted({
+            str(r["dispute_created_at"]) for r in disputed if r.get("dispute_created_at")
+        })
+        return Classification.DISPUTED, {
+            "dispute_ids": [r.get("dispute_id") for r in disputed],
+            "rows_disputed": len(disputed),
+            "amount_disputed_paise": amount,
+            "dispute_reasons": reasons,
+            "dispute_raised_at": raised,
+            "arithmetic": (
+                f"{len(disputed)} recon row(s) carry a dispute_id"
+                + (f" — {', '.join(reasons)}" if reasons else "")
+                + "; contested by the customer, not late and not missing"
+            ),
+        }
 
     def _check_timing(self, m: OrderMatch) -> tuple[Classification, dict[str, Any]] | None:
         """Did it settle later than the cycle allows?
@@ -410,7 +483,8 @@ class Classifier:
 
             # Collect every rule that fires. The count decides what happens next.
             hits: list[tuple[Classification, dict[str, Any]]] = []
-            for rule in (self._check_fee, self._check_timing,
+            for rule in (self._check_fee, self._check_on_hold, self._check_dispute,
+                         self._check_timing,
                          self._check_settled_refund,
                          self._check_amount_gap, self._check_rounding):
                 hit = rule(m)
@@ -443,6 +517,26 @@ class Classifier:
             # explanations: an order can be charged the wrong fee, settle late AND have
             # money refunded. Only rules claiming the SAME rupees compete.
             independent = {Classification.FEE, Classification.TIMING}
+
+            # TIMING is suppressed when the money is being WITHHELD. Both rules run in
+            # an order that puts ON_HOLD and DISPUTED first, but ordering alone never
+            # actually protected anything: TIMING is emitted from the `independent` set
+            # below, which bypasses the money-rule contest entirely. So a held or
+            # disputed payment was reported as BOTH "withheld" and "on its way, arrives
+            # on its own" — the second of which is false and is the single most damaging
+            # thing this engine can say about a chargeback, because waiting is precisely
+            # how a merchant loses one.
+            #
+            # ADR-036 claimed this guarantee for ON_HOLD and never enforced it. The
+            # dispute work (ADR-041) is what exposed it, in ON_HOLD as well.
+            #
+            # "Late" and "withheld" are not orthogonal facts about the same money the
+            # way a wrong fee and a late settlement are. Withheld money is not late; it
+            # is not coming at all until a human acts.
+            withheld = {Classification.ON_HOLD, Classification.DISPUTED}
+            if any(h[0] in withheld for h in hits):
+                hits = [h for h in hits if h[0] is not Classification.TIMING]
+
             money_rules = [h for h in hits if h[0] not in independent]
 
             for classification, proof in [h for h in hits if h[0] in independent]:
@@ -479,6 +573,41 @@ class Classifier:
                     amount_paise=abs(proof.get("gap_paise", m.gap_paise)),
                     proof=proof, settlement_id=settlement_id,
                 ))
+
+        # Refunds no ledger order claims. The mirror of UNEXPECTED_SETTLEMENT: that is
+        # money arriving for a sale the merchant has no record of, this is money LEAVING
+        # for a refund the merchant has no record of. See ADR-039.
+        #
+        # Distinct from REFUND, which is a refund both sides know about. Here only
+        # Razorpay knows, so the merchant's books overstate their balance by this amount
+        # and nothing in their own records would ever reveal it.
+        for row in result.unattributed_refunds:
+            debit = row.get("debit", 0) or 0
+            amount = debit or (row.get("amount", 0) or 0)
+            reason = (row.get("refund_notes") or "").strip()
+            has_order = bool(row.get("order_id"))
+            out.findings.append(Finding(
+                order_id=row.get("order_id"),
+                classification=Classification.UNRECORDED_REFUND,
+                amount_paise=amount,
+                proof={
+                    "entity_id": row.get("entity_id"),
+                    "refunded_paise": amount,
+                    "settled_at": row.get("settled_at"),
+                    "arn": row.get("arn"),
+                    "refund_notes": reason or None,
+                    "reason": (
+                        "refund settled against an order the ledger does not contain"
+                        if has_order else
+                        "refund settled with no order_id linking it to any sale"
+                    ),
+                    "arithmetic": (
+                        f"Razorpay debited {amount} to return money to a customer; "
+                        "the merchant ledger has no record of this refund"
+                    ),
+                },
+                settlement_id=row.get("settlement_id"),
+            ))
 
         # Settlements for orders the ledger never mentioned.
         for row in result.unmatched_recon_orders:

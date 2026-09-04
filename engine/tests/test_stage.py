@@ -133,3 +133,72 @@ class TestStageFromDir:
         a = stage_from_dir(batch_dir).manifest()
         b = stage_from_dir(batch_dir).manifest()
         assert a["sources"] == b["sources"]
+
+
+class TestExcelBatches:
+    """A batch supplied as .xlsx must reconcile identically to the same batch as .csv.
+
+    ADR-043. If the two formats can produce different answers, the upload path is a
+    second implementation of the engine rather than a second door into it.
+    """
+
+    @staticmethod
+    def _as_xlsx(src: Path, dst: Path) -> Path:
+        import csv as _csv
+        import shutil
+
+        from openpyxl import Workbook
+
+        for name in ("ledger", "bank"):
+            csv_path = src / f"{name}.csv"
+            if not csv_path.exists():
+                continue
+            wb = Workbook()
+            with csv_path.open() as fh:
+                for row in _csv.reader(fh):
+                    wb.active.append(row)
+            wb.save(dst / f"{name}.xlsx")
+        for j in src.glob("*.json"):
+            shutil.copy(j, dst / j.name)
+        return dst
+
+    def test_an_xlsx_batch_reconciles_identically_to_csv(self, tmp_path: Path) -> None:
+        from finctl.config.loader import load_config
+        from finctl.generate.generator import Generator
+        from finctl.generate.writer import write_batch
+        from finctl.pipeline import run
+
+        src = tmp_path / "csv"
+        src.mkdir()
+        write_batch(Generator(load_config(), seed=20260902, volume=200,
+                              defect_profile="demo").generate(), src)
+        dst = tmp_path / "xlsx"
+        dst.mkdir()
+        self._as_xlsx(src, dst)
+
+        from_csv, from_xlsx = run(src), run(dst)
+
+        assert from_xlsx.verdict.gap_paise == from_csv.verdict.gap_paise
+        assert from_xlsx.verdict.headline() == from_csv.verdict.headline()
+        assert from_xlsx.scored.total_missed == from_csv.scored.total_missed == 0
+        assert from_xlsx.scored.false_positives == from_csv.scored.false_positives == []
+        assert from_xlsx.scored.decoys_claimed == from_csv.scored.decoys_claimed == []
+
+    def test_the_manifest_records_which_file_was_actually_read(self, tmp_path: Path) -> None:
+        """'Which column did you read as the amount?' must stay answerable per format."""
+        from finctl.config.loader import load_config
+        from finctl.generate.generator import Generator
+        from finctl.generate.writer import write_batch
+
+        src = tmp_path / "csv"
+        src.mkdir()
+        write_batch(Generator(load_config(), seed=1, volume=50,
+                              defect_profile="clean").generate(), src)
+        dst = tmp_path / "xlsx"
+        dst.mkdir()
+        self._as_xlsx(src, dst)
+
+        manifest = stage_from_dir(dst).manifest()
+        assert manifest["sources"]["ledger"]["origin"].endswith("ledger.xlsx")
+        assert manifest["sources"]["ledger"]["column_mapping"]
+

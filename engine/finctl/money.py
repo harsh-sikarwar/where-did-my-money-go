@@ -101,6 +101,18 @@ def parse_money(value: str | int | float, *, allow_negative: bool = False) -> in
     else:
         raise MoneyError(f"cannot parse money from {type(value).__name__}")
 
+    # NaN and Infinity parse cleanly as Decimals but are not money. Decimal("nan")
+    # raises InvalidOperation only later, at quantize/int(), by which point the error
+    # has escaped this module and surfaces as a bare `InvalidOperation: []` — a stack
+    # trace wearing a 422. Both reach us from real merchant CSVs: pandas writes "nan"
+    # for an empty cell and Excel can emit "inf" from a division by zero.
+    if not parsed.is_finite():
+        raise MoneyError(
+            f"money value {value!r} is not a finite number. "
+            f"An empty or errored spreadsheet cell often exports as 'nan' or 'inf'; "
+            f"fix or remove the cell rather than letting it stand for an amount"
+        )
+
     if parsed < 0 and not allow_negative:
         raise MoneyError(f"negative amount {value!r} not allowed here; pass allow_negative=True")
 

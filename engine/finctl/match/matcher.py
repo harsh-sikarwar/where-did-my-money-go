@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from finctl.normalize.normalizer import to_date
-from finctl.schema import ReconType, Source
+from finctl.schema import ReconType, Source, is_recon_type
 from finctl.stage.staging import StagedBatch
 
 
@@ -137,6 +137,12 @@ class MatchResult:
     unmatched_bank_rows: list[dict[str, Any]] = field(default_factory=list)
     duplicate_order_ids: dict[str, int] = field(default_factory=dict)
 
+    # Refund rows that no ledger order claims: either they carry no `order_id` at all,
+    # or an `order_id` the ledger never mentions. This is the REVERSE refund — money
+    # Razorpay returned to a customer that the merchant never recorded — and it is the
+    # shape a real merchant is most likely to have. See ADR-039.
+    unattributed_refunds: list[dict[str, Any]] = field(default_factory=list)
+
     # ---- Pass 1 metrics ----
     @property
     def pass1_total(self) -> int:
@@ -242,12 +248,21 @@ def match(batch: StagedBatch) -> MatchResult:
     # and treating it as one would let a refunded order look successfully matched.
     recon_by_order: dict[str, list[dict[str, Any]]] = defaultdict(list)
     refunds_by_order: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    orphan_refunds: list[dict[str, Any]] = []
     for row in recon:
         if not row.get("order_id"):
+            # A row with no order_id used to be dropped here outright. For a payment
+            # that is right — it cannot be attributed to a sale. For a REFUND it is
+            # not: Razorpay's own settlement recon export carries refund rows keyed
+            # only by `entity_id` (rfnd_…) and `settlement_id`, with `order_id` blank.
+            # Dropping them meant money genuinely leaving the merchant's account was
+            # invisible to every classification rule. See ADR-039.
+            if is_recon_type(row, ReconType.REFUND):
+                orphan_refunds.append(row)
             continue
-        if row.get("type") == ReconType.PAYMENT:
+        if is_recon_type(row, ReconType.PAYMENT):
             recon_by_order[row["order_id"]].append(row)
-        elif row.get("type") == ReconType.REFUND:
+        elif is_recon_type(row, ReconType.REFUND):
             refunds_by_order[row["order_id"]].append(row)
 
     payments_by_order = {p["order_id"]: p for p in payments if p.get("order_id")}
@@ -278,6 +293,16 @@ def match(batch: StagedBatch) -> MatchResult:
     for order_id, rows in recon_by_order.items():
         if order_id not in seen_order_ids:
             result.unmatched_recon_orders.extend(rows)
+
+    # Refunds no ledger order claims: those with no order_id at all, plus those whose
+    # order_id the ledger never mentions. Both are money returned to a customer that
+    # the merchant has no record of.
+    result.unattributed_refunds = orphan_refunds + [
+        row
+        for order_id, rows in refunds_by_order.items()
+        if order_id not in seen_order_ids
+        for row in rows
+    ]
 
     # ---------------------------------------------------------------- Pass 2
     settlements: dict[str, SettlementMatch] = {}

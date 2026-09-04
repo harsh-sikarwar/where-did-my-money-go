@@ -26,9 +26,13 @@ class TestDefaultsLoad:
         assert config.archetypes
         assert config.payment_mixes
 
-    def test_upi_is_zero_mdr_in_shipped_defaults(self, config: Config) -> None:
-        """The assumption most likely to be silently wrong for Indian merchants."""
-        assert config.rate_card.rate_for("upi").mdr_bps == 0
+    def test_upi_carries_the_platform_fee_in_shipped_defaults(self, config: Config) -> None:
+        """The assumption that WAS silently wrong: UPI billed at zero.
+
+        Zero MDR is statutory, but the aggregator's platform fee is deducted anyway
+        and is what appears on the settlement row. See ADR-030.
+        """
+        assert config.rate_card.rate_for("upi").mdr_bps == 200
 
     def test_gst_applies_to_mdr_not_amount(self, config: Config) -> None:
         assert config.rate_card.gst_applies_to == "mdr"
@@ -71,19 +75,20 @@ class TestValidation:
             "name": "broken",
             "gst": {"rate_bps": 1800, "applies_to": "amount"},
             "rounding": {"mode": "half_up"},
-            "methods": {"upi": {"mdr_bps": 0}},
+            "methods": {"card_credit": {"mdr_bps": 200}},
         }
         with pytest.raises(ConfigError, match="GST is levied on the MDR"):
             RateCard.from_dict(data, "test")
 
-    def test_nonzero_upi_mdr_is_rejected(self) -> None:
+    def test_zero_upi_rate_is_rejected(self) -> None:
+        """A zero UPI rate means every UPI row gets flagged for a fee it really owes."""
         data = {
             "name": "broken",
             "gst": {"rate_bps": 1800, "applies_to": "mdr"},
             "rounding": {"mode": "half_up"},
-            "methods": {"upi": {"mdr_bps": 200}},
+            "methods": {"upi": {"mdr_bps": 0}},
         }
-        with pytest.raises(ConfigError, match="UPI carries zero MDR"):
+        with pytest.raises(ConfigError, match="platform fee"):
             RateCard.from_dict(data, "test")
 
     def test_float_mdr_is_rejected(self) -> None:

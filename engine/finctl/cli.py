@@ -480,6 +480,65 @@ def reconcile(
 
 
 @app.command()
+def actions(
+    data: str = typer.Option("data/demo", "--data", "-D", help="Batch directory."),
+    csv_out: str = typer.Option(
+        "", "--csv", help="Write the list to this path instead of printing it."
+    ),
+) -> None:
+    """Who to chase, for how much, and why.
+
+    The verdict says "those 6 customers"; this names them. ADR-001 says anything the UI
+    can do the CLI must do first — and a CSV a merchant can open is the point of the
+    feature, not a nicety, so it belongs here rather than only behind HTTP. See ADR-048.
+    """
+    from pathlib import Path
+
+    from finctl.actions import to_csv
+    from finctl.money import format_rupees
+    from finctl.pipeline import run
+
+    result = run(Path(data))
+    groups = result.actions
+
+    if csv_out:
+        target = Path(csv_out)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(to_csv(groups))
+        rows = sum(len(g.items) for g in groups)
+        console.print(f"[green]wrote {rows} rows[/green] [dim]{target}[/dim]")
+        return
+
+    console.print(f"[bold]{result.verdict.headline()}[/bold]\n")
+
+    if not groups:
+        console.print("[dim]Nothing needs you.[/dim]")
+        return
+
+    for group in groups:
+        console.print(
+            f"[bold]{group.classification}[/bold] "
+            f"[dim]{len(group.items)} · {format_rupees(group.total_paise)}[/dim]"
+        )
+        console.print(f"  [italic]{group.next_step}[/italic]")
+
+        table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+        table.add_column("order")
+        table.add_column("amount", justify="right")
+        table.add_column("customer")
+        table.add_column("why")
+        for item in group.items:
+            table.add_row(
+                item.order_id or "—",
+                item.amount_display,
+                item.email or item.customer_id or "—",
+                item.reason or "—",
+            )
+        console.print(table)
+        console.print()
+
+
+@app.command()
 def checkpoint(
     data: str = typer.Option("data/demo", "--data", "-D", help="Batch directory."),
 ) -> None:
@@ -507,9 +566,16 @@ def checkpoint(
     cfg = load_config()
     batch = stage_from_dir(d)
     matches = match(batch)
-    classified = Classifier(cfg).classify(matches)
+    # Keep the classifier: it holds the settlement cycle it actually judged against, and
+    # the scorer needs the same number or it grades against a baseline nothing used.
+    # See ADR-051.
+    classifier = Classifier(cfg)
+    classified = classifier.classify(matches)
     correlated = Correlator(batch).correlate(classified)
-    report = score(GroundTruth.read(gt_path), correlated, matches, cfg)
+    report = score(
+        GroundTruth.read(gt_path), correlated, matches, cfg,
+        cycle_days=classifier.cycle_days,
+    )
 
     before = report.unexplained_before_paise
     after = report.unexplained_after_paise

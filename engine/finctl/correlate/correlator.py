@@ -24,6 +24,7 @@ Every step is an identifier equality. Either it lands or it does not.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -127,9 +128,21 @@ class Correlator:
     def __init__(self, batch: StagedBatch) -> None:
         payments = batch.get(Source.PAYMENTS)
         subscriptions = batch.get(Source.SUBSCRIPTIONS)
+        recon = batch.get(Source.RECON)
 
         self.payments_by_order = {p["order_id"]: p for p in payments if p.get("order_id")}
         self.subscriptions_by_id = {s["id"]: s for s in subscriptions if s.get("id")}
+
+        # Recon rows indexed by order, for the withholding joins. The CLASSIFIER already
+        # reads `dispute_id` and `on_hold` (ADR-036, ADR-041) — but only on an order it
+        # MATCHED. An order the ledger has and the matcher could not pair reaches
+        # correlation as MISSING, and those two fields never get looked at. So a
+        # disputed payment behind a missing order came out as a generic PAYMENT_FAILED,
+        # losing the fact that there is a deadline attached. See ADR-049.
+        self.recon_by_order: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in recon:
+            if row.get("order_id"):
+                self.recon_by_order[row["order_id"]].append(row)
 
     def correlate(self, classified: ClassificationResult) -> CorrelationResult:
         out = CorrelationResult()
@@ -151,8 +164,90 @@ class Correlator:
         out.unexplained_after_paise = sum(f.amount_paise for f in out.still_unexplained)
         return out
 
+    def _withholding(self, finding: Finding) -> Finding | None:
+        """Is the PSP holding this money, rather than the payment having failed?
+
+        Two mechanisms, both reading fields Razorpay's own recon export carries:
+
+          `dispute_id`  a customer charged back. There is a response deadline.
+          `on_hold`     Razorpay is withholding on purpose, pending KYC or a review.
+
+        Both are checked on the recon rows for the order AND on the payment record,
+        because a real export puts `dispute_id` in both places and the one we have
+        depends on which files a merchant uploaded.
+
+        Returns None when neither applies, so the payment-failure path runs unchanged.
+        """
+        rows = self.recon_by_order.get(finding.order_id or "", [])
+        payment = self.payments_by_order.get(finding.order_id) if finding.order_id else None
+        sources = [*rows, payment] if payment else list(rows)
+
+        disputed = next((r for r in sources if r.get("dispute_id")), None)
+        if disputed is not None:
+            return Finding(
+                order_id=finding.order_id,
+                classification=Classification.DISPUTED,
+                amount_paise=finding.amount_paise,
+                proof={
+                    **finding.proof,
+                    "correlation": {
+                        "attempted": True,
+                        "outcome": "resolved: the customer disputed this payment",
+                        "join_chain": "order_id -> recon.dispute_id / payment.dispute_id",
+                        "dispute_id": disputed.get("dispute_id"),
+                        "dispute_reason": disputed.get("dispute_reason"),
+                        "dispute_created_at": disputed.get("dispute_created_at"),
+                        "payment_id": (payment or {}).get("id") or disputed.get("entity_id"),
+                        "error_reason": disputed.get("dispute_reason") or "disputed",
+                        "explanation": (
+                            "A customer has contested this payment with their bank. "
+                            "Razorpay is holding the money or has taken it back. Unlike "
+                            "a delay this does not resolve itself: there is a window to "
+                            "submit evidence, and missing it forfeits the money."
+                        ),
+                    },
+                },
+                settlement_id=finding.settlement_id,
+            )
+
+        held = next((r for r in sources if r.get("on_hold")), None)
+        if held is not None:
+            return Finding(
+                order_id=finding.order_id,
+                classification=Classification.ON_HOLD,
+                amount_paise=finding.amount_paise,
+                proof={
+                    **finding.proof,
+                    "correlation": {
+                        "attempted": True,
+                        "outcome": "resolved: Razorpay is withholding this settlement",
+                        "join_chain": "order_id -> recon.on_hold",
+                        "hold_reason": held.get("hold_reason"),
+                        "error_reason": held.get("hold_reason") or "on_hold",
+                        "settled": held.get("settled"),
+                        "payment_id": (payment or {}).get("id") or held.get("entity_id"),
+                        "explanation": (
+                            "Razorpay is deliberately holding this money rather than "
+                            "settling it — usually pending KYC, a risk review, or a "
+                            "dispute. Waiting will not release it."
+                        ),
+                    },
+                },
+                settlement_id=finding.settlement_id,
+            )
+
+        return None
+
     def _resolve(self, finding: Finding) -> Finding:
         """Follow the identifier chain. No inference, no resemblance."""
+        # Withholding first. A dispute or a hold is a fact about the SETTLEMENT and
+        # outranks anything the payment record says: money Razorpay is keeping has a
+        # deadline or a dashboard action attached, and "the payment failed" would send a
+        # merchant to retry a charge instead. See ADR-049.
+        withheld = self._withholding(finding)
+        if withheld is not None:
+            return withheld
+
         payment = self.payments_by_order.get(finding.order_id) if finding.order_id else None
 
         if payment is None:

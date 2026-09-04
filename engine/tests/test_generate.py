@@ -73,12 +73,33 @@ class TestGroundTruthCompleteness:
         """The demo centrepiece. Six customers, not 'about six'."""
         gt = batch.ground_truth
         assert len(gt.by_type(DefectType.HALTED_SUBSCRIPTION)) == 6
-        assert len(batch.subscriptions) == 6
-        assert all(s["status"] == "halted" for s in batch.subscriptions)
+        halted = [s for s in batch.subscriptions if s["status"] == "halted"]
+        assert len(halted) == 6
+        # The batch also carries HEALTHY subscriptions, deliberately: those are the
+        # decoys, and their whole purpose is to sit alongside the halted ones looking
+        # similar. ADR-042.
+        active = [s for s in batch.subscriptions if s["status"] == "active"]
+        assert active, "the demo profile must plant healthy-subscription decoys"
+        assert len(batch.subscriptions) == len(halted) + len(active)
 
-    def test_all_five_defect_types_are_planted(self, batch) -> None:
+    def test_every_defect_type_is_planted(self, batch) -> None:
+        """The demo profile must exercise every type the generator knows about,
+        so no defect type ships with its engine behaviour unverified.
+
+        Decoy types are excluded from the REAL-defect set by construction: a decoy is
+        planted with is_real_defect=False precisely so the scorer treats it as a trap
+        rather than as something to find. They are asserted separately below.
+        """
+        decoy_types = {DefectType.HEALTHY_SUBSCRIPTION_DECOY}
         planted = {d.defect_type for d in batch.ground_truth.real_defects}
-        assert planted == set(DefectType.ALL)
+        assert planted == set(DefectType.ALL) - decoy_types
+        assert not (planted & decoy_types), "a decoy must never be a real defect"
+
+    def test_every_decoy_type_is_planted(self, batch) -> None:
+        """A decoy that is never planted guards nothing. ADR-042."""
+        planted = {d.defect_type for d in batch.ground_truth.decoys}
+        assert planted == {DefectType.HEALTHY_SUBSCRIPTION_DECOY}
+        assert all(not d.is_real_defect for d in batch.ground_truth.decoys)
 
     def test_impact_is_recorded_in_integer_paise(self, batch) -> None:
         for d in batch.ground_truth.defects:
@@ -110,7 +131,7 @@ class TestDefectsAreActuallyPresentInTheData:
 
     def test_missing_orders_are_in_the_ledger_but_not_in_recon(self, batch) -> None:
         gt = batch.ground_truth
-        recon_orders = {r["order_id"] for r in batch.recon}
+        recon_orders = {r["order_id"] for r in batch.recon if r.get("order_id")}
         ledger_orders = {r["order_id"] for r in batch.ledger}
         for d in gt.by_type(DefectType.MISSING_ORDER):
             assert d.order_id in ledger_orders
@@ -127,7 +148,7 @@ class TestDefectsAreActuallyPresentInTheData:
 
     def test_halted_subscriptions_have_an_invoice_but_no_settlement(self, batch) -> None:
         """The cruelty of the halted state: invoices keep coming, money never does."""
-        recon_orders = {r["order_id"] for r in batch.recon}
+        recon_orders = {r["order_id"] for r in batch.recon if r.get("order_id")}
         by_order = {p["order_id"]: p for p in batch.payments}
         for d in batch.ground_truth.by_type(DefectType.HALTED_SUBSCRIPTION):
             assert d.order_id not in recon_orders
@@ -138,14 +159,22 @@ class TestDefectsAreActuallyPresentInTheData:
             assert p["subscription_id"] is not None
 
     def test_halted_subscriptions_show_exhausted_retries(self, batch) -> None:
-        """auth_attempts > 0 is what distinguishes a real halt from a decoy."""
+        """auth_attempts > 0 is what distinguishes a real halt from a decoy.
+
+        Now asserted against both sides of that distinction, since the decoys exist.
+        """
         for s in batch.subscriptions:
-            assert s["auth_attempts"] > 0
-            assert s["remaining_count"] > 0   # cycles still left to lose
+            if s["status"] == "halted":
+                assert s["auth_attempts"] > 0
+                assert s["remaining_count"] > 0   # cycles still left to lose
+            else:
+                # The decoy: Razorpay has not given up, so nothing died silently.
+                assert s["status"] == "active"
+                assert s["auth_attempts"] == 0
 
     def test_fee_overcharges_exceed_the_contracted_rate(self, batch, config: Config) -> None:
         from finctl.fees import expected_fee
-        by_order = {r["order_id"]: r for r in batch.recon}
+        by_order = {r["order_id"]: r for r in batch.recon if r.get("order_id")}
         for d in batch.ground_truth.by_type(DefectType.WRONG_FEE_RATE):
             row = by_order[d.order_id]
             contracted = expected_fee(row["amount"], row["method"], config.rate_card)
@@ -157,7 +186,7 @@ class TestDefectsAreActuallyPresentInTheData:
 
         from finctl.calendar import WorkingCalendar
         cal = WorkingCalendar(config.tolerances.weekend_days, config.tolerances.holidays)
-        by_order = {r["order_id"]: r for r in batch.recon}
+        by_order = {r["order_id"]: r for r in batch.recon if r.get("order_id")}
         for d in batch.ground_truth.by_type(DefectType.TIMING_LAG):
             row = by_order[d.order_id]
             captured = datetime.fromtimestamp(row["created_at"], tz=UTC).date()
@@ -199,23 +228,31 @@ class TestRazorpayShapeCompliance:
 class TestFeeCorrectness:
     """'The most likely place your build is quietly wrong.'"""
 
-    def test_upi_rows_are_charged_nothing(self, config: Config) -> None:
+    def test_upi_rows_are_charged_the_platform_fee(self, config: Config) -> None:
+        """ADR-030. UPI rows carry ~2% + GST, so credit is strictly below amount."""
         batch = Generator(config, seed=7, volume=300, payment_mix="upi_heavy",
                           archetype="d2c_ecommerce", defect_profile="clean").generate()
         upi = [r for r in batch.recon if r["method"] == "upi"]
         assert upi, "upi_heavy mix must produce UPI rows"
         for row in upi:
-            assert row["fee"] == 0
-            assert row["tax"] == 0
-            assert row["credit"] == row["amount"]   # every paise reaches the bank
+            assert row["fee"] > 0
+            assert row["tax"] > 0
+            assert row["credit"] < row["amount"]
 
-    def test_upi_heavy_and_card_heavy_produce_different_fee_totals(self, config: Config) -> None:
-        """The judge's question, answered with data rather than assertion."""
+    def test_upi_heavy_is_no_longer_almost_free(self, config: Config) -> None:
+        """Regression guard for ADR-030.
+
+        The old rate card made a UPI-heavy batch cost ~1/5 of a card-heavy one.
+        At the real platform fee the two are within a few percent, because the
+        domestic rate is a flat 2% either way.
+        """
         upi = Generator(config, seed=7, volume=300, payment_mix="upi_heavy",
                         defect_profile="clean").generate()
         card = Generator(config, seed=7, volume=300, payment_mix="card_heavy",
                          defect_profile="clean").generate()
-        assert sum(r["fee"] for r in upi.recon) < sum(r["fee"] for r in card.recon) / 5
+        upi_fees = sum(r["fee"] for r in upi.recon)
+        card_fees = sum(r["fee"] for r in card.recon)
+        assert upi_fees > card_fees / 2
 
     def test_clean_profile_matches_the_rate_card_exactly(self, config: Config) -> None:
         """With no defects planted, every fee must equal the contracted fee."""
@@ -261,10 +298,46 @@ class TestInternalConsistency:
         for bank_row in batch.bank:
             assert bank_row["credit_amount"] == by_utr[bank_row["utr"]]
 
-    def test_every_recon_row_belongs_to_a_settlement_with_a_utr(self, batch) -> None:
+    def test_every_settled_recon_row_belongs_to_a_settlement_with_a_utr(self, batch) -> None:
+        """Every row EXCEPT one being withheld, which by definition has no settlement.
+
+        Two ways a payment is withheld: `on_hold` (ADR-036) and an open dispute
+        (ADR-041). Both mean Razorpay is keeping the money, so neither has a settlement
+        or a UTR.
+        """
         for row in batch.recon:
+            if row.get("on_hold") or row.get("dispute_id"):
+                continue
             assert row["settlement_id"] and row["settlement_id"].startswith("setl_")
             assert row["settlement_utr"]
+
+    def test_a_disputed_recon_row_has_no_settlement(self, batch) -> None:
+        """The inverse invariant for disputes, mirroring the held case.
+
+        If a disputed row acquired a UTR the money would appear in the bank while the
+        engine reported it withheld pending the dispute. See ADR-041.
+        """
+        disputed = [r for r in batch.recon if r.get("dispute_id")]
+        assert disputed, "the demo profile must plant disputes"
+        for row in disputed:
+            assert row["settlement_id"] is None
+            assert row["settlement_utr"] is None
+            assert row["settled_at"] is None
+            assert row["dispute_reason"]
+
+    def test_a_held_recon_row_has_no_settlement(self, batch) -> None:
+        """The inverse invariant: being held means no settlement, no UTR, no settled_at.
+
+        If a held row ever acquired a UTR the money would appear in the bank while the
+        engine reported it withheld. See ADR-036.
+        """
+        held = [r for r in batch.recon if r.get("on_hold")]
+        assert held, "demo profile must plant held payments"
+        for row in held:
+            assert row["settlement_id"] is None
+            assert row["settlement_utr"] is None
+            assert row["settled_at"] is None
+            assert row["settled"] is False
 
     def test_ledger_totals_match_ground_truth(self, batch) -> None:
         assert sum(r["amount"] for r in batch.ledger) == batch.ground_truth.total_gross_paise
@@ -353,7 +426,7 @@ class TestWriter:
         """A merchant's export contains rupees. Normalize converts; nothing else may."""
         write_batch(batch, tmp_path)
         lines = (tmp_path / "ledger.csv").read_text().splitlines()
-        assert lines[0] == "order_id,amount,timestamp,customer_id,payment_method"
+        assert lines[0] == "order_id,amount,timestamp,customer_id,email,contact,payment_method"
         assert "." in lines[1].split(",")[1]
 
     def test_json_uses_razorpays_collection_envelope(self, batch, tmp_path: Path) -> None:
@@ -370,7 +443,7 @@ class TestWriter:
         batch.bank = []
         write_batch(batch, tmp_path)
         assert (tmp_path / "ledger.csv").read_text().strip() == (
-            "order_id,amount,timestamp,customer_id,payment_method"
+            "order_id,amount,timestamp,customer_id,email,contact,payment_method"
         )
 
     def test_refuses_to_write_a_batch_with_no_ground_truth(self, batch, tmp_path: Path) -> None:
@@ -384,3 +457,104 @@ class TestScale:
         batch = Generator(config, seed=9, volume=5000, defect_profile="scale").generate()
         assert len(batch.ledger) == 5000
         assert batch.ground_truth.total_gross_paise == sum(r["amount"] for r in batch.ledger)
+
+
+# --------------------------------------------------------------- inline defect profiles
+#
+# The demo generator in the UI lets a merchant dial individual defect counts rather than
+# pick a preset. That inline profile reaches the SAME code path a YAML profile does, so
+# it must be validated to the same standard: a profile that asks for a defect nobody
+# plants produces a batch whose ground truth is quietly wrong (ADR-004).
+
+
+def test_inline_defect_profile_plants_exact_counts(config: Config) -> None:
+    """A dialled-in count is planted exactly, not approximately."""
+    batch = Generator(
+        config,
+        volume=150,
+        defect_profile={
+            DefectType.HALTED_SUBSCRIPTION: {"count": 9},
+            DefectType.WRONG_FEE_RATE: {"count": 12, "overcharge_bps": 60},
+        },
+    ).generate()
+
+    gt = batch.ground_truth
+    assert gt is not None
+    assert len(gt.by_type(DefectType.HALTED_SUBSCRIPTION)) == 9
+    assert len(gt.by_type(DefectType.WRONG_FEE_RATE)) == 12
+    # Nothing the caller did not ask for.
+    assert len(gt.by_type(DefectType.TIMING_LAG)) == 0
+
+
+def test_inline_defect_profile_is_named_custom(config: Config) -> None:
+    """Ground truth records a string, never the dict — the file is read by humans."""
+    batch = Generator(
+        config, volume=50, defect_profile={DefectType.MISSING_ORDER: {"count": 2}}
+    ).generate()
+    assert batch.ground_truth is not None
+    assert batch.ground_truth.defect_profile == "custom"
+
+
+def test_inline_defect_profile_supports_rates(config: Config) -> None:
+    batch = Generator(
+        config, volume=200, defect_profile={DefectType.TIMING_LAG: {"rate": 0.1}}
+    ).generate()
+    assert batch.ground_truth is not None
+    assert len(batch.ground_truth.by_type(DefectType.TIMING_LAG)) == 20
+
+
+def test_inline_defect_profile_refuses_unknown_type(config: Config) -> None:
+    """An unknown defect type is refused by name, not silently dropped.
+
+    Silently ignoring it would plant nothing while the caller believes otherwise —
+    the exact failure the named-profile path already refuses.
+    """
+    with pytest.raises(ConfigError, match="unknown defect type"):
+        Generator(config, volume=50, defect_profile={"not_a_defect": {"count": 1}})
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {DefectType.HALTED_SUBSCRIPTION: 5},               # not an object
+        {DefectType.HALTED_SUBSCRIPTION: {}},              # neither count nor rate
+        {DefectType.HALTED_SUBSCRIPTION: {"count": -3}},   # negative
+        {DefectType.HALTED_SUBSCRIPTION: {"rate": -0.5}},
+        {DefectType.HALTED_SUBSCRIPTION: {"count": True}}, # bool is not a count
+    ],
+)
+def test_inline_defect_profile_refuses_malformed_entries(
+    config: Config, spec: dict
+) -> None:
+    with pytest.raises(ConfigError):
+        Generator(config, volume=50, defect_profile=spec)
+
+
+def test_inline_defect_profile_is_deterministic(config: Config) -> None:
+    """Same seed and same inline profile, same batch — as for a named profile."""
+    profile = {
+        DefectType.HALTED_SUBSCRIPTION: {"count": 4},
+        DefectType.MISSING_ORDER: {"count": 3},
+    }
+    a = Generator(config, seed=99, volume=80, defect_profile=dict(profile)).generate()
+    b = Generator(config, seed=99, volume=80, defect_profile=dict(profile)).generate()
+    assert a.ledger == b.ledger
+    assert a.recon == b.recon
+
+
+def test_inline_profile_over_volume_still_reports_what_it_planted(
+    config: Config,
+) -> None:
+    """Asking for more defects than the batch holds clamps, and ground truth says so.
+
+    Each order carries at most one defect, so a count above the volume cannot be met.
+    The generator clamps rather than refusing; what matters is that ground truth records
+    what was ACTUALLY planted, so the scorer is never told to look for defects that do
+    not exist. The API surfaces the difference to the caller.
+    """
+    batch = Generator(
+        config, volume=10, defect_profile={DefectType.HALTED_SUBSCRIPTION: {"count": 50}}
+    ).generate()
+    gt = batch.ground_truth
+    assert gt is not None
+    assert len(gt.by_type(DefectType.HALTED_SUBSCRIPTION)) == 10

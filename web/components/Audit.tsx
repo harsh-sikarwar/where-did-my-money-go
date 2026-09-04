@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { ChevronDownIcon, Skeleton } from "@/components/ui";
 import { api, ApiError, type Audit as AuditData } from "@/lib/api";
 
 /**
@@ -14,17 +15,19 @@ export function Audit({ batch }: { batch: string }) {
   const [open, setOpen] = useState(false);
 
   return (
-    <section className="mt-16 border-t border-[var(--color-line)] pt-8">
+    <section className="mt-16 border-t border-[var(--color-line-strong)] pt-8">
       <button
         onClick={() => setOpen(!open)}
         className="flex w-full items-baseline justify-between text-left"
         aria-expanded={open}
       >
-        <span className="text-sm font-medium tracking-tight">
-          How do I know this is true?
-        </span>
-        <span className="text-xs text-[var(--color-ink-faint)]">
+        <span className="text-title">How do I know this is true?</span>
+        <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-accent)]">
           {open ? "hide" : "show the audit trail"}
+          <ChevronDownIcon
+            size={13}
+            className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+          />
         </span>
       </button>
       {open && <AuditBody batch={batch} />}
@@ -49,19 +52,19 @@ function AuditBody({ batch }: { batch: string }) {
   }, [batch, stage]);
 
   if (error)
-    return <p className="mt-4 text-sm text-[var(--color-attention)]">{error}</p>;
+    return (
+      <p className="mt-4 text-sm font-medium text-[var(--color-urgent)]">{error}</p>
+    );
   if (!data)
     return (
-      <div className="mt-4 h-3 w-32 animate-pulse rounded bg-[var(--color-line)]" />
+      <Skeleton className="mt-4 h-3 w-32" />
     );
 
   return (
     <div className="mt-6">
       {/* What was ingested. The answer to "which column did you read as the amount?" */}
-      <h3 className="mb-2 text-xs tracking-wide text-[var(--color-ink-faint)] uppercase">
-        What we read
-      </h3>
-      <div className="mb-8 space-y-1">
+      <h3 className="text-label mb-3 text-[var(--color-ink-faint)]">What we read</h3>
+      <div className="mb-8 space-y-1.5">
         {Object.entries(data.manifest.sources).map(([name, src]) => (
           <div
             key={name}
@@ -83,7 +86,7 @@ function AuditBody({ batch }: { batch: string }) {
         ))}
       </div>
 
-      <h3 className="mb-2 text-xs tracking-wide text-[var(--color-ink-faint)] uppercase">
+      <h3 className="text-label mb-3 text-[var(--color-ink-faint)]">
         Every decision · {data.total_events} events
       </h3>
 
@@ -105,7 +108,7 @@ function AuditBody({ batch }: { batch: string }) {
         ))}
       </div>
 
-      <div className="max-h-96 overflow-y-auto rounded border border-[var(--color-line)] bg-white/50">
+      <div className="max-h-96 overflow-y-auto rounded-xl border border-[var(--color-line)] bg-[var(--color-well)]">
         {data.events.map((e) => (
           <div
             key={e.seq}
@@ -162,9 +165,9 @@ function StageChip({
   return (
     <button
       onClick={onClick}
-      className={`rounded-full px-2.5 py-0.5 text-xs transition-colors ${
+      className={`pressable rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
         active
-          ? "bg-[var(--color-ink)] text-white"
+          ? "bg-[var(--color-ink)] text-[var(--color-ground)]"
           : "bg-[var(--color-line)]/60 text-[var(--color-ink-soft)] hover:bg-[var(--color-line)]"
       }`}
     >

@@ -41,11 +41,42 @@ demo:
     note: "One order paid across two settlements. Legitimate Razorpay behaviour,
            NOT an error — impact is zero by design. Tests that the engine does not
            report a discrepancy, which is harder to get right than reporting one."
+  payment_on_hold:
+    count: 2
+    note: "Razorpay withholding a payment on purpose (on_hold=true in the recon row).
+      Neither late nor missing: the reason is in the data, so an engine that reports
+      UNEXPLAINED here is failing to read a field it already has. See ADR-036."
+
   early_refund:
     count: 3
     note: "A refund that settled BEFORE the payment it reverses. The debit lands in
            an earlier settlement than the credit, so a naive per-settlement view
            shows money leaving before it arrived."
+
+  healthy_subscription_decoy:
+    count: 2
+    note: "A DECOY, not a defect. A failed payment against a HEALTHY subscription —
+      same surface shape as a halted one (failed payment, subscription_id, a gap),
+      differing in one field: status=active, auth_attempts=0. The engine must report
+      PAYMENT_FAILED and must NOT claim HALTED_SUBSCRIPTION. This is what makes
+      '0 false positives' a statement about the ENGINE rather than about data where
+      every gap had a real cause to find. See ADR-042."
+
+  disputed:
+    count: 2
+    note: "A customer charged back. Razorpay's recon export carries dispute_id,
+      dispute_created_at and dispute_reason on the row — three real columns. The money
+      is withheld pending the outcome and the merchant has a response deadline, so
+      calling it TIMING ('it arrives on its own') is the most damaging answer available.
+      See ADR-041."
+
+  unrecorded_refund:
+    count: 3
+    note: "The MIRROR of one_sided_refund: Razorpay settled a refund the merchant
+      never wrote down. Modelled on row 10 of Razorpay's own sample recon export —
+      a `refund` row with a settlement_id and NO order_id. The missing order_id is
+      the point: the matcher used to drop such rows outright, so money left the
+      merchant's account with no stage ever seeing it. See ADR-039."
 
 # No defects at all. Adversarial case: does the engine correctly say 'nothing to do'?
 clean:
@@ -89,3 +120,9 @@ scale:
     rate: 0.02
   early_refund:
     rate: 0.015
+  unrecorded_refund:
+    rate: 0.01
+  disputed:
+    rate: 0.01
+  healthy_subscription_decoy:
+    rate: 0.02

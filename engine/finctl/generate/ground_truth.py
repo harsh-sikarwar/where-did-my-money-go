@@ -40,9 +40,38 @@ class DefectType:
     SPLIT_SETTLEMENT = "split_settlement"
     EARLY_REFUND = "early_refund"
 
+    # Razorpay's recon schema carries `on_hold`; a held payment is neither late nor
+    # missing, and without generating one the engine's handling of it was unverified.
+    # See ADR-036.
+    PAYMENT_ON_HOLD = "payment_on_hold"
+
+    # The MIRROR of ONE_SIDED_REFUND. That one is a refund the merchant recorded which
+    # never reached settlement. This is the reverse: Razorpay settled a refund the
+    # merchant never wrote down. Razorpay's own sample recon export contains one of
+    # these (a `refund` row with a settlement_id and a blank order_id), and it is the
+    # shape a real merchant is more likely to have. See ADR-039.
+    UNRECORDED_REFUND = "unrecorded_refund"
+
+    # Razorpay's recon export carries dispute_id / dispute_created_at / dispute_reason.
+    # A chargeback is money the PSP is withholding or has clawed back, with a response
+    # deadline attached. See ADR-041.
+    DISPUTED = "disputed"
+
+    # A DECOY, not a defect: a failed payment against a HEALTHY subscription. It has the
+    # same surface shape as a halted one — failed payment, subscription_id, a gap — and
+    # the engine must decline to claim it as halted. Planted with is_real_defect=False,
+    # so it is scored as a trap rather than as something to find. See ADR-042.
+    HEALTHY_SUBSCRIPTION_DECOY = "healthy_subscription_decoy"
+
+    # ORDER IS LOAD-BEARING. The generator slices a shuffled index range across these
+    # in sequence, so changing the order changes WHICH orders receive WHICH defect —
+    # every golden file shifts, for no real reason. This tuple therefore preserves the
+    # historical assignment order, and new types are appended at the END, never
+    # inserted. Reordering it is a deliberate act that invalidates the golden files.
     ALL = (
-        MISSING_ORDER, WRONG_FEE_RATE, ONE_SIDED_REFUND, TIMING_LAG,
-        HALTED_SUBSCRIPTION, SPLIT_SETTLEMENT, EARLY_REFUND,
+        MISSING_ORDER, WRONG_FEE_RATE, ONE_SIDED_REFUND, HALTED_SUBSCRIPTION,
+        TIMING_LAG, SPLIT_SETTLEMENT, EARLY_REFUND, PAYMENT_ON_HOLD,
+        UNRECORDED_REFUND, DISPUTED, HEALTHY_SUBSCRIPTION_DECOY,
     )
 
 

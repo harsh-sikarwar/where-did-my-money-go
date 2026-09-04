@@ -4,8 +4,10 @@ Measured results. Every number here was produced by `uv run finctl matrix` and r
 `docs/matrix-results.json` — none is transcribed by hand, and re-running the command
 regenerates all of it.
 
-**Run on 2026-09-03.** 22 runs across volume × archetype × payment mix × settlement
-cycle, plus two edge profiles.
+**Run on 2026-09-04.** 26 runs across volume × archetype × payment mix × settlement
+cycle, plus two edge profiles. Cycles span T+1 to T+7 — the slow rows were added in
+ADR-051, after a scorer bug survived 22 green runs precisely because the matrix only
+sampled T+1 and T+2, where the configured and observed cycles agree.
 
 ---
 
@@ -31,6 +33,23 @@ reconciliation achieves roughly a **51% match rate**; structured tooling reaches
 Our match rate is not directly comparable to either, because ours is an **exact-identifier
 rate** with no fuzzy matching (ADR-015) — a stricter measure that trades headline
 percentage for the guarantee that no match is a guess.
+
+**The false-positive column now means something.** Until 2026-09-03 it was measured on
+batches where *every* gap had a real cause to find, so "0 false positives" was partly a
+statement about the data. The `demo` and `scale` profiles now plant **decoys**: failed
+payments against *healthy* subscriptions, which have the same surface shape as a halted
+one (failed payment, `subscription_id`, a gap) and differ in one field — `status=active`,
+`auth_attempts=0`. The engine must report `PAYMENT_FAILED` and must **not** claim
+`HALTED_SUBSCRIPTION`.
+
+**Result: 2,254 decoys planted across the 26 runs, 0 claimed. False-attribution rate
+0.0000.** That is the number to push on, because a false attribution is worse than a
+miss: a miss is a gap in coverage, a false attribution is the engine telling a merchant
+to chase a customer whose subscription is working fine (ADR-042).
+
+The honest limit is the same as everywhere else on this page: we designed the decoy, so
+it tests the confusion we anticipated. It does not prove the engine resists a confusion
+we did not think of.
 
 **"Below tolerance" is not a miss.** The generator plants timing lags of 1–2 working
 days; `grace_days: 1` means a one-day lag is inside tolerance and deliberately not
@@ -76,24 +95,35 @@ harness rather than the product.
 
 | batch | rows ingested | seconds | rows/sec |
 |---|---|---|---|
-| 50 | 175 | 0.003 | 55,173 |
-| 200 | 636 | 0.010 | 62,147 |
-| 500 | 1,539 | 0.020 | 78,719 |
-| 5,000 | 15,108 | 0.205 | 73,509 |
-| 50,000 | 150,783 | 2.379 | 63,369 |
+| 50 | 175 | 0.005 | 32,019 |
+| 200 | 636 | 0.015 | 41,083 |
+| 500 | 1,539 | 0.027 | 56,575 |
+| 5,000 | 15,108 | 0.223 | 67,796 |
+| 50,000 | 150,783 | 2.493 | 60,489 |
 
 ## Correlation gain by archetype
 
 | archetype | unexplained before | after | resolved |
 |---|---|---|---|
-| d2c_ecommerce | ₹1,41,390.00 | ₹0.00 | 100.0% |
-| saas_subscription | ₹2,63,706.00 | ₹0.00 | 100.0% |
+| d2c_ecommerce | ₹10,55,728.20 | ₹0.00 | 100.0% |
+| saas_subscription | ₹20,91,021.40 | ₹0.00 | 100.0% |
 
-## Totals across 22 runs
+## What the slow-cycle rows established
 
-- defects caught: **26489**
+T+3 and T+7 were added because their absence hid a bug, so it is worth saying what they
+now show rather than only that they pass. At both cycles the engine detects the observed
+settlement cycle, disagrees with the configured T+2, judges timing against the observed
+value, and scores **0 missed** — the same recall it reports at T+1 and T+2.
+
+Before ADR-051 the same matrix reported **48 defects missed** on those rows. That number
+was produced by reverting the fix and re-running, rather than inferred: a regression test
+nobody has watched fail is a regression test with no evidence behind it.
+
+## Totals across 26 runs
+
+- defects caught: **29070**
 - defects missed: **0**
-- below tolerance (planted, correctly not flagged): **10145**
+- below tolerance (planted, correctly not flagged): **10192**
 - false positives: **0**
 - balance identity failures: **0**
 

@@ -35,6 +35,13 @@ LINE_COPY: dict[Classification, tuple[str, str]] = {
         "Razorpay has released this money but it has not landed in your account yet. "
         "It arrives on its own.",
     ),
+    Classification.ON_HOLD: (
+        "held by Razorpay — not on its way",
+        "Razorpay is deliberately holding this money rather than settling it. This is "
+        "not a delay that clears on its own: it usually means pending KYC, a risk "
+        "review, or a dispute. Check your Razorpay dashboard — waiting will not "
+        "release it.",
+    ),
     Classification.FEE: (
         "Razorpay's cut + tax on it",
         "The processing fee Razorpay kept, plus the 18% GST charged on that fee — "
@@ -84,6 +91,20 @@ LINE_COPY: dict[Classification, tuple[str, str]] = {
         "money in for an order you don't have",
         "Razorpay settled an order that is not in your ledger.",
     ),
+    Classification.DISPUTED: (
+        "disputed by the customer — you have a deadline",
+        "A customer has formally contested these payments with their bank. Razorpay is "
+        "holding the money, or has already taken it back. Unlike a delay, this does not "
+        "resolve on its own: you have a limited window to submit evidence through the "
+        "Razorpay dashboard, and missing it forfeits the money.",
+    ),
+    Classification.UNRECORDED_REFUND: (
+        "refunds Razorpay paid out that you never recorded",
+        "Razorpay returned this money to customers, but there is no refund in your "
+        "books. Your records therefore show more money than you actually have. Check "
+        "whether these were issued from the Razorpay dashboard without being written "
+        "down — nothing in your own books would ever reveal them.",
+    ),
 }
 
 # Display order for the verdict. Benign lines first, largest-first within each group,
@@ -96,6 +117,8 @@ _DISPLAY_ORDER = (
     Classification.ROUNDING,
     Classification.DUPLICATE,
     Classification.UNEXPECTED_SETTLEMENT,
+    Classification.UNRECORDED_REFUND,
+    Classification.DISPUTED,
     Classification.HALTED_SUBSCRIPTION,
     Classification.PAYMENT_FAILED,
     Classification.MISSING,

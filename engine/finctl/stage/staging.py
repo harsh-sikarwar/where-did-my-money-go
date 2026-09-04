@@ -165,10 +165,17 @@ class StagedBatch:
         }
 
 
-def stage_from_dir(data_dir: Path, batch_id: str | None = None) -> StagedBatch:
+def stage_from_dir(
+    data_dir: Path,
+    batch_id: str | None = None,
+    mappings: Any | None = None,
+) -> StagedBatch:
     """Ingest a generated or downloaded batch directory into a sealed StagedBatch.
 
-    Missing optional sources are tolerated: no bank.csv means two-way reconciliation,
+    Ledger and bank may be .csv or .xlsx — Razorpay's dashboard exports Excel, so a
+    merchant's own files arrive in either format (ADR-043).
+
+    Missing optional sources are tolerated: no bank file means two-way reconciliation,
     no subscriptions.json means correlation has one fewer path. Both are legitimate
     configurations rather than errors, and the manifest records what was absent.
     """
@@ -180,14 +187,43 @@ def stage_from_dir(data_dir: Path, batch_id: str | None = None) -> StagedBatch:
 
     batch = StagedBatch(batch_id=batch_id or data_dir.name)
 
-    ledger_path = data_dir / "ledger.csv"
-    if ledger_path.exists():
-        rows, mapping = normalize_ledger(ledger_path)
+    def find(stem: str) -> Path | None:
+        """The file for `stem` in whichever tabular format it was supplied as.
+
+        A merchant uploading their own export gets `.xlsx` from the Razorpay dashboard
+        and `.csv` from most bookkeeping tools, so both must be discoverable under the
+        same name. `.csv` is preferred only for determinism when both exist — that is a
+        tie-break, not a judgement about which is better. See ADR-043.
+        """
+        for suffix in (".csv", ".xlsx", ".xlsm"):
+            candidate = data_dir / f"{stem}{suffix}"
+            if candidate.exists():
+                return candidate
+        return None
+
+    def remembered(source: Source, path: Path) -> dict[str, str] | None:
+        """A mapping a human previously confirmed for this exact file shape (ADR-045).
+
+        Looked up rather than inferred: the store only answers for a header set someone
+        has already been shown and decided on, so this is never the engine guessing.
+        """
+        if mappings is None:
+            return None
+        from finctl.normalize.normalizer import _read_tabular
+
+        headers, _ = _read_tabular(path, source.value)
+        return mappings.lookup(source.value, headers)
+
+    ledger_path = find("ledger")
+    if ledger_path:
+        rows, mapping = normalize_ledger(
+            ledger_path, remembered(Source.LEDGER, ledger_path)
+        )
         batch.add(Source.LEDGER, rows, str(ledger_path), mapping.describe())
 
-    bank_path = data_dir / "bank.csv"
-    if bank_path.exists():
-        rows, mapping = normalize_bank(bank_path)
+    bank_path = find("bank")
+    if bank_path:
+        rows, mapping = normalize_bank(bank_path, remembered(Source.BANK, bank_path))
         batch.add(Source.BANK, rows, str(bank_path), mapping.describe())
 
     for source, filename in (

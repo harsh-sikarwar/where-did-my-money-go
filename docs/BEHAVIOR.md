@@ -34,6 +34,12 @@ looks.
 profiles from YAML into validated objects. Every rate that could vary by merchant,
 payment method or contract lives here.
 
+A merchant's **contracted** rates may be layered over the shipped card, stating only what
+they negotiated, so the fee check answers *"was this MY rate?"* rather than *"was this the
+standard rate?"* — a materially different question for anyone off standard pricing
+(ADR-046). A rate over 100% is refused, naming the unit: entering `2` for "2%" yields
+0.02% and would flag every row in the file.
+
 **Refuses.** To supply a default MDR. A missing rate for a payment method is an error,
 not an assumed 2%. This is the single most likely place for the build to be quietly
 wrong (`build-spec.md` §6c), so the failure is made loud by design.
@@ -42,7 +48,9 @@ wrong (`build-spec.md` §6c), so the failure is made loud by design.
 Missing required key → raise, naming the key and the file.
 
 **Key content.**
-- MDR per payment method. **UPI is 0** — mandated for banks, not an oversight.
+- Per-method rate: the charge the merchant actually pays. **UPI is ~2%** — zero MDR is
+  statutory, but the aggregator's platform fee is deducted anyway and is what appears on
+  the settlement row. Conflating the two was a real bug; see ADR-035.
 - GST at 18% applied **to the MDR**, never to the transaction amount.
 - Settlement cycle (T+1 / T+2 / T+7) and the working-day calendar.
 - Tolerances: rounding tolerance in paise, timing tolerance in days.
@@ -69,16 +77,31 @@ cluster of ~6 halted subscriptions.
 
 ## Stage: `normalize`
 
-**Promises.** Maps arbitrary input columns to the canonical schema. Converts all money to
+**Promises.** Reads `.csv` and `.xlsx`/`.xlsm` through one code path — Razorpay's
+dashboard exports Excel, so a merchant's own settlement report arrives as `.xlsx`
+(ADR-043). Maps arbitrary input columns to the canonical schema. Converts all money to
 integer paise and all timestamps to UTC. This is the **only** place rupee strings such as
 `"1,234.50"` are parsed.
 
 **Refuses.** To guess a column mapping. An unrecognised or ambiguous column raises with
 the column name and the candidates it was between.
 
+**Asks once.** The refusal carries structured data — which fields are unmapped, and every
+unclaimed column available — so a human can choose. That choice is remembered against a
+fold-insensitive, order-independent fingerprint of the file's headers and replayed only
+for that same shape, so it is a recorded decision rather than an inference. A human
+override beats the alias table, and the audit trail records which fields a person mapped
+by hand (ADR-045).
+
 **On bad input.**
 - Renamed/reordered columns → resolved by the mapping table, or raise. Never positional.
 - `"1,234.50"`, `"₹1234.50"`, `"1234.5"` → all parse to `123450` paise.
+- **Timestamps** → accepts Excel serial dates (`44658.4469`), epoch seconds
+  (`1656487479`), `DD/MM/YYYY HH:MM:SS`, `YYYY-MM-DD` and ISO 8601. Razorpay's own
+  dashboard exports mix serials and `DD/MM/YYYY` **in the same column**, so this is not
+  optional. A bare number in `[20000, 80000]` is a serial; outside it, epoch seconds.
+  The ranges are ~10⁴ apart, so this is disjoint, not a guess. A fractional number
+  outside the serial window raises rather than being coerced (ADR-037).
 - Empty file → returns an empty frame with the correct schema. Not an error: "nothing to
   reconcile" is a valid answer and must survive to the verdict stage.
 - Negative amounts → allowed only where the schema expects them (refunds); otherwise raise.
@@ -122,7 +145,17 @@ An amount-based near-match is a guess wearing a confidence score.
 ## Stage: `classify`
 
 **Promises.** Assigns exactly one label per discrepancy, with the arithmetic attached:
-`FEE · TAX_ON_FEE · TIMING · REFUND · ROUNDING · DUPLICATE · MISSING · UNEXPLAINED`.
+`FEE · TAX_ON_FEE · TIMING · REFUND · ROUNDING · DUPLICATE · MISSING · ON_HOLD ·
+DISPUTED · UNRECORDED_REFUND · UNEXPECTED_SETTLEMENT · UNEXPLAINED`.
+
+**Withheld money is never also reported as late.** `ON_HOLD` and `DISPUTED` suppress
+`TIMING`. "It arrives on its own" is false for money the PSP is holding, and for a
+chargeback it is actively harmful — waiting is how a merchant loses one (ADR-041).
+
+Two of these are **settlement-level**, not order-level, and carry no `order_id`:
+`UNRECORDED_REFUND` (money Razorpay returned that the merchant never recorded, keyed by
+`rfnd_…`) and `UNEXPECTED_SETTLEMENT` (money in for an order the ledger lacks). Both are
+identified by `entity_id`, which is how Razorpay's own recon export identifies them.
 
 **Refuses.** To pick a winner when more than one rule fits. Multiple matches →
 `NEEDS_REVIEW`, carrying all candidate explanations. (Cointab's "leave it unmatched when
@@ -136,10 +169,16 @@ then works on.
 
 ## Stage: `correlate` — the differentiator
 
-**Promises.** For every `UNEXPLAINED` row, looks up the payment record and the
-subscription record:
-- payment `status: failed` → `error_reason` explains the gap
+**Promises.** For every `UNEXPLAINED` row, follows the identifier chain into the payment,
+subscription and settlement records. Three mechanisms, in this order of precedence:
+- recon/payment `dispute_id` → a chargeback, with a response deadline
+- recon/payment `on_hold` → the PSP is withholding, pending KYC or a review
 - subscription `halted` → invoice generated, charge never attempted = silent revenue death
+- payment `status: failed` → `error_reason` explains the gap (the fallback)
+
+**Ordered by consequence, not by rule order.** A disputed payment on a halted
+subscription is both things, and the two answers imply different actions — only one has a
+clock on it. "Email them a new payment link" is wrong for money under dispute (ADR-049).
 
 Reports **unexplained ₹ before vs after**. That delta is the headline metric.
 

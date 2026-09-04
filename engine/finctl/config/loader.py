@@ -13,7 +13,7 @@ available in this project.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +71,100 @@ class RateCard:
                 "Refusing to assume a default MDR — see docs/BEHAVIOR.md, stage `config`."
             ) from None
 
+    def with_merchant_rates(self, overrides: dict[str, Any], source: str) -> RateCard:
+        """A copy of this card with the merchant's contracted rates layered on.
+
+        Merchants negotiate away from standard pricing and enterprise rates are common,
+        so the shipped `standard-india-2026` card answers *"was this the standard rate?"*
+        — a different, and much less useful, question than *"was this MY contracted
+        rate?"*. See ADR-046.
+
+        Layered rather than replacing wholesale, so a merchant states only what they
+        negotiated. A contract that renegotiates UPI alone should not require restating
+        the GST rate and every other method, because each restatement is a chance to get
+        one wrong and no merchant would notice.
+
+        The refusal to invent a rate is preserved exactly: an override for a method the
+        base card does not price is still added (a merchant may genuinely be billed for
+        a method we did not ship), but `rate_for` still raises for anything neither
+        knows about.
+        """
+        methods = dict(self.methods)
+        raw_methods = overrides.get("methods") or {}
+        if not isinstance(raw_methods, dict):
+            raise ConfigError(f"{source}: 'methods' must be a mapping of method -> rate")
+
+        for method, spec in raw_methods.items():
+            if isinstance(spec, int | float) and not isinstance(spec, bool):
+                # A bare number is the common case: "UPI is 1.75% for us".
+                bps = spec
+                note = ""
+            elif isinstance(spec, dict):
+                if "mdr_bps" not in spec:
+                    raise ConfigError(
+                        f"{source}: method {method!r} must set 'mdr_bps' "
+                        "(basis points, so 1.75% is 175)."
+                    )
+                bps = spec["mdr_bps"]
+                note = str(spec.get("note", ""))
+            else:
+                raise ConfigError(
+                    f"{source}: method {method!r} must be a number of basis points "
+                    f"or a mapping with 'mdr_bps', got {type(spec).__name__}."
+                )
+
+            if isinstance(bps, bool) or not isinstance(bps, int | float):
+                raise ConfigError(f"{source}: method {method!r} mdr_bps must be a number")
+            if bps < 0:
+                raise ConfigError(
+                    f"{source}: method {method!r} has a negative rate ({bps} bps). "
+                    "A fee the merchant is PAID is not a rate card entry."
+                )
+            if bps > 10_000:
+                # 100%. Almost certainly a percentage entered where bps was meant —
+                # "2" meaning 2% is 200 bps, and 2 bps is 0.02%. Refusing the absurd
+                # end catches the unit error that would otherwise silently flag every
+                # single row as a fee discrepancy.
+                raise ConfigError(
+                    f"{source}: method {method!r} has a rate of {bps} bps (over 100%). "
+                    "Rates are in BASIS POINTS: 2% is 200, not 2."
+                )
+
+            methods[method] = MethodRate(
+                method=method, mdr_bps=int(bps),
+                note=note or f"merchant-contracted rate from {source}",
+            )
+
+        gst_bps = self.gst_rate_bps
+        if "gst_rate_bps" in overrides:
+            gst_bps = overrides["gst_rate_bps"]
+            if isinstance(gst_bps, bool) or not isinstance(gst_bps, int | float):
+                raise ConfigError(f"{source}: gst_rate_bps must be a number")
+            if not 0 <= gst_bps <= 10_000:
+                raise ConfigError(
+                    f"{source}: gst_rate_bps of {gst_bps} is outside 0–10000 bps."
+                )
+            gst_bps = int(gst_bps)
+
+        fixed = self.fixed_fee_paise
+        if "fixed_fee_paise" in overrides:
+            fixed = overrides["fixed_fee_paise"]
+            if isinstance(fixed, bool) or not isinstance(fixed, int):
+                raise ConfigError(
+                    f"{source}: fixed_fee_paise must be an integer number of paise "
+                    "(₹2 is 200, not 2.00)."
+                )
+            if fixed < 0:
+                raise ConfigError(f"{source}: fixed_fee_paise cannot be negative")
+
+        return replace(
+            self,
+            name=str(overrides.get("name") or f"{self.name}+merchant"),
+            gst_rate_bps=gst_bps,
+            fixed_fee_paise=fixed,
+            methods=methods,
+        )
+
     @classmethod
     def from_dict(cls, data: dict[str, Any], source: str = "<dict>") -> RateCard:
         gst = _require(data, "gst", source)
@@ -96,11 +190,19 @@ class RateCard:
                 raise ConfigError(f"methods.{name}.mdr_bps must be non-negative in {source}, got {mdr}")
             methods[name] = MethodRate(method=name, mdr_bps=mdr, note=spec.get("note", ""))
 
-        if "upi" in methods and methods["upi"].mdr_bps != 0:
+        # UPI has zero *MDR* by statute, but that is not what the merchant pays: the
+        # aggregator's platform fee (~2%) is deducted regardless, and it is the platform
+        # fee that lands in the settlement `fee` field. An earlier version of this check
+        # asserted the opposite — mdr_bps == 0 — which made the engine expect a zero fee
+        # on every UPI row. Because the generator computes fees with this same rate card
+        # (ADR-013), the synthetic data agreed and the error was invisible. See ADR-030.
+        if "upi" in methods and methods["upi"].mdr_bps == 0:
             raise ConfigError(
-                f"rate card {source} sets UPI mdr_bps to {methods['upi'].mdr_bps}, expected 0. "
-                "UPI carries zero MDR, mandated for banks. If a contract genuinely differs, "
-                "remove this check deliberately and record why."
+                f"rate card {source} sets UPI mdr_bps to 0. Zero MDR is a statutory fact "
+                "about interchange, not the merchant's cost: Razorpay levies a platform "
+                "fee (~200 bps) on bank-to-bank UPI, and that is what is deducted. "
+                "Expecting 0 flags every UPI row as a fee discrepancy. If this merchant "
+                "genuinely pays nothing on UPI, set the rate explicitly and record why."
             )
 
         return cls(
@@ -275,15 +377,33 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
-def load_config(config_dir: Path | None = None) -> Config:
+def load_config(
+    config_dir: Path | None = None,
+    merchant_rate_card: Path | dict[str, Any] | None = None,
+) -> Config:
     """Load and validate all configuration.
 
     Every validation failure raises at load time rather than at use time, so a bad
     rate card is caught before a batch runs rather than midway through one.
+
+    `merchant_rate_card` layers a merchant's CONTRACTED rates over the shipped card,
+    turning "was this the standard rate?" into "was this MY rate?" (ADR-046). Accepts a
+    YAML path or an already-parsed mapping.
     """
     d = config_dir or DEFAULTS_DIR
 
     rate_card = RateCard.from_dict(_load_yaml(d / "rate_card.yaml"), str(d / "rate_card.yaml"))
+
+    if merchant_rate_card is not None:
+        if isinstance(merchant_rate_card, Path):
+            overrides = _load_yaml(merchant_rate_card)
+            source = str(merchant_rate_card)
+        else:
+            overrides = merchant_rate_card
+            source = "merchant rate card"
+        if not isinstance(overrides, dict):
+            raise ConfigError(f"{source}: expected a mapping, got {type(overrides).__name__}")
+        rate_card = rate_card.with_merchant_rates(overrides, source)
     tolerances = Tolerances.from_dict(_load_yaml(d / "tolerances.yaml"), str(d / "tolerances.yaml"))
 
     arch_src = str(d / "archetypes.yaml")
