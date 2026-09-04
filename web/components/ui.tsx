@@ -480,15 +480,18 @@ export function ShareBar({
 export function Skeleton({
   className = "",
   delay = 0,
+  style,
 }: {
   className?: string;
   delay?: number;
+  /** For placeholders whose size is data-shaped (chart bars) rather than a utility. */
+  style?: CSSProperties;
 }) {
   return (
     <div
       aria-hidden
       className={`rounded bg-[var(--color-skeleton)] ${className}`}
-      style={{ animation: `pulse 1.4s ease-in-out ${delay}s infinite` }}
+      style={{ ...style, animation: `pulse 1.4s ease-in-out ${delay}s infinite` }}
     />
   );
 }

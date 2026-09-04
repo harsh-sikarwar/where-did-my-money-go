@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { GapByDay } from "@/components/GapByDay";
 import { GapComposition, type GapSegment } from "@/components/GapComposition";
 import {
   Dot,
@@ -11,7 +12,11 @@ import {
   TONE,
   toneAlpha,
 } from "@/components/ui";
-import type { Verdict as VerdictData, VerdictLine } from "@/lib/api";
+import type {
+  Timeline as TimelineData,
+  Verdict as VerdictData,
+  VerdictLine,
+} from "@/lib/api";
 
 /**
  * The default screen: three figures, a bar, four lines and a verdict. Deliberately
@@ -24,7 +29,13 @@ import type { Verdict as VerdictData, VerdictLine } from "@/lib/api";
  * Hierarchy is weight before size: Expected and Received are set at 300 so the Gap's
  * 700 reads as the answer rather than merely the biggest number.
  */
-export function Verdict({ data }: { data: VerdictData }) {
+export function Verdict({
+  data,
+  timeline = null,
+}: {
+  data: VerdictData;
+  timeline?: TimelineData | null;
+}) {
   const benign = data.lines.filter((l) => !l.actionable);
   const actionable = data.lines.filter((l) => l.actionable);
   const gapPaise = data.gap.paise;
@@ -63,6 +74,11 @@ export function Verdict({ data }: { data: VerdictData }) {
       </section>
 
       <GapComposition segments={segments} />
+
+      {/* WHAT explains the gap is above; WHEN it happened is here. Between the two
+          because a merchant reads the composition, then asks when — and the line
+          items below answer neither question. */}
+      {timeline && <GapByDay data={timeline} />}
 
       {/* Benign first — the eye should land on "mostly fine" — then what needs a
           decision, which is washed in its severity so scanning slows down there. */}

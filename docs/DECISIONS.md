@@ -2849,3 +2849,63 @@ production data" — that still needs a live account, and LIMITATIONS.md keeps s
 
 The value was never the ten rows. It is that two hours against a file we did not write
 found two defects that 825 tests against a file we did write did not.
+
+## ADR-057 — The design's daily chart, and the three ways it could have lied
+
+**Date:** 2026-09-04 · **Phase:** design conformance
+
+**Context.** The handoff bundle (`Reconciliation tool UI mockups-handoff`) specifies a
+"Gap by day" chart on the analysis screen and a sparkline of the same data on the
+landing card. Neither was built. `globals.css` carries a `drawLine` keyframe with no
+consumer, which is the fingerprint of the detailed view's expected-vs-received chart
+being designed and never implemented either.
+
+Nothing in the API could have served them. `Finding` and `Detail` carry no date, and
+`GapComponent` carried a component total plus a list of order ids — enough to say
+*what* explains the gap, not *when* it happened.
+
+**Decision.** Attribute at the source, then bucket. `GapComponent` gains `per_order`,
+recorded at each of the twelve sites where an amount is computed. `timeline.py` buckets
+those by the order's capture date. No amount is derived twice.
+
+That last point is the whole design. The alternative — recomputing per-order amounts
+downstream from findings — is exactly how the fee row came to disagree with its own
+drill-down by 162×. A second derivation of the same number is a second chance to get it
+wrong.
+
+**Three ways this chart could have lied, and what each cost to avoid.**
+
+**1. Spreading what it cannot place.** In-flight settlements and orphan bank credits
+have no ledger order, and an unrecorded refund is keyed by refund entity because the
+absence of an order id is what makes it unrecorded. Prorating that money across days
+would have produced a chart that balances and is fiction. It is returned as
+`undated_paise` and printed under the chart: *"₹3,000.00 of the gap has no capture date
+behind it and is not shown above."* On `qa-C` that line is exactly the unrecorded-refund
+line, which is the correct and self-explaining answer.
+
+**2. Colouring by magnitude.** The mockup colours tall bars amber. This product spends
+its first sixty lines of CSS establishing that amber means money that needs a decision
+and nothing else. A chart that made amber mean "big" would be the first place that
+stopped being true, so `TimelineDay` carries `actionable_paise` — the verdict's own
+materiality answer, handed over rather than recomputed, as ADR-054 requires of the
+action list — and a bar is amber because that day needs a decision. A tall grey bar is a
+busy day, not a problem.
+
+**3. Zooming until the story looked better.** On a healthy cycle the gap is a few percent,
+so cumulative expected and received very nearly coincide. Zooming the y-axis off zero
+would have made the band look dramatic and would have been drawing a claim the data does
+not support. The axis stays at zero and the distance is annotated at the right edge, so
+the reader gets the quantity without the chart overstating it. `received` is derived per
+day as `expected - gap` rather than summed from the bank side — the bank credits land on
+settlement dates belonging to other days, and deriving it makes it structurally
+impossible for the two lines to sit any distance apart other than the gap.
+
+**Invariant.** `dated + undated == gap`, asserted on every build, in the same style and
+for the same reason as `GapDecomposition.check()`. `tests/test_timeline.py` holds it,
+holds that both cumulative lines total the figures printed at the top of the page, and
+holds that a tall benign day never outranks a smaller day that needs a decision.
+
+**What was NOT adopted.** The mockup's "Attached evidence" slots are a design-tool
+affordance for dropping screenshots into a canvas. There is no such thing in the
+product, and inventing an upload to fill a rectangle would be building the mockup rather
+than the design.

@@ -5,6 +5,7 @@ import { use, useCallback, useEffect, useState } from "react";
 import { Actions } from "@/components/Actions";
 import { Audit } from "@/components/Audit";
 import { Correlation } from "@/components/Correlation";
+import { ExpectedVsReceived } from "@/components/ExpectedVsReceived";
 import { RateCard } from "@/components/RateCard";
 import { Verdict } from "@/components/Verdict";
 import {
@@ -18,6 +19,7 @@ import {
   api,
   ApiError,
   type Correlation as CorrelationData,
+  type Timeline as TimelineData,
   type Verdict as VerdictData,
 } from "@/lib/api";
 
@@ -37,6 +39,7 @@ export default function AnalysisPage({
   const { batch } = use(params);
   const [verdict, setVerdict] = useState<VerdictData | null>(null);
   const [correlation, setCorrelation] = useState<CorrelationData | null>(null);
+  const [timeline, setTimeline] = useState<TimelineData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [detailed, setDetailed] = useState(false);
 
@@ -44,12 +47,23 @@ export default function AnalysisPage({
     setError(null);
     setVerdict(null);
     setCorrelation(null);
+    setTimeline(null);
     try {
       const [v, c] = await Promise.all([api.verdict(name), api.correlation(name)]);
       setVerdict(v);
       setCorrelation(c);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Something went wrong.");
+      return;
+    }
+
+    // The chart is supporting detail, not the answer. A merchant who can see the gap
+    // and what explains it is not blocked by a missing timeline, so this failure is
+    // swallowed rather than replacing the verdict with an error.
+    try {
+      setTimeline(await api.timeline(name));
+    } catch {
+      setTimeline(null);
     }
   }, []);
 
@@ -83,7 +97,7 @@ export default function AnalysisPage({
 
       {verdict && correlation && (
         <div className="rise">
-          <Verdict data={verdict} />
+          <Verdict data={verdict} timeline={timeline} />
 
           {/* Immediately after the verdict, because the verdict is what raises the
               question this answers: it says "those customers" and this names them. */}
@@ -107,6 +121,7 @@ export default function AnalysisPage({
 
           {detailed && (
             <div className="fade py-7">
+              {timeline && <ExpectedVsReceived data={timeline} />}
               <Correlation data={correlation} />
               <RateCard />
               <Audit batch={batch} />
@@ -122,6 +137,11 @@ export default function AnalysisPage({
  * The shape of the answer, before the answer arrives. Deliberately mirrors the real
  * layout — three figures, a bar, then rows — so nothing jumps when the data lands.
  */
+/** Fixed heights: a skeleton that reshuffles reads as activity, not as waiting. */
+const SKELETON_BARS = [
+  0.3, 0.5, 0.4, 0.7, 0.45, 0.35, 0.9, 0.5, 0.4, 0.55, 0.75, 0.6, 0.35, 1,
+];
+
 function VerdictSkeleton() {
   return (
     <div aria-hidden aria-busy="true">
@@ -142,7 +162,27 @@ function VerdictSkeleton() {
         ))}
       </div>
 
-      <Skeleton className="mb-11 h-3 w-full rounded-full" delay={0.15} />
+      <Skeleton className="mb-6 h-3 w-full rounded-full" delay={0.15} />
+
+      {/* The chart's own footprint, so the page does not jump when it lands. Heights
+          are arbitrary but fixed — a skeleton that reshuffles on every render reads as
+          activity rather than as waiting. */}
+      <div className="mb-11 rounded-2xl border border-[var(--color-line)] bg-[var(--color-well)] px-6 pt-[22px] pb-[18px]">
+        <div className="mb-4 flex items-baseline justify-between">
+          <Skeleton className="h-3 w-[70px]" delay={0.2} />
+          <Skeleton className="h-3 w-40" delay={0.2} />
+        </div>
+        <div className="flex h-[110px] items-end gap-[3px] sm:gap-1.5">
+          {SKELETON_BARS.map((h, i) => (
+            <Skeleton
+              key={i}
+              className="min-w-0 flex-1 rounded-[3px]"
+              style={{ height: `${h * 100}%` }}
+              delay={i * 0.03}
+            />
+          ))}
+        </div>
+      </div>
 
       <div className="flex flex-col gap-1">
         {[0, 1, 2, 3, 4].map((i) => (

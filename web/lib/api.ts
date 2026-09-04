@@ -216,6 +216,31 @@ async function send<T>(
   return unwrap<T>(response);
 }
 
+export interface TimelineDay {
+  /** ISO date, YYYY-MM-DD. */
+  day: string;
+  amount: Money;
+  orders: number;
+  /** The part of this day that needs a decision, under the same materiality policy
+   *  the verdict applied. The chart colours from this, never from magnitude. */
+  actionable: Money;
+  /** What this day's orders should have brought in, per the ledger. */
+  expected: Money;
+  /** Derived as `expected - amount`, so the two lines are exactly one gap apart. */
+  received: Money;
+}
+
+export interface Timeline {
+  batch: string;
+  gap: Money;
+  dated: Money;
+  /** Gap money with no dated order behind it. Declared rather than spread across
+   *  days it cannot be shown to belong to — so `dated + undated === gap`. */
+  undated: Money;
+  days: TimelineDay[];
+  peak: TimelineDay | null;
+}
+
 export interface RateCardMethod {
   method: string;
   mdr_bps: number;
@@ -410,6 +435,8 @@ export const api = {
     }),
 
   actions: (batch: string) => get<Actions>(`/api/actions/${batch}`),
+
+  timeline: (batch: string) => get<Timeline>(`/api/timeline/${batch}`),
 
   /** The CSV lives at a URL so the browser downloads it rather than us building a blob. */
   actionsCsvUrl: (batch: string) => `${BASE}/api/actions/${batch}/csv`,

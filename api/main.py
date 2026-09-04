@@ -792,6 +792,52 @@ def clear_rate_card() -> dict[str, Any]:
     return get_rate_card()
 
 
+@app.get("/api/timeline/{batch}")
+def timeline(batch: str, refresh: bool = False) -> dict[str, Any]:
+    """The gap spread across the days the orders were captured on.
+
+    Answers the question the verdict provokes: not how big, but when. A single bad
+    Tuesday and a steady leak of the same size are different problems, and the
+    composition bar cannot tell them apart.
+
+    `undated` is money the components could not pin to a dated order — an unrecorded
+    refund keyed by entity id, a settlement for an order the ledger never mentioned.
+    It is returned rather than spread across the days, so the chart never implies a
+    day it cannot evidence. `dated + undated == gap` is asserted engine-side.
+    """
+    result = _load(batch, refresh=refresh)
+    t = result.timeline
+    peak = t.peak
+
+    return {
+        "batch": batch,
+        "gap": _money(t.gap_paise),
+        "dated": _money(t.dated_paise),
+        "undated": _money(t.undated_paise),
+        "days": [
+            {
+                "day": d.day.isoformat(),
+                "amount": _money(d.paise),
+                "orders": d.order_count,
+                "actionable": _money(d.actionable_paise),
+                "expected": _money(d.expected_paise),
+                "received": _money(d.received_paise),
+            }
+            for d in t.days
+        ],
+        "peak": (
+            {
+                "day": peak.day.isoformat(),
+                "amount": _money(peak.paise),
+                "orders": peak.order_count,
+                "actionable": _money(peak.actionable_paise),
+            }
+            if peak
+            else None
+        ),
+    }
+
+
 @app.get("/api/verdict/{batch}")
 def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
     """The four lines and a verdict. The default screen."""
