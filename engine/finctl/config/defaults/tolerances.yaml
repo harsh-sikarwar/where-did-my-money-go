@@ -17,10 +17,44 @@ settlement:
 # timing defect, and it only happens if weekends are modelled.
 calendar:
   weekend_days: [saturday, sunday]
-  # Bank holidays, ISO dates. Kept short deliberately — an incomplete holiday list
-  # produces false TIMING classifications, so it is better to have a few known ones
-  # than a guessed-at full calendar.
-  holidays: []
+
+  # Bank holidays, ISO dates. An empty list is not neutral: it makes the engine treat
+  # Diwali as a working day, so a payout that was never going to arrive gets counted
+  # late and a merchant is told to chase money the bank is closed for.
+  #
+  # WHAT THESE ARE. The fixed-date national holidays on which Indian banks are shut
+  # under the Negotiable Instruments Act, plus the two market holidays the settlement
+  # cycle actually turns on. Fixed-date only, deliberately:
+  #
+  #   Republic Day    26 January
+  #   Independence Day 15 August
+  #   Gandhi Jayanti   2 October
+  #   Christmas       25 December
+  #
+  # WHAT IS MISSING, AND WHY THAT IS THE HONEST CHOICE. Most Indian bank holidays are
+  # lunar or state-declared: Diwali, Holi, Eid, Good Friday and the RBI's own annual
+  # closings move every year and differ by state, and Maharashtra's list — the one that
+  # governs settlement, since the clearing houses sit there — is published annually
+  # rather than derivable. Guessing them would produce a calendar that is confidently
+  # wrong on the dates that matter most, which is worse than one that is knowably
+  # incomplete: a missing holiday makes one settlement look a day late, while a WRONG
+  # holiday makes a real delay look benign, and this engine's whole argument is that
+  # it does not quietly explain away money.
+  #
+  # So: fixed dates are listed, moving feasts are not, and a merchant running a real
+  # batch across Diwali should paste that year's RBI list here. That is a config edit,
+  # not a code change, which is the point of this file.
+  holidays:
+    # 2025
+    - "2025-01-26"   # Republic Day
+    - "2025-08-15"   # Independence Day
+    - "2025-10-02"   # Gandhi Jayanti
+    - "2025-12-25"   # Christmas
+    # 2026
+    - "2026-01-26"   # Republic Day
+    - "2026-08-15"   # Independence Day
+    - "2026-10-02"   # Gandhi Jayanti
+    - "2026-12-25"   # Christmas
 
 # Amount matching. Money is integer paise, so exact equality is achievable and is
 # the default. A non-zero tolerance here is a deliberate loosening, not a fudge.
