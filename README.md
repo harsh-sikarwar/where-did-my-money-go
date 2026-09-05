@@ -6,10 +6,10 @@ You got paid. Was it the right amount? This tells you every rupee of the gap bet
 you expected and what actually landed — which parts are normal, and the one thing you
 need to act on.
 
-**Live demo:** [finctl.vercel.app](https://finctl.vercel.app) — no setup, opens on a seeded
-batch. (Replace with your actual Vercel URL once deployed — see [Deploying](#deploying).)
-The API it talks to is a free-tier host and can take a few seconds to wake from cold;
-[Getting started](#getting-started) below covers the zero-latency local alternative.
+**Live demo:** [where-did-my-money-go-tawny.vercel.app](https://where-did-my-money-go-tawny.vercel.app) —
+no setup, opens on a seeded batch. The API it talks to is a free-tier host and can take a
+few seconds to wake from cold; [Getting started](#getting-started) below covers the
+zero-latency local alternative.
 
 ---
 

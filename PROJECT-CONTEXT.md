@@ -305,7 +305,6 @@ Multi-gateway · marketplace/Route splits · webhooks · AI column mapping · B2
 - **Cointab** — Razorpay fee/tax verification, Side A/Side B model, leaves items unmatched when evidence is weak
 - **ReconPe** — rate-card audit, AI column mapping, ₹3,999/mo
 - **Terra Insight** — publishes the matching recipe; benchmark: manual VLOOKUP ~51% match rate → structured tooling 88%+
-- **`Sashank2006/Razorpay-Drift-Reconciler`** (GitHub) — cross-batch fee drift detection, plausibly another entrant. States *"per-batch matching is a solved problem."* Our axis is cross-*domain*, theirs is cross-*time*.
 - Razorpay's own T&C: **merchant is responsible for daily reconciliation**, discrepancies must be reported within 3 days. Razorpay contractually says this is the merchant's job.
 
 ---

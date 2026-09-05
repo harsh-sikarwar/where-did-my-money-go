@@ -7,11 +7,13 @@ reconstructed at the end.
 stages map to code → [BEHAVIOR.md](BEHAVIOR.md) for what each stage promises and refuses →
 [METRICS.md](METRICS.md) for what it measurably does (read the caveats above the table
 first) → [LIMITATIONS.md](LIMITATIONS.md) for what it does not. [DECISIONS.md](DECISIONS.md)
-and [JOURNAL.md](JOURNAL.md) are reference depth — 35 ADRs and a chronological log — rather
-than front-to-back reads.
+and [JOURNAL.md](JOURNAL.md) are reference depth — dozens of ADRs and a chronological log —
+rather than front-to-back reads. [BUILD-STORY.md](BUILD-STORY.md) is the front-to-back
+version of those two: one narrative from origin to current state.
 
 | File | What's in it | Read it when |
 |---|---|---|
+| [BUILD-STORY.md](BUILD-STORY.md) | The whole build as one narrative: inspiration, architecture, timeline, key decisions, debugging, verification, limitations | You want the full story in one sitting, not spread across files |
 | [DECISIONS.md](DECISIONS.md) | Every fork taken — context, options, choice, why, consequences | You want to know *why* something is built the way it is |
 | [JOURNAL.md](JOURNAL.md) | Chronological log: what was done, what broke, how it was fixed | You want the story, including the obstacles |
 | [PRIOR-ART.md](PRIOR-ART.md) | What was borrowed and from whom; what was deliberately not | A judge asks "how is this different from Hyperswitch?" |

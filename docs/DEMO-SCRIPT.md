@@ -17,7 +17,8 @@ demo *from* it.
 ./scripts/demo.sh
 ```
 
-Confirm it lands on the verdict screen with numbers rendered before you start capturing.
+Confirm it lands on the overview (`/`) with the featured run's numbers rendered before
+you start capturing.
 Close other tabs/apps — screen real estate and a clean taskbar read as more finished than
 they are. If your terminal will be visible at any point, make its font large enough to
 read on a compressed video export.
@@ -35,22 +36,24 @@ read on a compressed video export.
 
 Say the track name once: "This is our submission for Track 04, AI Finance Controller."
 
-### 0:30–1:30 — The verdict screen (`/` or `/analysis/[batch]`)
+### 0:30–1:30 — The overview and the verdict (`/` → `/analysis/[batch]`)
 
-Show the four-line breakdown live.
+Land on the overview (`/`), then open the run's analysis page.
 
-> "Here's the output. Not a dashboard, not a table you have to interpret — four lines
-> and a verdict. Expected 8.4 lakh, received 7.88 lakh, gap of 52,000. This much is just
-> late settlement. This much is fees that match the contracted rate. This much is refunds
-> that were never recorded. And this — six subscriptions that failed silently and are
-> still recoverable — is the one thing that needs a human this week."
+> "Here's the output. Not a table you have to interpret — a verdict. Expected 8.4 lakh,
+> received 7.88 lakh, gap of 52,000. This much is just late settlement. This much is fees
+> that match the contracted rate. This much is refunds that were never recorded. And this
+> — six subscriptions that failed silently and are still recoverable — is the one thing
+> that needs a human this week."
 
-Click into one `[detail]` link to show the drill-down is real, not decorative — land on
-a specific order/row.
+Click into one line item to expand the Evidence tab, or jump to `/orders/[batch]/[orderId]`
+for a single order — land on a specific order/row to show the drill-down is real, not
+decorative.
 
 ### 1:30–2:30 — The differentiator: correlation
 
-Navigate to the correlation/exceptions view.
+Navigate to the correlation section on `/analysis/[batch]` (or the exceptions queue at
+`/exceptions/[batch]`).
 
 > "The core idea is this join: instead of treating 'money is missing' and 'a payment
 > failed' as two separate problems, we correlate them. A gap that lines up with a failed

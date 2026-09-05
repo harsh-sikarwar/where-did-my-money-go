@@ -270,17 +270,18 @@ visible in aggregate. We do not currently detect the ambiguity, and cannot witho
 that separates them. See ADR-035.
 
 **No fuzzy matching, by choice — and it costs recall.** ADR-015 refuses approximate
-matching on identifiers. A comparable open-source implementation (Sashank2006) matches on
-`order_id + amount + date window` with numeric tolerance, arguing that nobody misspells an
-order id so the tolerance is on the *numbers*, not the string. That is a reasonable
-position and it will match rows we leave unmatched. We chose the opposite failure: we
-would rather report "unmatched, look at it" than assert a pairing we cannot prove. This is
-a real recall cost on messy merchant data, not a claim of superiority.
+matching on identifiers. An alternative design would match on
+`order_id + amount + date window` with numeric tolerance, on the reasoning that nobody
+misspells an order id so the tolerance belongs on the *numbers*, not the string. That is a
+reasonable position and it would match rows we leave unmatched. We chose the opposite
+failure: we would rather report "unmatched, look at it" than assert a pairing we cannot
+prove. This is a real recall cost on messy merchant data, not a claim of superiority.
 
 **No composite hypotheses.** When two line items together explain a gap that neither
-explains alone, we go to UNEXPLAINED. The same prior implementation attempts a composite
-path. Compound faults are common in real data, so this is a genuine coverage gap; the
-residual absorbs it honestly rather than guessing, but it does absorb it.
+explains alone, we go to UNEXPLAINED. A composite-matching path — where two partial
+explanations are combined to close a gap — is a real coverage gap here, not a design we
+attempted and rejected. Compound faults are common in real data; the residual absorbs it
+honestly rather than guessing, but it does absorb it.
 
 **Bank-leg aggregation is N:1 and depends on it.** A settlement consolidates many payments
 into one bank credit under one UTR, so pass 2 aggregates per UTR rather than comparing row

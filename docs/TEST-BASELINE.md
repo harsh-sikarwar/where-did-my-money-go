@@ -49,8 +49,8 @@ $ cd web && npm run build
 All 13 routes compile (12 dashboard routes + Next's own `/_not-found`). This confirms
 the Vercel deploy will succeed without a build-time surprise — it does not confirm every
 route renders correctly against live data, which was verified only by manual click-through
-during development, not by an automated route-smoke suite (deferred — see the note in
-PROJECT-WORK-REMAINING.md; a low-credit, deadline-day call).
+during development, not by an automated route-smoke suite (deferred deliberately given the
+same-day deadline and limited budget).
 
 ## Not run as part of this baseline
 
@@ -59,3 +59,30 @@ PROJECT-WORK-REMAINING.md; a low-credit, deadline-day call).
   same-day deadline and limited budget — `pytest` and the manual demo.sh walkthrough are
   the coverage this baseline actually has. Treat "12 routes render" as spot-checked, not
   proven.
+
+## Final-stretch re-run (2026-09-05)
+
+All four verification commands passed cleanly. Engine tests ran 903 passing with 1 skipped
+(same as baseline); the same deprecation warning about `on_event` appeared, unrelated to
+the re-run. Ruff checks passed. Web TypeScript type check produced no errors. Build
+succeeded with all 13 routes compiling.
+
+```
+$ cd engine && uv run pytest -q
+```
+Passed — 903 passing, 1 skipped.
+
+```
+$ cd engine && uv run ruff check finctl/ tests/ ../api/
+```
+Passed — All checks passed!
+
+```
+$ cd web && npx tsc --noEmit
+```
+Passed — exit code 0.
+
+```
+$ cd web && npm run build
+```
+Passed — exit code 0, all 13 routes compiled, generated in 1033ms + 1381ms TypeScript + 255ms static pages.

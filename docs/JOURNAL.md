@@ -960,7 +960,7 @@ BEFORE  ████████████████████████
 AFTER                                      ₹0.00
 ```
 
-### One page, not four routes (ADR-023)
+### One page, not four routes (ADR-023) — later superseded
 
 The brief lists four screens. Built as one page with three progressively deeper
 sections, because the demo is a two-minute story told by scrolling rather than a feature
@@ -971,6 +971,11 @@ fraction of a 2-minute slot.
 The layering is also the argument: verdict (what a merchant reads Monday) → correlation
 (the measured claim) → audit (how you check it). Stacked, that ordering is visible in one
 scroll. Split across routes, it has to be asserted verbally.
+
+This was superseded in the 2026-09-05 dashboard rebuild: the product grew a runs list, a
+new-run wizard, rules, settings, and per-order trace views that don't fit one scroll, so
+it shipped as a 12-route dashboard instead (`web/app/(dashboard)/`). See the addendum on
+ADR-023 in `DECISIONS.md` and the route table in the README for the current shape.
 
 ### Verified in the browser again
 

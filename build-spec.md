@@ -6,7 +6,7 @@
 
 ## 1. Architecture
 
-Concept model adapted from Hyperswitch's published recon design (staging entries, rule evaluation, exception taxonomy) and Cointab's Side A / Side B ingestion model. Scale discipline borrowed from `Razorpay-Drift-Reconciler` — no infrastructure the problem doesn't need.
+Concept model adapted from Hyperswitch's published recon design (staging entries, rule evaluation, exception taxonomy) and Cointab's Side A / Side B ingestion model. Scale discipline: no infrastructure the problem doesn't need.
 
 ```
 ┌─ INGEST ───────────────────────────────────────────────┐

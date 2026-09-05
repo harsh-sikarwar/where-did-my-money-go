@@ -74,24 +74,6 @@ Named as a deliberate cut, not an oversight.
 
 ---
 
-## `Sashank2006/Razorpay-Drift-Reconciler` (GitHub)
-
-Cross-batch fee drift detection. Plausibly another entrant in this buildathon.
-
-### Taken
-
-**Scale discipline** — no infrastructure the problem doesn't need. Reinforces the
-flat-files/SQLite decision at 50–5,000 rows.
-
-### Relationship, stated plainly
-
-They state *"per-batch matching is a solved problem"* and go **cross-time** (has the fee
-rate drifted between batches?). This project goes **cross-domain** (does payment-failure
-data explain a settlement gap?). Different axis on the same agreed premise. If asked
-directly, that is the answer — not a claim that they are wrong.
-
----
-
 ## Terra Insight
 
 Publishes the matching recipe openly.

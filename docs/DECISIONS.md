@@ -814,26 +814,28 @@ preserves that property; enumerating the rows would not improve it.
 
 ---
 
-## ADR-023 — Verdict, correlation and audit are one page, not three routes
+## ADR-023 — Verdict, correlation and audit are one page, not three routes (superseded)
 
-**Date:** 2026-09-02 · **Phase:** 2b
+**Date:** 2026-09-02 · **Phase:** 2b · **Superseded:** 2026-09-05, by the dashboard
+rebuild in `57cdeff` (see the addendum below).
 
 **Context.** The brief describes four screens: verdict, detail, correlation, audit. The
 obvious implementation is four routes with navigation between them.
 
-**Choice.** One page with three progressively deeper sections; detail expands inline.
+**Choice (original).** One page with three progressively deeper sections; detail expands
+inline.
 
-**Why.** The demo is a two-minute story told by scrolling, not a feature tour navigated
-by clicking. Every navigation is a moment where the presenter has to explain where they
-are going and the audience has to reorient — and in a 2-minute slot, three of those is a
-meaningful fraction of the time.
+**Why (original).** The demo is a two-minute story told by scrolling, not a feature tour
+navigated by clicking. Every navigation is a moment where the presenter has to explain
+where they are going and the audience has to reorient — and in a 2-minute slot, three of
+those is a meaningful fraction of the time.
 
 The layering is also the argument. Verdict is what a merchant reads on Monday;
 correlation is the measured claim; audit is how anyone checks it. Stacked, that ordering
 is visible in a single scroll. Split across routes, the relationship has to be asserted
 verbally.
 
-**Consequences.**
+**Consequences (original, no longer current).**
 - The audit section is collapsed by default and fetches on demand — it is the one view
   nobody opens on a normal Monday, so paying for it on every page load would be
   backwards.
@@ -841,6 +843,18 @@ verbally.
   both. Two sequential round trips would have been visible.
 - If the audit view grows enough to need its own filtering and pagination UI, it earns a
   route. It has not yet.
+
+**Addendum — superseded by the dashboard rebuild.** The single-scroll layout was rebuilt
+into a 12-route dashboard (`web/app/(dashboard)/`) alongside deploy prep and demo docs.
+The scrolling-story argument above didn't survive contact with the rest of the brief:
+runs list, a run wizard, rules, settings, and per-order trace views don't compress into
+one scroll without becoming a very long page, and a route per concern reads as more
+finished for a submission judges click through on their own rather than watch presented.
+Audit, correlation, and the order trace are now dedicated routes (`/audit/[batch]`,
+`/analysis/[batch]`, `/orders/[batch]/[orderId]`) rather than inline sections. See the
+route table in the README for the current shape. This ADR is kept for the record of why
+the single-page layout was chosen originally; treat its "Choice" and "Consequences" as
+historical, not current.
 
 ---
 
