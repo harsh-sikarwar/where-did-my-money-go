@@ -1,0 +1,36 @@
+# Render Blueprint — deploys the FastAPI engine as a single free web service.
+#
+# Why Render, and why this shape: no database, no persistent disk needed (the API
+# seeds its own demo batch on boot — see api/main.py's startup hook), so the free
+# tier's ephemeral filesystem is not a problem, only a reason a redeploy resets to
+# the same seeded demo data every time. That's a feature for a judge-facing link:
+# it can't drift into a broken state that outlives the process that broke it.
+#
+# Deploy: push this repo to GitHub, then in the Render dashboard choose
+# "New +" -> "Blueprint" and point it at the repo. Render reads this file and
+# creates the service with no further manual configuration.
+services:
+  - type: web
+    name: finctl-api
+    runtime: python
+    plan: free
+    rootDir: engine
+    buildCommand: "pip install uv && uv sync --extra api --extra llm"
+    startCommand: "uv run uvicorn api.main:app --host 0.0.0.0 --port $PORT --app-dir .."
+    envVars:
+      - key: FINCTL_SEED
+        value: "20260902"
+      - key: FINCTL_DATA_DIR
+        value: "./data"
+      - key: FINCTL_AUDIT_DIR
+        value: "./audit"
+      # Set this in the Render dashboard after the Vercel frontend has a URL —
+      # e.g. https://your-app.vercel.app — so the API's CORS allowlist admits it.
+      # Comma-separate if there's more than one (a preview URL plus production).
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
+      # Optional: paste a Groq key here to turn on model-generated prose. The app
+      # works correctly without one — /health reports which mode it's in, and no
+      # number on screen ever comes from the model either way (see LIMITATIONS.md).
+      - key: FINCTL_LLM_API_KEY
+        sync: false

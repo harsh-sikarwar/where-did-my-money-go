@@ -5,14 +5,24 @@ badly-phrased sentence rather than a wrong number. Every figure is rendered by t
 `render.guard` strips any numeral the model emits. ADR-050.
 """
 
-from finctl.explain.client import ExplainUnavailable, LLMConfig
-from finctl.explain.render import explain, guard, has_numerals, template
+from finctl.explain.client import NO_LLM_ENV, ExplainUnavailable, LLMConfig
+from finctl.explain.render import (
+    explain,
+    explain_detailed,
+    guard,
+    has_numerals,
+    redact_figures,
+    template,
+)
 
 __all__ = [
+    "NO_LLM_ENV",
     "ExplainUnavailable",
     "LLMConfig",
     "explain",
+    "explain_detailed",
     "guard",
     "has_numerals",
+    "redact_figures",
     "template",
 ]

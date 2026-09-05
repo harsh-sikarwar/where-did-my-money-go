@@ -14,14 +14,22 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.request
 
 import pytest
 
 from finctl.classify.classifier import Classification
-from finctl.explain import LLMConfig, explain, guard, has_numerals, template
+from finctl.explain import (
+    LLMConfig,
+    explain,
+    explain_detailed,
+    guard,
+    has_numerals,
+    template,
+)
 from finctl.explain.client import ExplainUnavailable, complete
-from finctl.explain.render import SYSTEM_PROMPT, _facts
-from finctl.rank.ranker import Verdict, VerdictLine
+from finctl.explain.render import SYSTEM_PROMPT, _facts, redact_figures
+from finctl.rank.ranker import LINE_COPY, Verdict, VerdictLine
 
 DISABLED = LLMConfig(api_key=None)
 ENABLED = LLMConfig(api_key="test-key-not-real")
@@ -175,6 +183,62 @@ class TestItAlwaysRenders:
         assert explain(_verdict(), DISABLED)[1] == "template"
 
 
+class TestItSaysWhyNotJustThat:
+    """Every fallback used to be silent and identical. Two of them are not the same
+    situation, and the difference cost an afternoon: a rate-limited endpoint and a
+    missing key both rendered "I can't reach the model right now" while the model was
+    reachable and answering. ADR-050."""
+
+    def test_a_missing_key_is_named_as_such(self) -> None:
+        assert explain_detailed(_verdict(), DISABLED)[2] == "no_key"
+
+    def test_the_switch_is_not_reported_as_a_missing_key(self) -> None:
+        """Offline on purpose and offline by accident read identically otherwise."""
+        cfg = LLMConfig.from_env({"GROQ_API_KEY": "k", "FINCTL_NO_LLM": "1"})
+        prose, source, reason = explain_detailed(_verdict(), cfg)
+        assert (source, reason) == ("template", "disabled")
+        assert prose == template(_verdict())
+
+    def test_a_rate_limit_is_not_reported_as_an_outage(self, monkeypatch) -> None:
+        """429 means the endpoint is up, the key is good, and we are out of budget."""
+
+        def limited(*a, **k):
+            raise ExplainUnavailable("HTTP 429", reason="rate_limited")
+
+        monkeypatch.setattr("finctl.explain.render.complete", limited)
+        prose, source, reason = explain_detailed(_verdict(), ENABLED)
+        assert (source, reason) == ("template", "rate_limited")
+        assert prose == template(_verdict())
+
+    def test_the_guard_firing_is_not_an_outage_either(self, monkeypatch) -> None:
+        """The model wrote a figure and was refused. That is the guard succeeding."""
+        monkeypatch.setattr("finctl.explain.render.complete", lambda *a, **k: "You lost ₹4,200.")
+        assert explain_detailed(_verdict(), ENABLED)[2] == "guarded"
+
+    def test_a_good_answer_reports_model(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "finctl.explain.render.complete",
+            lambda *a, **k: "The halted subscriptions are recoverable.",
+        )
+        assert explain_detailed(_verdict(), ENABLED)[1:] == ("model", "model")
+
+    def test_the_client_tags_a_429_without_being_asked(self, monkeypatch) -> None:
+        """The tag comes from the client, so every caller gets it for free."""
+        import urllib.error
+
+        def http_429(*a, **k):
+            raise urllib.error.HTTPError("u", 429, "Too Many Requests", {}, None)
+
+        monkeypatch.setattr("urllib.request.urlopen", http_429)
+        with pytest.raises(ExplainUnavailable) as caught:
+            complete("s", "u", ENABLED)
+        assert caught.value.reason == "rate_limited"
+
+    def test_the_two_value_form_still_works(self) -> None:
+        """`explain` is what every existing caller reads; it must not have changed."""
+        assert explain(_verdict(), DISABLED) == explain_detailed(_verdict(), DISABLED)[:2]
+
+
 class TestTheTemplateIsCorrectOnItsOwn:
     """It is the default path, not a degraded one, so it is tested as a first-class output."""
 
@@ -223,9 +287,43 @@ class TestThePromptDoesNotLeaveTheModelGuessing:
         assert "MORE" in facts
 
     def test_the_prompt_carries_no_figures(self) -> None:
-        """The model cannot echo a number it was never shown."""
-        for line in _facts(_verdict()).splitlines():
-            assert "₹" not in line
+        """The model cannot echo a number it was never shown.
+
+        Asserted with `has_numerals` — the guard's own predicate — rather than a search
+        for "₹". The weaker check is what let this bug live behind a green test: the
+        shipped FEE copy reads "plus the 18% GST charged on that fee", which carries no
+        rupee sign and every bit of a figure.
+        """
+        assert not has_numerals(_facts(_verdict()))
+
+    def test_the_prompt_carries_no_figures_from_the_real_taxonomy(self) -> None:
+        """Every line the engine can actually emit, not a fixture written to pass.
+
+        The fixture's explanations were hand-written for these tests and happened to be
+        figure-free, so the prompt builder was never shown the copy it quotes in
+        production. Measured consequence: eleven of twelve fee questions to the copilot
+        returned the template, because the model repeated the figure it had just been
+        handed and `guard` discarded the whole answer.
+        """
+        lines = [
+            VerdictLine(
+                classification=classification,
+                label=label,
+                explanation=explanation,
+                count=1,
+                amount_paise=1_000,
+                actionable=False,
+            )
+            for classification, (label, explanation) in LINE_COPY.items()
+        ]
+        assert not has_numerals(_facts(_verdict(lines=lines)))
+
+    def test_redaction_leaves_the_sentence_readable(self) -> None:
+        """Stripping the figure must not strip the meaning, or the model loses the fact."""
+        redacted = redact_figures(LINE_COPY[Classification.FEE][1])
+        assert not has_numerals(redacted)
+        assert "GST charged on that fee" in redacted
+        assert "  " not in redacted
 
     def test_the_system_prompt_forbids_numbers(self) -> None:
         assert "NEVER write a number" in SYSTEM_PROMPT
@@ -248,6 +346,40 @@ class TestTheClient:
 
     def test_an_absent_key_disables_the_stage(self) -> None:
         assert not LLMConfig.from_env({}).enabled
+
+    def test_the_kill_switch_beats_a_perfectly_good_key(self) -> None:
+        """`--no-llm` has to win, or it is a preference rather than a switch."""
+        cfg = LLMConfig.from_env({"GROQ_API_KEY": "k", "FINCTL_NO_LLM": "1"})
+        assert cfg.api_key == "k"       # the key is still there
+        assert cfg.disabled
+        assert not cfg.enabled          # and still never used
+
+    def test_the_switch_makes_no_network_call(self, monkeypatch) -> None:
+        """The point of the flag is the call that does not happen."""
+        def explode(*a, **k):
+            raise AssertionError("a request was made with FINCTL_NO_LLM set")
+
+        monkeypatch.setattr(urllib.request, "urlopen", explode)
+        cfg = LLMConfig.from_env({"GROQ_API_KEY": "k", "FINCTL_NO_LLM": "1"})
+        with pytest.raises(ExplainUnavailable) as caught:
+            complete("s", "u", cfg)
+        assert caught.value.reason == "disabled"
+
+    def test_off_by_choice_is_not_reported_as_off_by_accident(self) -> None:
+        """An operator told "no key" while holding a key goes hunting for nothing."""
+        assert LLMConfig.from_env({"GROQ_API_KEY": "k", "FINCTL_NO_LLM": "1"}).off_reason == (
+            "disabled"
+        )
+        assert LLMConfig.from_env({}).off_reason == "no_key"
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", " 1 "])
+    def test_the_switch_accepts_the_spellings_people_actually_type(self, value) -> None:
+        assert LLMConfig.from_env({"GROQ_API_KEY": "k", "FINCTL_NO_LLM": value}).disabled
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off"])
+    def test_a_falsey_value_does_not_silently_turn_the_model_off(self, value) -> None:
+        """`bool("0")` is True in Python, and a switch that inverts on "false" is a trap."""
+        assert not LLMConfig.from_env({"GROQ_API_KEY": "k", "FINCTL_NO_LLM": value}).disabled
 
     def test_a_bad_timeout_does_not_crash_startup(self) -> None:
         cfg = LLMConfig.from_env({"GROQ_API_KEY": "k", "FINCTL_LLM_TIMEOUT_SECONDS": "soon"})

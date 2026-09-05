@@ -9,6 +9,12 @@ vLLM without a code change. A provider is a config value, not a dependency.
 The engine installs and runs with zero LLM dependencies (`pyproject.toml` keeps them in
 an extra), and this module must not change that.
 
+OFF IS A SUPPORTED STATE. `FINCTL_NO_LLM=1` (or the CLI's `--no-llm`) makes this module
+make no network call at all, and every caller falls back to the deterministic template it
+already has. The engine has no LLM dependency to begin with; this makes the offline path
+something an operator can switch on and a judge can verify, rather than something that
+happens to be true when a key is absent.
+
 WHAT THIS IS ALLOWED TO DO. Write prose. That is the whole list. It never sees a decision
 to make: matching, fee arithmetic, classification and correlation are all resolved before
 a prompt is built, and every rupee figure on screen is rendered by `format_rupees` from an
@@ -34,6 +40,20 @@ DEFAULT_MODEL = "openai/gpt-oss-20b"
 DEFAULT_TIMEOUT_SECONDS = 8.0
 DEFAULT_REASONING_EFFORT = "low"
 
+# The operator's kill switch. Set it and this module makes no network call at all,
+# regardless of what keys are lying around in the environment or in .env — which is the
+# point: "unset the key" is not a switch you can demonstrate, because you cannot prove a
+# key was absent for the right reason. See `LLMConfig.disabled`.
+NO_LLM_ENV = "FINCTL_NO_LLM"
+
+# Deliberately not `bool(value)`: the string "0" and the string "false" are both true in
+# Python, and an env var that turns the model OFF when set to "false" is a trap.
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _is_truthy(value: str) -> bool:
+    return value.strip().lower() in _TRUTHY
+
 # Long enough for three sentences, short enough that a runaway reasoning trace cannot
 # stall the verdict screen.
 MAX_COMPLETION_TOKENS = 400
@@ -48,7 +68,18 @@ class ExplainUnavailable(Exception):
     Never fatal. Every caller falls back to the deterministic template, because a
     verdict screen that fails to render because a network call failed would be a worse
     product than one that never called a model at all.
+
+    `reason` is a stable machine-readable tag, because "unavailable" turned out to cover
+    two situations a merchant should not be told the same story about. A missing key is
+    a permanent state the operator can fix; a rate limit is a temporary one that clears
+    on its own in under a minute. Collapsing them into one message meant the product
+    said "I can't reach the model right now" while the model was reachable, answering,
+    and merely rationing — which is not a thing this project is willing to say.
     """
+
+    def __init__(self, message: str, *, reason: str = "unavailable") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -61,9 +92,28 @@ class LLMConfig:
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     reasoning_effort: str = DEFAULT_REASONING_EFFORT
 
+    # Set by `FINCTL_NO_LLM` or the CLI's `--no-llm`. Kept as its own field rather than
+    # folded into `api_key = None`, because the two states are not the same fact and the
+    # product says different things about them: a missing key is a misconfiguration
+    # somebody should fix, and this is a choice somebody made on purpose.
+    disabled: bool = False
+
     @property
     def enabled(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key) and not self.disabled
+
+    @property
+    def off_reason(self) -> str:
+        """Why there will be no model call — for callers that report the fallback path.
+
+        Only meaningful when `enabled` is false. The order matters: an operator who
+        passed `--no-llm` with a key configured is told the switch is on, not that their
+        key is missing, because the second sentence would send them looking for a
+        problem they do not have.
+        """
+        if self.disabled:
+            return "disabled"
+        return "no_key"
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> LLMConfig:
@@ -71,6 +121,10 @@ class LLMConfig:
 
         `GROQ_API_KEY` is accepted as a fallback so an existing shell that already has
         one just works; `FINCTL_LLM_API_KEY` is the provider-neutral name and wins.
+
+        `FINCTL_NO_LLM=1` overrides all of it. This is the one place the switch is read,
+        so every caller in the project inherits it — there is no second path to the
+        model that could stay open after the switch is thrown.
         """
         e = os.environ if env is None else env
 
@@ -89,6 +143,7 @@ class LLMConfig:
             model=get("FINCTL_LLM_MODEL", DEFAULT_MODEL),
             timeout_seconds=timeout_seconds,
             reasoning_effort=get("FINCTL_LLM_REASONING_EFFORT", DEFAULT_REASONING_EFFORT),
+            disabled=_is_truthy(get(NO_LLM_ENV)),
         )
 
 
@@ -100,7 +155,12 @@ def complete(system: str, user: str, config: LLMConfig) -> str:
     because they are not produced here.
     """
     if not config.enabled:
-        raise ExplainUnavailable("no API key configured")
+        message = (
+            f"{NO_LLM_ENV} is set — no model call was attempted"
+            if config.disabled
+            else "no API key configured"
+        )
+        raise ExplainUnavailable(message, reason=config.off_reason)
 
     payload = json.dumps({
         "model": config.model,
@@ -142,23 +202,37 @@ def complete(system: str, user: str, config: LLMConfig) -> str:
         detail = ""
         with contextlib.suppress(Exception):    # the original error is what matters
             detail = exc.read().decode()[:200]
-        raise ExplainUnavailable(f"HTTP {exc.code} from {config.base_url}: {detail}") from exc
+        # 429 is not a failure of the same kind as the rest. The endpoint is up and the
+        # key is good; the account is out of tokens for the minute. Callers that treat
+        # it as "unavailable" send the operator hunting for a broken integration.
+        reason = "rate_limited" if exc.code == 429 else "http_error"
+        raise ExplainUnavailable(
+            f"HTTP {exc.code} from {config.base_url}: {detail}", reason=reason
+        ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise ExplainUnavailable(f"cannot reach {config.base_url}: {exc}") from exc
+        timed_out = isinstance(exc, TimeoutError) or "timed out" in str(exc)
+        raise ExplainUnavailable(
+            f"cannot reach {config.base_url}: {exc}",
+            reason="timeout" if timed_out else "unreachable",
+        ) from exc
     except json.JSONDecodeError as exc:
-        raise ExplainUnavailable("response was not JSON") from exc
+        raise ExplainUnavailable("response was not JSON", reason="bad_response") from exc
 
     try:
         message = body["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise ExplainUnavailable(f"unexpected response shape: {str(body)[:200]}") from exc
+        raise ExplainUnavailable(
+            f"unexpected response shape: {str(body)[:200]}", reason="bad_response"
+        ) from exc
 
     content = (message.get("content") or "").strip()
     if not content:
         # A reasoning model that ran out of budget mid-thought returns empty content and
         # `finish_reason: "length"`. Rendering that would put a blank explanation on the
         # verdict screen, which looks like a broken product rather than a missing key.
-        reason = body["choices"][0].get("finish_reason", "unknown")
-        raise ExplainUnavailable(f"model returned no content (finish_reason={reason})")
+        finish = body["choices"][0].get("finish_reason", "unknown")
+        raise ExplainUnavailable(
+            f"model returned no content (finish_reason={finish})", reason="empty_response"
+        )
 
     return content

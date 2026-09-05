@@ -22,6 +22,20 @@ ENGINE_DIR = Path(__file__).parent.parent / "engine"
 if str(ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(ENGINE_DIR))
 
+# The API key lives in .env at the repo root, and until now nothing read it. The engine
+# is built to install and run with zero LLM dependencies (ADR-001), so it cannot reach
+# for dotenv itself; this process is the boundary where a key first becomes available,
+# which makes it the place to load the file. Without this the explanation layer sees no
+# key, concludes the model is unavailable, and serves the deterministic template — the
+# correct response to a missing key, and indistinguishable from a broken one.
+# `override=False`: a key exported in the shell outranks the file.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(ENGINE_DIR.parent / ".env", override=False)
+except ImportError:     # no dotenv installed; the template path still renders
+    pass
+
 from fastapi import (  # noqa: E402
     FastAPI,
     File,
@@ -35,7 +49,9 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from finctl.actions import to_csv  # noqa: E402
 from finctl.classify.classifier import Classification  # noqa: E402
 from finctl.config.loader import ConfigError, load_config  # noqa: E402
-from finctl.explain import explain  # noqa: E402
+from finctl.explain import explain_detailed  # noqa: E402
+from finctl.explain.client import ExplainUnavailable, LLMConfig, complete  # noqa: E402
+from finctl.explain.render import guard, redact_figures  # noqa: E402
 from finctl.money import format_rupees  # noqa: E402
 from finctl.normalize.mappings import MappingStore, header_fingerprint  # noqa: E402
 from finctl.normalize.normalizer import (  # noqa: E402
@@ -55,11 +71,15 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# The Next.js dev server. Wide open because this is a local demo tool with no auth and
-# no user data — production auth is explicitly out of scope (see LIMITATIONS.md).
+import os  # noqa: E402
+
+# The Next.js dev server, plus whatever the deployed frontend's origin is (set via
+# CORS_ALLOW_ORIGINS, comma-separated). Wide open because this is a demo tool with no
+# auth and no user data — production auth is explicitly out of scope (see LIMITATIONS.md).
+_extra_origins = [o.strip() for o in os.environ.get("CORS_ALLOW_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", *_extra_origins],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -71,6 +91,37 @@ DATA_ROOT = ENGINE_DIR / "data"
 # is a single-user demo tool, and a cache library would be infrastructure the problem
 # does not have.
 _cache: dict[str, PipelineResult] = {}
+
+# The model's sentence for a batch, kept beside the batch it describes.
+#
+# `explain()` was called on every single GET of /api/verdict. The verdict for a batch
+# cannot change between two reads of the same cached pipeline result, so every page
+# load, refresh and back-navigation spent an inference call rewriting a sentence that
+# was already correct. On a rationed endpoint that is not merely wasteful: a walk
+# through the dashboard exhausted the account's tokens-per-minute inside a minute, the
+# model started returning 429, and the product quietly served template prose for the
+# rest of the demo. The failure is invisible precisely because the fallback is good.
+#
+# Cleared wherever `_cache` is, so a re-run gets a fresh sentence and a stale one can
+# never outlive the figures it describes.
+_summary_cache: dict[str, tuple[str, str, str]] = {}
+
+
+@app.on_event("startup")
+def _seed_demo_batch_if_empty() -> None:
+    """Hosted deploys start with an empty, ephemeral disk. Without this, the first
+    thing a judge sees after opening the live link is an empty batch list — a dead
+    demo. Seeds the same `demo` batch `scripts/demo.sh` creates locally, with the
+    project's fixed default seed, so it's reproducible and identical either way.
+    """
+    if DATA_ROOT.is_dir() and any(DATA_ROOT.iterdir()):
+        return
+
+    from finctl.generate.generator import Generator
+    from finctl.generate.writer import write_batch
+
+    batch = Generator(_config(), seed=20260902, volume=200).generate()
+    write_batch(batch, DATA_ROOT / "demo")
 
 
 def _load(batch: str, *, refresh: bool = False) -> PipelineResult:
@@ -108,6 +159,7 @@ def _load(batch: str, *, refresh: bool = False) -> PipelineResult:
         raise HTTPException(422, _client_error(exc)) from exc
 
     _cache[batch] = result
+    _summary_cache.pop(batch, None)      # the prose describes the old run; drop it
     return result
 
 
@@ -135,11 +187,54 @@ def _money(paise: int) -> dict[str, Any]:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    """Liveness, and an honest account of what the model layer is actually doing.
+
+    The booleans are here because "is the AI on?" was not answerable from outside this
+    process, and for most of this project's life the honest answer was no: the key sat
+    in .env and nothing loaded it, so every screen served template prose that reads
+    exactly like model prose. A product whose fallback is good enough to hide its own
+    misconfiguration needs somewhere to admit which path it is on.
+
+    `llm_credential_present` is about configuration; `llm_last_summary_source` is about
+    what actually happened on the most recent verdict. They disagree when it matters —
+    a key that is present but rate-limited reads true, template, "rate_limited".
+
+    `llm_disabled` is the third fact and not derivable from the other two: a run started
+    with `FINCTL_NO_LLM=1` has a perfectly good key it will never use.
+    """
     batches = (
         sorted(p.name for p in DATA_ROOT.iterdir() if p.is_dir())
         if DATA_ROOT.is_dir() else []
     )
-    return {"status": "ok", "engine": "finctl", "batches": batches}
+    cfg = LLMConfig.from_env()
+
+    # The most recent cached summary, if any batch has been explained this process.
+    last = next(iter(reversed(list(_summary_cache.values()))), None)
+
+    return {
+        "status": "ok",
+        "engine": "finctl",
+        "engine_version": _engine_version(),
+        "batches": batches,
+        "llm_credential_present": bool(cfg.api_key),
+        # Configuration and intent, kept apart. `llm_credential_present` was doing both
+        # jobs and could not tell "nobody set a key" from "somebody turned it off",
+        # which are the two states an operator most needs distinguished at 2am.
+        "llm_disabled": cfg.disabled,
+        "llm_enabled": cfg.enabled,
+        "llm_model": cfg.model if cfg.enabled else None,
+        "llm_base_url": cfg.base_url if cfg.enabled else None,
+        "llm_last_summary_source": last[1] if last else None,
+        "llm_last_summary_reason": last[2] if last else None,
+        "summaries_cached": len(_summary_cache),
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+
+
+def _engine_version() -> str:
+    from finctl import __version__
+
+    return __version__
 
 
 def _ledger_file(path: Path) -> Path | None:
@@ -888,7 +983,11 @@ def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
     # slow endpoint, or an empty response — `source` is "template" and the deterministic
     # summary is returned instead, so this endpoint never fails on a network call.
     # ADR-050.
-    summary, summary_source = explain(v)
+    cached = _summary_cache.get(batch)
+    if cached is None:
+        cached = explain_detailed(v)
+        _summary_cache[batch] = cached
+    summary, summary_source, summary_reason = cached
 
     return {
         "batch": batch,
@@ -900,6 +999,10 @@ def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
         # Returned, not hidden: a product that cannot say whether a model wrote something
         # is not one you can audit.
         "summary_source": summary_source,
+        # Why the template was used, when it was: "no_key", "rate_limited", "timeout",
+        # "guarded". "model" when none was needed. A screen that says a model wrote the
+        # sentence must also be able to say why it didn't.
+        "summary_reason": summary_reason,
         "actionable_total": _money(v.actionable_paise),
         "benign_total": _money(v.benign_paise),
         # Money no rule could account for, after correlation. Not the decomposition's
@@ -1166,3 +1269,213 @@ def trace(batch: str, order_id: str) -> dict[str, Any]:
         } if finding else None,
         "events": events,
     }
+
+
+# ------------------------------------------------------------------ rules (read-only)
+#
+# Human copy for the classifier's vocabulary, same spirit as DEFECT_COPY above: the
+# engine names these in SCREAMING_SNAKE for its own log, a person reading the "Rules"
+# screen should not have to.
+CLASSIFICATION_COPY: dict[str, dict[str, str]] = {
+    "RECONCILED": {"label": "Reconciled", "hint": "No discrepancy at all."},
+    "FEE": {"label": "Razorpay's fee", "hint": "The contracted cut on a settled order."},
+    "TAX_ON_FEE": {"label": "GST on the fee", "hint": "Tax on Razorpay's cut."},
+    "TIMING": {"label": "Settlement timing", "hint": "Not missing — arriving on a later cycle."},
+    "REFUND": {"label": "Refund", "hint": "Money returned to a customer."},
+    "ROUNDING": {"label": "Rounding", "hint": "Sub-tolerance arithmetic noise."},
+    "DUPLICATE": {"label": "Duplicate order", "hint": "The same order recorded twice."},
+    "MISSING": {"label": "Missing settlement", "hint": "No PSP record at all for this order."},
+    "ON_HOLD": {"label": "On hold", "hint": "Razorpay is deliberately withholding this payment."},
+    "DISPUTED": {"label": "Disputed", "hint": "A customer charged back."},
+    "UNEXPLAINED": {"label": "Unexplained", "hint": "The honest residual — no rule fit."},
+    "NEEDS_REVIEW": {"label": "Needs review", "hint": "More than one rule fit; a human should look."},
+    "PAYMENT_FAILED": {"label": "Payment failed", "hint": "Correlated to a failed payment attempt."},
+    "HALTED_SUBSCRIPTION": {
+        "label": "Subscription halted",
+        "hint": "Invoices kept being raised; the card was never charged again.",
+    },
+    "UNEXPECTED_SETTLEMENT": {"label": "Unexpected settlement", "hint": "Money in for an order the ledger never mentioned."},
+    "UNRECORDED_REFUND": {"label": "Unrecorded refund", "hint": "Money out the merchant never recorded."},
+}
+
+
+@app.get("/api/rules")
+def rules() -> dict[str, Any]:
+    """A read-only reflection of the engine's config.
+
+    Nothing here is editable from the browser: the engine's matching and classification
+    rules are code, reviewed and tested (ADR-001), not a document a UI can rewrite. The
+    "Rules" screen exists so a merchant can SEE what the engine currently enforces —
+    tolerances, the rate card, the classification vocabulary — not change it in place.
+    Rate-card changes still go through `/api/rate-card`, the one setting that is
+    genuinely a merchant input rather than an engine policy.
+    """
+    cfg = _config()
+    t = cfg.tolerances
+    card = get_rate_card()
+
+    return {
+        "cycle_days": t.cycle_days,
+        "grace_days": t.grace_days,
+        "count_working_days_only": t.count_working_days_only,
+        "rounding": _money(t.rounding_paise),
+        "material": _money(t.material_paise),
+        "actionable_above": _money(t.actionable_above_paise),
+        "always_benign": list(t.always_benign),
+        "always_actionable": list(t.always_actionable),
+        "rate_card": card,
+        "classifications": [
+            {
+                "name": name,
+                "label": CLASSIFICATION_COPY.get(name, {}).get("label", name.replace("_", " ").title()),
+                "hint": CLASSIFICATION_COPY.get(name, {}).get("hint", ""),
+                "policy": (
+                    "always_benign" if name in t.always_benign
+                    else "always_actionable" if name in t.always_actionable
+                    else "threshold"
+                ),
+            }
+            for name in (str(c) for c in Classification)
+        ],
+    }
+
+
+# ------------------------------------------------------------------ copilot chat
+#
+# The one other place a model touches this product, alongside the verdict summary
+# (ADR-050). Same rule, extended from one summary to a conversation: the model is given
+# resolved facts and writes prose only, never a figure. `guard` — the SAME function the
+# verdict summary uses — strips any numeral it emits; a reply that fails the guard is
+# replaced by a fixed, honest sentence rather than shown half-written.
+
+CHAT_SYSTEM_PROMPT = """You are Copilot, answering a merchant's questions about ONE \
+reconciliation run inside a settlement reconciliation tool.
+
+Rules, all of them absolute:
+- NEVER write a number, an amount, a count, or a currency figure. Not in digits, not in \
+words. Every figure on screen is rendered by the app itself from an integer you never \
+see; anything numeric you write is deleted before display and will leave a hole in your \
+sentence. Point the merchant at "the figure above" or "the breakdown on this page" \
+instead of restating it.
+- Only use the facts you are given below. Do not speculate about causes you were not \
+told. If you don't know, say the run doesn't show that rather than guessing.
+- Do not restate a line's mechanism in your own words. Reuse the wording you were given, \
+or name the line and stop. Compressing an explanation invents claims: "kept generating \
+invoices" is not "kept the money", and a merchant reading the second one will open a \
+support ticket about a theft that did not happen.
+- Plain English, calm and specific. No jargon beyond what's already on screen, no \
+greeting, no sign-off, no markdown, no bullet points unless the question needs a short \
+list of named items (order ids, customer emails) — those are not numerals.
+- Answer in at most four sentences."""
+
+
+def _chat_facts(v: Any) -> str:
+    """The run's shape, in words, with no figures — same discipline as the verdict
+    summary's `_facts()` in `finctl/explain/render.py`, reused here rather than
+    duplicated in spirit: rank-ordered lines, no amounts."""
+    lines = sorted(v.lines, key=lambda line: -abs(line.amount_paise))
+    if not lines:
+        return "This run has no discrepancies at all."
+
+    direction = (
+        "The bank received LESS than the ledger expected (a shortfall)."
+        if v.gap_paise > 0
+        else "The bank received MORE than the ledger expected."
+        if v.gap_paise < 0
+        else "The bank received exactly what the ledger expected."
+    )
+    parts = [
+        f"- {redact_figures(line.label)} "
+        f"({'needs action' if line.actionable else 'needs no action'}): "
+        f"{redact_figures(line.explanation)}"
+        for line in lines
+    ]
+    actionable = [line for line in v.lines if line.actionable]
+    focus = (
+        f"The item that most deserves attention is: {max(actionable, key=lambda x: x.amount_paise).label}."
+        if actionable
+        else "Nothing in this run needs action."
+    )
+    return "\n".join([direction, "", "Lines on this run, largest first:", *parts, "", focus])
+
+
+CHAT_FALLBACK = (
+    "I can't reach the model right now, so I can't answer that freely — but every "
+    "figure on this page is already broken down above; the line labels explain what "
+    "each amount is for."
+)
+
+# One fallback sentence per reason, because they are not the same situation and a
+# merchant can act on the difference. "I can't reach the model" was being shown while
+# the model was reachable and answering — it had simply rationed us for the minute,
+# which clears on its own and is worth waiting out. Telling someone a temporary limit
+# is an outage invites them to go and debug a working integration.
+CHAT_FALLBACK_BY_REASON = {
+    "no_key": (
+        "No model is configured for this run, so I can't answer freely — but nothing "
+        "on this page depends on one. Every figure above is computed by the engine, and "
+        "the line labels explain what each amount is for."
+    ),
+    "disabled": (
+        "This run was started with the model switched off, so I'm answering from the "
+        "engine's own templates. That's the whole offline mode: nothing on this page "
+        "changes, because no figure here was ever the model's to produce."
+    ),
+    "rate_limited": (
+        "I've used up this minute's allowance on the model, so I'll sit this one out — "
+        "it clears within a minute, so ask me again shortly. Nothing else on this page "
+        "is affected: every figure above is the engine's, not the model's."
+    ),
+    "guarded": (
+        "I drafted an answer that quoted a figure, and I'm not allowed to put a number "
+        "on screen that the engine didn't compute — so I discarded the whole reply "
+        "rather than show you a number I made up. The breakdown above has every amount."
+    ),
+}
+
+
+def _chat_fallback(reason: str) -> dict[str, Any]:
+    """The template answer, and an honest account of why it is the one being given."""
+    return {
+        "answer": CHAT_FALLBACK_BY_REASON.get(reason, CHAT_FALLBACK),
+        "source": "template",
+        "reason": reason,
+    }
+
+
+@app.post("/api/chat/{batch}")
+def chat(batch: str, payload: dict[str, Any]) -> dict[str, Any]:
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        raise HTTPException(400, "message must not be empty")
+    history = payload.get("history") or []
+    if not isinstance(history, list):
+        raise HTTPException(400, "history must be a list")
+
+    result = _load(batch)
+    v = result.verdict
+    cfg = LLMConfig.from_env()
+
+    if not cfg.enabled:
+        return _chat_fallback(cfg.off_reason)
+
+    convo = "\n".join(
+        f"{'Merchant' if m.get('role') == 'user' else 'Copilot'}: {m.get('content', '')}"
+        for m in history[-6:]
+        if isinstance(m, dict)
+    )
+    user_prompt = (
+        f"Facts about this run:\n{_chat_facts(v)}\n\n"
+        + (f"Conversation so far:\n{convo}\n\n" if convo else "")
+        + f"Merchant's question: {message}"
+    )
+
+    try:
+        raw = complete(CHAT_SYSTEM_PROMPT, user_prompt, cfg)
+    except ExplainUnavailable as exc:
+        return _chat_fallback(getattr(exc, "reason", "unavailable"))
+
+    safe = guard(raw)
+    if safe is None:
+        return _chat_fallback("guarded")
+    return {"answer": safe, "source": "model", "reason": "model"}

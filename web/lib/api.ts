@@ -422,6 +422,65 @@ export interface GenerateResult {
   };
 }
 
+export interface TraceEvent {
+  seq: number;
+  at: string;
+  stage: string;
+  event: string;
+  detail: Record<string, unknown>;
+}
+
+export interface Trace {
+  batch: string;
+  order_id: string;
+  ledger: { amount: Money; method: string | null } | null;
+  settlement: {
+    matched: boolean;
+    gross: Money;
+    net: Money;
+    fee: Money;
+    settlement_ids: string[];
+    utrs: string[];
+  } | null;
+  outcome: {
+    classification: string;
+    amount: Money;
+    proof: Record<string, unknown>;
+  } | null;
+  events: TraceEvent[];
+}
+
+/** Read-only reflection of the engine's config — tolerances, rate card, the
+ *  classification vocabulary. Nothing here is user-editable: the engine's
+ *  rules are code, not a versioned document a browser can write to. */
+export interface RulesConfig {
+  cycle_days: number;
+  grace_days: number;
+  count_working_days_only: boolean;
+  rounding: Money;
+  material: Money;
+  actionable_above: Money;
+  always_benign: string[];
+  always_actionable: string[];
+  rate_card: RateCard;
+  classifications: {
+    name: string;
+    label: string;
+    hint: string;
+    policy: "always_benign" | "always_actionable" | "threshold";
+  }[];
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ChatReply {
+  answer: string;
+  source: "model" | "template";
+}
+
 export const api = {
   verdict: (batch: string) => get<Verdict>(`/api/verdict/${batch}`),
   detail: (batch: string, classification: string) =>
@@ -438,6 +497,15 @@ export const api = {
     }>("/api/batches"),
   audit: (batch: string, stage?: string) =>
     get<Audit>(`/api/audit/${batch}${stage ? `?stage=${stage}` : ""}`),
+  trace: (batch: string, orderId: string) =>
+    get<Trace>(`/api/trace/${batch}/${encodeURIComponent(orderId)}`),
+  rules: () => get<RulesConfig>("/api/rules"),
+  chat: (batch: string, message: string, history: ChatMessage[]) =>
+    send<ChatReply>(`/api/chat/${batch}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, history }),
+    }),
 
   upload: (batch: string, files: Record<string, File>) => {
     const form = new FormData();
