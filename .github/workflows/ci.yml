@@ -99,7 +99,15 @@ jobs:
       - run: uv sync --frozen --all-extras
 
       - name: Run the matrix
-        run: uv run finctl matrix | tee /tmp/matrix.txt
+        # `shell: bash` rather than the default, because the default is `bash -e` with
+        # no pipefail: the exit status of `cmd | tee` is tee's, which is 0 even when cmd
+        # crashed. That is not hypothetical — `finctl matrix` died on import for six
+        # commits while this step stayed green, and only the grep below noticed. A step
+        # that pipes must set pipefail or it is not checking the thing it appears to.
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run finctl matrix | tee /tmp/matrix.txt
 
       - name: The claim must hold
         # Asserted here rather than left to a human reading the log. The matrix prints

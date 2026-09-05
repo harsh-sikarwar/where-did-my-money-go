@@ -38,7 +38,7 @@ class RunResult:
     match_rate_pass1: float
     match_rate_pass2: float
     recall: float
-    recall_strict: float = 0.0
+    recall_strict: float
     defects_caught: int
     defects_missed: int
     defects_below_tolerance: int
