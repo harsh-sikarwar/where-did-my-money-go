@@ -269,7 +269,7 @@ unobservable.
 1. **Determinism test**: Run the same batch twice. Same output down to the JSONL audit log,
    and `checkpoint` prints a fingerprint over the claims — `2310d942c05c4e14` on the default
    seed — that you can compare without reading a single row.
-2. **Reproducibility**: 903 unit tests passing, 1 skipped, including adversarial cases
+2. **Reproducibility**: 931 unit tests passing, 1 skipped, including adversarial cases
    that trigger each bug.
 3. **External validation**: Arithmetic matches Razorpay's 10 published sample rows.
 4. **Blind testing**: Engine runs on unseen data and scores perfectly. One hand-edited batch

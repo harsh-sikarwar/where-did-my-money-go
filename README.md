@@ -95,7 +95,7 @@ engine/                   the project. Python, uv-managed, no web dependencies.
     explain/              the only stage that calls an LLM — prose only, never a number
     adapters/             live Razorpay API (timeboxed, cuttable)
     audit/                JSONL decision log
-  tests/                  903 passing, 1 skipped, including golden-file tests
+  tests/                  931 passing, 1 skipped, including golden-file tests
 
 api/                      FastAPI — thin wrapper over the engine
 web/                      Next.js App Router, 12-route dashboard
@@ -224,7 +224,7 @@ Or piecewise:
 cd engine
 uv sync --group dev
 uv run finctl doctor                      # verify the environment
-uv run pytest                             # 903 passing, 1 skipped
+uv run pytest                             # 931 passing, 1 skipped
 
 uv run finctl generate --volume 200 --out data/demo
 uv run finctl checkpoint --data data/demo # the engine's own scorecard
@@ -373,7 +373,7 @@ startup hook regenerates the same seeded batch either way.
 
 ## Status
 
-**Engine, API and UI are built and measured.** 903 tests passing, 1 skipped. The full pipeline runs
+**Engine, API and UI are built and measured.** 931 tests passing, 1 skipped. The full pipeline runs
 end to end: generate → normalize → stage → match → classify → correlate → rank → verdict,
 with an audit trail behind every figure.
 

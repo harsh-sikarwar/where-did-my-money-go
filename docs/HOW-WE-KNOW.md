@@ -34,7 +34,7 @@ an LLM.
 **Claim:** Same input → same output, down to the JSONL decision log. No randomness.
 
 **Evidence:**
-- 903 tests, 1 skipped, including 5 golden-file tests that compare four full batch
+- 931 tests, 1 skipped, including 5 golden-file tests that compare four full batch
   digests byte-for-byte (`engine/tests/golden/`).
 - Matrix runs: 26 different configurations (volume, archetype, payment mix, settlement
   cycle). Every run produces identical results on re-run.
