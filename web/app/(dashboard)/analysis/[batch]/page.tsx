@@ -497,7 +497,30 @@ function WhatNeedsYou({ batch, verdict, actions }: { batch: string; verdict: Ver
       </div>
 
       {!actions && <EmptyNote>Loading what needs a decision…</EmptyNote>}
-      {actions && sorted.length === 0 && <EmptyNote>Nothing needs chasing this cycle — every rupee of the gap is explained.</EmptyNote>}
+      {/* Two different facts, and the empty list only establishes the first. "Nothing to
+          chase" is a statement about the action queue; "every rupee is explained" is a
+          statement about the residual, and a batch can have an UNEXPLAINED remainder
+          with nothing actionable in it — an upload missing its payments feed is the
+          ordinary way there. Making the second claim on the strength of the first would
+          print the project's central promise as a falsehood on the screen that exists
+          to demonstrate it, so the residual is read directly. */}
+      {actions && sorted.length === 0 && (
+        verdict.unexplained.paise === 0 ? (
+          <EmptyNote>
+            Nothing needs chasing this cycle — every rupee of the gap is explained.
+          </EmptyNote>
+        ) : (
+          <EmptyNote>
+            Nothing here needs chasing — but {verdict.unexplained.display} of the gap
+            {verdict.unexplained_count > 0 && (
+              <> across {verdict.unexplained_count} order
+                {verdict.unexplained_count === 1 ? "" : "s"}</>
+            )}{" "}
+            is still unexplained. The engine could not attribute it to a cause it can
+            prove, which is not the same as there being nothing wrong.
+          </EmptyNote>
+        )
+      )}
 
       {sorted.map((group, i) => {
         const offset = group.total.paise < 0;

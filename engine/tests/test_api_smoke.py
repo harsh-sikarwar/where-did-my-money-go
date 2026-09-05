@@ -418,3 +418,43 @@ class TestProvenanceExplainsAFrozenCount:
             f"total planted defects was identical ({totals}) at two volumes. The demo "
             "profile's timing_lag is a rate, so this is expected to scale."
         )
+
+
+class TestNothingToChaseIsNotNothingUnexplained:
+    """Two different facts, which the analysis screen once conflated.
+
+    An empty action queue says nothing about the residual: a batch can have money the
+    engine could not attribute with nothing actionable in it, and an upload missing its
+    payments feed is the ordinary way there. The screen therefore reads the residual
+    directly rather than inferring it from the queue, and these assert the fields that
+    makes possible are really there and really separate.
+    """
+
+    def test_the_residual_is_money_the_ui_can_render_without_computing(
+        self, client, batch
+    ) -> None:
+        """`paise` for the comparison, `display` for the sentence.
+
+        ADR-001: the UI never formats a rupee figure. If `display` disappeared, the only
+        way to print the residual would be to build the string in the browser — which is
+        how a number on screen stops matching the number in the audit log.
+        """
+        unexplained = client.get(f"/api/verdict/{batch}").json()["unexplained"]
+
+        assert set(unexplained) >= {"paise", "display"}
+        assert isinstance(unexplained["paise"], int)
+        assert unexplained["display"].startswith("₹")
+
+    def test_the_queue_length_and_the_residual_are_independent_reads(
+        self, client, batch
+    ) -> None:
+        """Neither endpoint derives the other, so the screen must consult both."""
+        actions = client.get(f"/api/actions/{batch}").json()
+        verdict = client.get(f"/api/verdict/{batch}").json()
+
+        assert isinstance(actions["count"], int)
+        assert isinstance(verdict["unexplained"]["paise"], int)
+        assert "unexplained" not in actions, (
+            "if /api/actions ever carried the residual, the screen should read it from "
+            "one place rather than two — but it does not, and the fix assumes it."
+        )
