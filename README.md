@@ -31,7 +31,6 @@ something to read front to back. Start here, then go only as deep as you need:
 | Get exact measured numbers | [docs/METRICS.md](docs/METRICS.md) — read the caveats at the top first |
 | Follow the day-by-day build | [docs/JOURNAL.md](docs/JOURNAL.md) — chronological, verbose, optional |
 | Deploy your own copy | [Deploying](#deploying) |
-| Run/record the demo video | [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md) |
 
 Everything else in `docs/` is support material the table above will link you into as
 needed — you don't need to open it directly.
@@ -100,9 +99,7 @@ engine/                   the project. Python, uv-managed, no web dependencies.
 api/                      FastAPI — thin wrapper over the engine
 web/                      Next.js App Router, 12-route dashboard
 
-PROJECT-CONTEXT.md        the brief
 build-spec.md             full architecture + test matrix
-build-plan-3.5-days.md    hour-by-hour plan
 ```
 
 ---

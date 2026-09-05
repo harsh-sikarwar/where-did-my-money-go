@@ -57,6 +57,11 @@ htmlcov/
 # already lives in the tree as code.
 *handoff*.zip
 
+# --- Buildathon-internal process docs: not product documentation ---
+/PROJECT-CONTEXT.md
+/build-plan-3.5-days.md
+/docs/DEMO-SCRIPT.md
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db
