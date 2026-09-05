@@ -34,7 +34,7 @@ Identified in advance, actively mitigated. Not yet observed as failures.
 | Risk | Mitigation | Status |
 |---|---|---|
 | Hardcoded fee rate wrong for UPI-heavy merchants | Rate card is config; `config` refuses a default MDR | **Occurred.** The mechanism worked; the shipped *value* was wrong — UPI billed at 0 when the ~2% platform fee applies. Found by reading Razorpay's pricing page, not by the suite. Fixed in ADR-035 |
-| Correlation mis-attributes a gap | Planted deliberately on test day and documented | **Run.** 2,246 decoys across 22 matrix runs, 0 claimed, false-attribution rate 0.0000 (ADR-042). The decoy is a failed payment on a *healthy* subscription — same shape as the halted centrepiece, differing in `status`/`auth_attempts`. Limit: we designed the confusion, so it does not prove resistance to one we did not imagine |
+| Correlation mis-attributes a gap | Planted deliberately on test day and documented | **Run.** 2,254 decoys across 24 of the 26 matrix runs, 0 claimed, false-attribution rate 0.0000 (ADR-042). The decoy is a failed payment on a *healthy* subscription — same shape as the halted centrepiece, differing in `status`/`auth_attempts`. Limit: we designed the confusion, so it does not prove resistance to one we did not imagine |
 | Timing tolerance breaks on bursty volume | Tolerance configurable, T+1/T+2/T+7 tested | Planned |
 | Live API integration eats the clock | Hard 2h timebox, seeded fallback always ready | Not started |
 | Not from a finance background | Every finance term in output is explained by the system or absent — a forcing function on our own understanding | Ongoing |
@@ -532,7 +532,7 @@ one design decision that makes the test meaningful.
   caught two real parsing bugs.
 - Blind testing — batches whose planted defects the engine's author cannot see — which
   removes the author's knowledge from the result but not the generator's authorship.
-- 2,254 planted decoys across 26 runs, 0 claimed, which tests false attribution against
+- 2,254 planted decoys across 24 of the 26 runs, 0 claimed, which tests false attribution against
   confusions *we designed*. As `METRICS.md` says: it does not prove resistance to one we
   did not imagine.
 

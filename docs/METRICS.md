@@ -50,7 +50,7 @@ one (failed payment, `subscription_id`, a gap) and differ in one field — `stat
 `auth_attempts=0`. The engine must report `PAYMENT_FAILED` and must **not** claim
 `HALTED_SUBSCRIPTION`.
 
-**Result: 2,254 decoys planted across the 26 runs, 0 claimed. False-attribution rate
+**Result: 2,254 decoys planted across 24 of the 26 runs, 0 claimed. False-attribution rate
 0.0000.** That is the number to push on, because a false attribution is worse than a
 miss: a miss is a gap in coverage, a false attribution is the engine telling a merchant
 to chase a customer whose subscription is working fine (ADR-042).
@@ -195,5 +195,5 @@ and record whether correlation wrongly claims it.
 
 The guard is already built and tested (ADR-019) — a failed payment on an **active**
 subscription is not claimed as halted, and a dangling `subscription_id` does not borrow
-another subscription's status. Across 22 matrix runs there were **zero false positives**.
+another subscription's status. Across all 26 matrix runs there were **zero false positives**.
 What remains is the deliberate adversarial version, which is the point of the exercise.

@@ -14,12 +14,54 @@ from rich.table import Table
 
 from finctl import __version__
 
+# The explanation layer reads its key from the environment, and a key kept in the repo's
+# .env never reached it: the CLI is usually the first place this project is run, and it
+# was the one place that silently ran without a model. Guarded, because the engine
+# installs with zero LLM dependencies by design (ADR-001) and must still start when
+# dotenv is absent. `override=False`: an exported key outranks the file.
+with contextlib.suppress(ImportError):
+    from pathlib import Path as _Path
+
+    from dotenv import load_dotenv
+
+    load_dotenv(_Path(__file__).resolve().parents[2] / ".env", override=False)
+
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     help="Where did my money go? — settlement reconciliation with failure correlation.",
 )
 console = Console()
+
+
+@app.callback()
+def main(
+    no_llm: bool = typer.Option(
+        False,
+        "--no-llm",
+        help="Run with the language model switched off. Every command is deterministic.",
+    ),
+) -> None:
+    """Global options.
+
+    `--no-llm` is a real switch, not a reassurance. It sets `FINCTL_NO_LLM` for this
+    process, and `LLMConfig.from_env` is the only place in the project that decides
+    whether a model gets called — so throwing it here closes every path at once,
+    including the one the API server takes when it is started through this CLI.
+
+    Worth being precise about what it changes, because the honest answer is "less than
+    you would expect": no command in this CLI has ever called a model. Matching, fee
+    arithmetic, classification and correlation are all deterministic, and the engine
+    installs with zero LLM dependencies (ADR-001). The model writes prose on the web
+    UI's summary and chat, and nothing else. `--no-llm` makes that verifiable rather
+    than merely claimed — run `finctl --no-llm doctor` and it says so.
+    """
+    if no_llm:
+        import os
+
+        from finctl.explain.client import NO_LLM_ENV
+
+        os.environ[NO_LLM_ENV] = "1"
 
 
 class _Refuse(contextlib.AbstractContextManager):
@@ -81,6 +123,24 @@ def doctor() -> None:
             table.add_row(mod, getattr(m, "__version__", "?"))
         except ImportError:
             table.add_row(mod, "[red]MISSING[/red]")
+
+    # The model's state, in the one command whose whole job is answering "what is this
+    # process actually configured to do". A key present in .env and a key being used are
+    # different facts, and the difference is exactly what --no-llm changes.
+    from finctl.explain.client import NO_LLM_ENV, LLMConfig
+
+    cfg = LLMConfig.from_env()
+    if cfg.disabled:
+        state = f"[yellow]off[/yellow]  [dim](--no-llm / {NO_LLM_ENV})[/dim]"
+    elif cfg.enabled:
+        state = f"[green]on[/green]  [dim]{cfg.model}[/dim]"
+    else:
+        state = "[yellow]off[/yellow]  [dim](no key configured)[/dim]"
+    table.add_row("llm", state)
+    table.add_row(
+        "llm used by",
+        "[dim]web summary + chat prose only; no CLI command calls a model[/dim]",
+    )
 
     console.print(table)
 
@@ -588,6 +648,7 @@ def checkpoint(
     from finctl.classify.classifier import Classifier
     from finctl.config.loader import load_config
     from finctl.correlate.correlator import Correlator
+    from finctl.fingerprint import fingerprint
     from finctl.generate.ground_truth import GroundTruth
     from finctl.match.matcher import match
     from finctl.money import format_rupees
@@ -677,6 +738,31 @@ def checkpoint(
             "a defect (e.g. a 1-day timing lag inside grace_days). Not a miss.[/dim]"
         )
 
+    # The claims of this run, reduced to sixteen characters a reader can compare.
+    # Printed rather than hidden behind a flag: a determinism claim nobody is shown is
+    # a determinism claim nobody checks.
+    claims = {
+        "unexplained_before_paise": before,
+        "unexplained_after_paise": after,
+        "total_planted": report.total_planted,
+        "total_caught": report.total_caught,
+        "total_missed": report.total_missed,
+        "total_below_tolerance": report.total_below_tolerance,
+        "false_positives": len(report.false_positives),
+        "by_type": {
+            name: {
+                "caught": len(st.caught),
+                "missed": len(st.missed),
+                "below_tolerance": len(st.below_tolerance),
+            }
+            for name, st in sorted(report.by_type.items())
+        },
+    }
+    console.print(
+        f"\n  metrics fingerprint  [bold]{fingerprint(claims)}[/bold]"
+        "  [dim]same batch, same engine → same sixteen characters[/dim]"
+    )
+
 
 @app.command()
 def matrix(
@@ -691,6 +777,7 @@ def matrix(
     """
     from pathlib import Path
 
+    from finctl.fingerprint import fingerprint
     from finctl.matrix import default_matrix, run_matrix, write_results
     from finctl.money import format_rupees
 
@@ -754,6 +841,12 @@ def matrix(
         "  balance identity: "
         + ("[green]holds in every run[/green]" if not unbalanced
            else f"[red]FAILS in {len(unbalanced)} runs[/red]")
+    )
+    # Over the claims of every run, timing excluded — see `finctl.fingerprint`. This is
+    # the number the metrics table is reproducible against.
+    console.print(
+        f"\n  metrics fingerprint  [bold]{fingerprint([r.as_row() for r in rows])}[/bold]"
+        "  [dim]excludes wall-clock timing, which is the host's, not the engine's[/dim]"
     )
     console.print(f"\n[dim]results → {path}[/dim]")
 

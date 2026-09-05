@@ -42,6 +42,8 @@ words. The interface renders every figure itself; anything numeric you write is 
 before display and will leave a hole in your sentence.
 - Only use facts given to you. Do not speculate about causes. If you are told a \
 subscription was halted, do not guess why.
+- Do not restate a line's mechanism in your own words. Reuse the wording you were given, \
+or name the line and stop. A compressed explanation invents claims the engine never made.
 - Plain English. No jargon the merchant has not already been shown, no greeting, no \
 sign-off, no bullet points, no markdown.
 - Two sentences. The first says what this week's money looks like; the second says what \
@@ -64,6 +66,38 @@ _NUMBER_WORDS = re.compile(
 def has_numerals(text: str) -> bool:
     """Does this prose contain anything a merchant could read as a figure?"""
     return bool(_DIGITS.search(text) or _NUMBER_WORDS.search(text))
+
+
+# A figure as it appears inside merchant-facing copy: an optional symbol, digits with
+# separators, an optional trailing percent. "18%", "₹1,200", "2.15%".
+_FIGURE_TOKEN = re.compile(r"[₹$]?\d[\d,.]*\s*%?")
+_LOOSE_SPACE = re.compile(r"\s{2,}")
+# Only the punctuation that must hug the word before it. An em dash takes its space.
+_ORPHAN_PUNCT = re.compile(r"\s+([,.;:])")
+
+
+def redact_figures(text: str) -> str:
+    """Strip from prompt text anything `guard` would later reject.
+
+    The prompt builders quote `line.explanation`, which is merchant-facing copy and
+    carries a figure where a figure helps a human: "plus the 18% GST charged on that
+    fee". Handing that to a model told never to write a number is an invitation to
+    repeat the one it was just shown — and a repeated figure discards the WHOLE answer,
+    so the copilot fell back to the template on precisely the question a merchant is
+    most likely to ask.
+
+    That was measured, not feared: before this existed, eleven of twelve fee questions
+    returned the template while every other question returned model prose. The failure
+    was invisible because the fallback is correct prose — the product looked like it had
+    no model rather than like it had a bad prompt.
+
+    So the screen keeps its figure and the model is never shown one. Feeding the model
+    only what the guard would accept is the same rule stated once at each end, which is
+    the point: a prompt that can trip its own guard is a prompt bug, not a model failure.
+    """
+    out = _NUMBER_WORDS.sub("", _FIGURE_TOKEN.sub("", text))
+    out = _ORPHAN_PUNCT.sub(r"\1", _LOOSE_SPACE.sub(" ", out))
+    return out.strip()
 
 
 def _sentences(text: str) -> list[str]:
@@ -147,7 +181,10 @@ def _facts(verdict: Verdict) -> str:
     for index, line in enumerate(lines):
         rank = "largest" if index == 0 else ("second largest" if index == 1 else "smaller")
         status = "needs action" if line.actionable else "needs no action"
-        parts.append(f"- {line.label} ({rank} line, {status}): {line.explanation}")
+        parts.append(
+            f"- {redact_figures(line.label)} ({rank} line, {status}): "
+            f"{redact_figures(line.explanation)}"
+        )
 
     actionable = verdict.actionable_lines
     if actionable:
@@ -216,28 +253,54 @@ def template(verdict: Verdict) -> str:
     return f"{first} {second}"
 
 
+def explain_detailed(
+    verdict: Verdict, config: LLMConfig | None = None
+) -> tuple[str, str, str]:
+    """Explain this verdict. Returns `(prose, source, reason)`.
+
+    `source` is "model" or "template". `reason` says WHY the template was used — "no_key",
+    "disabled", "rate_limited", "timeout", "guarded", and so on — and is "model" when
+    none was needed.
+
+    The reason exists because every fallback path used to be silent and identical. A
+    product serving template prose because it has no key and one serving template prose
+    because it exceeded a token budget look the same on screen, and the second one had
+    us reading a diff for a bug that was an HTTP 429. If the product cannot say which
+    path produced the sentence, neither can the person operating it.
+    """
+    cfg = config if config is not None else LLMConfig.from_env()
+    fallback = template(verdict)
+
+    if not cfg.enabled:
+        # "no_key" and "disabled" are both "there will be no model call", and they are
+        # reported apart on purpose: one is a gap in the setup, the other is the setup.
+        return fallback, "template", cfg.off_reason
+
+    try:
+        raw = complete(SYSTEM_PROMPT, _facts(verdict), cfg)
+    except ExplainUnavailable as exc:
+        # Deliberately swallowed. The caller wants a sentence, and the engine has one
+        # that is always correct; a reconciliation summary must not fail to render
+        # because an inference endpoint was slow. The reason is kept, not the exception.
+        return fallback, "template", getattr(exc, "reason", "unavailable")
+
+    safe = guard(raw)
+    if safe is None:
+        # The model wrote a figure and the guard did its job. This is the one fallback
+        # that is a success rather than a fault, and it should not read as an outage.
+        return fallback, "template", "guarded"
+    return safe, "model", "model"
+
+
 def explain(verdict: Verdict, config: LLMConfig | None = None) -> tuple[str, str]:
     """Explain this verdict. Returns `(prose, source)`.
 
     `source` is "model" or "template", and it is returned rather than hidden so the API
     and the audit log can record which path produced the sentence a merchant read. A
     product that cannot say whether a model wrote something is not one you can audit.
+
+    Kept as the two-value form because that is what every caller and test already reads;
+    `explain_detailed` is for the callers that also want to know why.
     """
-    cfg = config if config is not None else LLMConfig.from_env()
-    fallback = template(verdict)
-
-    if not cfg.enabled:
-        return fallback, "template"
-
-    try:
-        raw = complete(SYSTEM_PROMPT, _facts(verdict), cfg)
-    except ExplainUnavailable:
-        # Deliberately swallowed. The caller wants a sentence, and the engine has one
-        # that is always correct; a reconciliation summary must not fail to render
-        # because an inference endpoint was slow.
-        return fallback, "template"
-
-    safe = guard(raw)
-    if safe is None:
-        return fallback, "template"
-    return safe, "model"
+    prose, source, _ = explain_detailed(verdict, config)
+    return prose, source

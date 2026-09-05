@@ -1,6 +1,13 @@
 import type { Correlation as CorrelationData } from "@/lib/api";
 
 /**
+ * SUPERSEDED — the live component is `components/dash/Correlation.tsx`.
+ *
+ * This is the pre-rebuild version (Tailwind, `--color-*` tokens) and nothing
+ * imports it. It is kept next to its replacement only so the reasoning below is
+ * not lost; the four honesty constraints it documents are carried forward
+ * verbatim. Do not add to this file — changes here render nowhere.
+ *
  * The differentiator, as a number a merchant can see move.
  *
  * The claim is: existing tools are architecturally siloed, so an anomaly spanning

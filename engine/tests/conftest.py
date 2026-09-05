@@ -21,6 +21,7 @@ import pytest
 # than a half-configured one.
 _LLM_ENV = (
     "FINCTL_LLM_API_KEY",
+    "FINCTL_NO_LLM",
     "GROQ_API_KEY",
     "ANTHROPIC_API_KEY",
     "FINCTL_LLM_BASE_URL",
