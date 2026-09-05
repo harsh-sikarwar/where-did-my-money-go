@@ -1093,6 +1093,38 @@ def actions(batch: str) -> dict[str, Any]:
         "chase_count": sum(len(g.items) for g in chase),
         "count": sum(len(g.items) for g in groups),
         "groups": [g.as_dict() for g in groups],
+        # Null for an uploaded batch, which has no ground truth to read. See _provenance.
+        "provenance": _provenance(batch),
+    }
+
+
+def _provenance(batch: str) -> dict[str, Any] | None:
+    """How many defects were deliberately planted in this batch, and under which profile.
+
+    The exceptions screen shows a count that does not move when volume does, because the
+    `demo` profile plants absolute counts rather than rates — six halted subscriptions is
+    the story, not "three percent of subscriptions" (see the header comment in
+    config/defaults/defects.yaml). Generate 200 orders or 5,000 and the same eighteen
+    findings come back, which reads as a broken screen unless the screen says otherwise.
+
+    Only a generated batch can answer this. An uploaded one has no ground truth, and the
+    honest answer there is nothing at all rather than a guess — hence None, and a UI that
+    renders the line only when it is real.
+    """
+    gt = DATA_ROOT / batch / "ground_truth.json"
+    if not gt.exists():
+        return None
+    try:
+        data = json.loads(gt.read_text())
+    except (OSError, json.JSONDecodeError):
+        # A truncated or hand-edited ground truth is not worth failing the whole
+        # exceptions screen over; the provenance line is context, not the content.
+        return None
+    return {
+        "defect_profile": data.get("defect_profile"),
+        "volume": data.get("volume"),
+        "planted_defects": data.get("defect_count"),
+        "planted_decoys": data.get("decoy_count"),
     }
 
 

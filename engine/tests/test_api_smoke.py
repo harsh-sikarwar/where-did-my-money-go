@@ -318,3 +318,103 @@ class TestChatInputValidation:
             json={"message": "hello", "history": "not-a-list"},
         )
         assert r.status_code == 400
+
+
+@pytest.fixture
+def generated(client, source_batch) -> str:
+    """A batch placed on disk the way the generator leaves it — ground truth included.
+
+    Not an upload: the upload path deliberately drops ground_truth.json, so it can never
+    exercise the branch that reads one.
+    """
+    import shutil
+
+    import main
+
+    target = main.DATA_ROOT / "generated"
+    shutil.copytree(source_batch, target)
+    main._cache.clear()
+    return "generated"
+
+
+class TestProvenanceExplainsAFrozenCount:
+    """The exceptions screen shows the same count at every volume, and now says why.
+
+    The `demo` profile plants absolute counts, not rates, so 200 orders and 5,000 orders
+    both yield the same findings. That is correct and deliberate (defects.yaml explains
+    the choice in its header), but on screen it reads as a broken filter. `/api/actions`
+    therefore carries the batch's provenance, so the UI can state the reason rather than
+    leave a judge to infer a bug.
+    """
+
+    def test_an_uploaded_batch_reports_no_provenance(self, client, batch) -> None:
+        """Silence, not a guess.
+
+        An upload arrives without ground truth: nobody planted anything, so there is no
+        planted count to report. The UI renders the explanatory line only when this is
+        non-null, which is why null has to be the answer rather than zero — zero would
+        read as "no defects were planted", a claim this endpoint cannot make.
+        """
+        assert client.get(f"/api/actions/{batch}").json()["provenance"] is None
+
+    def test_a_generated_batch_reports_what_was_planted(self, client, generated) -> None:
+        """The four fields the explanatory line is built from."""
+        p = client.get(f"/api/actions/{generated}").json()["provenance"]
+
+        assert p["defect_profile"] == "demo"
+        assert p["volume"] == 200
+        assert isinstance(p["planted_defects"], int) and p["planted_defects"] > 0
+        assert isinstance(p["planted_decoys"], int)
+
+    def test_the_exception_queue_does_not_lengthen_with_volume(self, client) -> None:
+        """The claim the UI line makes, asserted rather than described.
+
+        Note what is NOT claimed: total defects planted DOES scale, because `timing_lag`
+        is a rate. It is the defect types that reach this queue — halted subscriptions,
+        missing orders, unrecorded refunds, disputes — that are absolute counts. An
+        earlier draft of the screen cited the total and would have printed "81 defects
+        planted" beside a list of eighteen. This test is why that never shipped.
+        """
+        import main
+
+        lengths = set()
+        for volume in (200, 800):
+            write_batch(
+                Generator(load_config(), seed=20260902, volume=volume,
+                          defect_profile="demo").generate(),
+                main.DATA_ROOT / f"vol{volume}",
+            )
+            main._cache.clear()
+            lengths.add(client.get(f"/api/actions/vol{volume}").json()["count"])
+
+        assert len(lengths) == 1, (
+            f"the exception queue was {lengths} at two volumes. The screen tells the "
+            "merchant this number is volume-independent; if that stops being true the "
+            "prose is lying, not the data."
+        )
+
+    def test_total_planted_defects_is_not_the_frozen_number(self, client) -> None:
+        """Guards the distinction the prose depends on, from the other side.
+
+        If `demo` ever became all-absolute, this test fails and the screen could then
+        honestly cite the total — a better line than the one it has. Failing here is a
+        prompt to improve the copy, not a defect.
+        """
+        import main
+
+        totals = set()
+        for volume in (200, 800):
+            write_batch(
+                Generator(load_config(), seed=20260902, volume=volume,
+                          defect_profile="demo").generate(),
+                main.DATA_ROOT / f"tot{volume}",
+            )
+            main._cache.clear()
+            totals.add(
+                client.get(f"/api/actions/tot{volume}").json()["provenance"]["planted_defects"]
+            )
+
+        assert len(totals) == 2, (
+            f"total planted defects was identical ({totals}) at two volumes. The demo "
+            "profile's timing_lag is a rate, so this is expected to scale."
+        )

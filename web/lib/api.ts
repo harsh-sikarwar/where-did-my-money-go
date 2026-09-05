@@ -308,6 +308,18 @@ export interface ActionGroup {
   items: ActionItem[];
 }
 
+/** What a generated batch was made from. Null for an uploaded batch, which has no
+ *  ground truth — the UI must render nothing rather than guess. */
+export interface Provenance {
+  defect_profile: string | null;
+  volume: number | null;
+  /** TOTAL defects planted, benign ones included. This DOES scale with volume under
+   *  the `demo` profile, because `timing_lag` is a rate — so it is not the number that
+   *  explains a frozen exception queue, and the UI must not present it as one. */
+  planted_defects: number | null;
+  planted_decoys: number | null;
+}
+
 export interface Actions {
   batch: string;
   headline: string;
@@ -318,6 +330,7 @@ export interface Actions {
   chase_count: number;
   count: number;
   groups: ActionGroup[];
+  provenance: Provenance | null;
 }
 
 export interface Inspected {

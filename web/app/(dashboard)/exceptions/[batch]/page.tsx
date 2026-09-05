@@ -147,6 +147,37 @@ export default function ExceptionsPage({
         )}
       </p>
 
+      {/* Why this queue's length does not move when volume does. The defect types
+          that surface here — halted subscriptions, missing orders, unrecorded refunds,
+          disputes — are planted as absolute counts under the `demo` profile, not as
+          rates (config/defaults/defects.yaml explains the choice in its header). Note
+          the claim is about THIS queue, not about total defects planted: `timing_lag`
+          IS a rate, so the batch's overall defect count does scale with volume. Saying
+          otherwise here would put a false number beside a true list. Rendered only for
+          a generated batch — an uploaded one has no ground truth, and silence is the
+          honest answer. */}
+      {data.provenance && (
+        <p
+          style={{
+            fontSize: 13,
+            color: "var(--dash-ink-faint)",
+            margin: "-18px 0 28px",
+            maxWidth: 640,
+          }}
+        >
+          Generated batch ·{" "}
+          <code style={{ fontFamily: "var(--dash-font-mono)" }}>
+            {data.provenance.defect_profile}
+          </code>{" "}
+          profile. The defects that surface here are planted as fixed counts rather than
+          proportions, so this queue is the same length whether you generate{" "}
+          {data.provenance.volume != null
+            ? data.provenance.volume.toLocaleString("en-IN")
+            : "two hundred"}{" "}
+          orders or fifty thousand.
+        </p>
+      )}
+
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {filters.map((f) => (
