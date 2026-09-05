@@ -972,7 +972,7 @@ def timeline(batch: str, refresh: bool = False) -> dict[str, Any]:
 
 @app.get("/api/verdict/{batch}")
 def verdict(batch: str, refresh: bool = False) -> dict[str, Any]:
-    """The four lines and a verdict. The default screen."""
+    """The four lines and a verdict. The answer the app opens on."""
     result = _load(batch, refresh=refresh)
     v = result.verdict
     missing_sources = _missing_sources(result)

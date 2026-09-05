@@ -646,9 +646,12 @@ Named so their absence reads as a decision:
   engine that hallucinates is worse than no engine.
 - **AI column mapping.** Determinism does the job, and it would weaken the AI-usage
   argument rather than strengthen it.
-- **A dashboard.** The product is four lines and a verdict. Every feature request that
-  begins "could it also show" should be weighed against the thing that makes it useful:
-  one answer, not a chart of many.
+- **A dashboard as the *landing* screen.** The app has grown detail screens — Runs,
+  Exceptions, Analysis, Reports, Audit log, Sources — and they earn their place, because
+  a merchant who has to defend a figure needs the rows behind it. What has not moved is
+  what you meet first: four lines and a verdict. Every feature request beginning "could
+  it also show" is weighed against that, and the answer is usually "yes, one click down"
+  rather than "yes, on the front page."
 
 ### 6. Two QA findings deferred deliberately
 

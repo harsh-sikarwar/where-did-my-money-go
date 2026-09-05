@@ -63,7 +63,12 @@ Expected ₹8,40,000 · Received ₹7,88,000 · Gap ₹52,000
 → One thing needs you this week: those 6 customers.
 ```
 
-Four lines and a verdict. Not a dashboard.
+Four lines and a verdict — that is the *answer*, and it is what the product opens on.
+Everything else in the app exists to let you take that answer apart: each line clicks
+through to the rows behind it, and Runs, Exceptions, Analysis, Reports, Audit log and
+Sources are there when a merchant needs to prove a figure rather than read one. The
+default screen is a verdict rather than a wall of charts; the depth behind it is one
+click down, which is what makes the simplicity a choice instead of a limitation.
 
 ---
 

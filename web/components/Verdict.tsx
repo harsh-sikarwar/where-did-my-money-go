@@ -19,12 +19,12 @@ import type {
 } from "@/lib/api";
 
 /**
- * The default screen: three figures, a bar, four lines and a verdict. Deliberately
- * NOT a dashboard.
+ * The answer the app opens on: three figures, a bar, four lines and a verdict.
  *
  * Hyperswitch and Cointab build for a finance operator who lives in the tool. This is
- * for a merchant who opens it for two minutes on Monday. The depth exists (one click
- * down) which is what proves the simplicity is a choice rather than a limitation.
+ * for a merchant who opens it for two minutes on Monday. The detail screens exist and
+ * are reached FROM here (one click down per line) rather than shown alongside it —
+ * which is what makes the simplicity of this screen a choice, not a limitation.
  *
  * Hierarchy is weight before size: Expected and Received are set at 300 so the Gap's
  * 700 reads as the answer rather than merely the biggest number.

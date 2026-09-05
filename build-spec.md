@@ -134,7 +134,7 @@ Four screens: verdict / detail / correlation / audit.
 
 ## 5. UI
 
-Default screen is **four lines and a verdict**, not a dashboard. Hyperswitch and Cointab build for a finance operator who lives in the tool; you're building for a merchant who opens it for two minutes on Monday.
+Default screen is **four lines and a verdict** — the answer first, not a wall of charts. Hyperswitch and Cointab build for a finance operator who lives in the tool; you're building for a merchant who opens it for two minutes on Monday, and who needs the depth to exist for the Monday they don't. The detail screens are reached from the verdict, not shown alongside it.
 
 ```
 Expected ₹8,40,000 · Received ₹7,88,000 · Gap ₹52,000

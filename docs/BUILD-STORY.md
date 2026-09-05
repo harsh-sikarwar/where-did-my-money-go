@@ -16,14 +16,15 @@ job is to assemble those into one narrative that reads start to finish.
 **"Where did my money go?"** is a Razorpay Buildathon Track 04 (AI Finance Controller)
 submission: a reconciliation tool built around one product promise — a merchant uploads
 their ledger and bank statement (or connects Razorpay's settlement/payment/subscription
-data), and instead of a dashboard to interpret, they get a four-line verdict that accounts
-for every rupee of the gap between what they expected and what actually landed, tells them
-which parts are normal, and names the one thing that actually needs their attention this
-week. The engine (`finctl`, a Python pipeline) is deterministic end to end — matching, fee
-arithmetic, classification and correlation never touch a language model — with a FastAPI
-wrapper and a 12-route Next.js dashboard on top. The one place an LLM is used is to write
-two sentences of prose above numbers the engine already computed, under a hard guard that
-discards any model output containing a numeral.
+data), and instead of opening on a wall of charts to interpret, they get a four-line
+verdict that accounts for every rupee of the gap between what they expected and what
+actually landed, tells them which parts are normal, and names the one thing that
+actually needs their attention this week. The engine (`finctl`, a Python pipeline) is
+deterministic end to end — matching, fee arithmetic, classification and correlation
+never touch a language model — with a FastAPI wrapper and a 12-route Next.js dashboard
+on top. The one place an LLM is used is to write two sentences of prose above numbers
+the engine already computed, under a hard guard that discards any model output
+containing a numeral.
 
 ---
 
@@ -752,6 +753,6 @@ value rather than by difficulty:
 5. **Deliberately left alone, and stated as a decision rather than a gap:** an LLM anywhere
    near the arithmetic (the boundary in ADR-050 should not move — a reconciliation engine that
    hallucinates is worse than no engine), AI column mapping (determinism does the job), and a
-   dashboard in the conventional sense (the product is four lines and a verdict; every feature
-   request beginning "could it also show" is weighed against the thing that makes the product
-   useful in the first place — one answer, not a chart of many).
+   chart wall as the landing screen (the app has real detail screens now, but what a merchant
+   meets first is four lines and a verdict; every feature request beginning "could it also show"
+   is answered "yes, one click down" rather than "yes, on the front page").
